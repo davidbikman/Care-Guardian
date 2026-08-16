@@ -60,12 +60,6 @@ const SELF_REPORT_TYPES = [
 const MOOD_OPTIONS = ["😊 Good","🙂 Okay","😐 Fair","😟 Not great","😢 Bad"];
 const PAIN_LEVELS = ["0 — None","1–2 — Mild","3–4 — Moderate","5–6 — Moderate-Severe","7–8 — Severe","9–10 — Worst possible"];
 const EMPTY_CONTACT = { name:"",role:"",org:"",phone:"",email:"",category:"medical",notes:[],customFields:[] };
-const STATUS_OPTS = [
-  { value:"on-track",label:"On Track",color:"#718355",bg:"#e8f0df" },
-  { value:"needs-attention",label:"Needs Attention",color:"#bc6c25",bg:"#fdf0d5" },
-  { value:"urgent",label:"Urgent",color:"#b56576",bg:"#fde2e8" },
-  { value:"not-started",label:"Not Started",color:"#8d99ae",bg:"#eef0f3" },
-];
 const DAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
@@ -273,9 +267,6 @@ const EMERGENCY_SCENARIOS = [
   {key:"med_error",title:"Medication Error",icon:"💊",steps:["Determine: what was taken, how much, when","Call Poison Control: 1-800-222-1222 (24/7, free)","Call 911 if symptomatic (drowsiness, confusion, breathing changes)","Do NOT induce vomiting unless directed","Bring medication bottle to ER","Log with medication name, dose, time, response"]},
 ];
 
-const SHIFT_SLOTS = ["6–9 AM","9 AM–12","12–3 PM","3–6 PM","6–9 PM","9 PM–12","Overnight"];
-const SHIFT_DAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-
 const TRANSITION_TRIGGERS = [
   {key:"adl3",label:"Needs help with 3+ ADLs",desc:"Bathing, dressing, eating, toileting, transferring, continence"},
   {key:"wandering_freq",label:"Wandering weekly or more",desc:"Current safety measures are insufficient"},
@@ -341,7 +332,7 @@ function initState(stateCode) {
   const doms = buildDomains(stateCode||"");
   const domains = {};
   doms.forEach(d => { domains[d.key] = { status:"not-started",notes:"",lastUpdated:null, goals:d.goals.map(g=>({done:false,subs:g.subs.map(()=>({done:false,lastDone:null,typeOverride:null})),customSubs:[],titleOverride:null,subOverrides:{}})) }; });
-  return { domains, contacts:[], appointments:[], messages:[], incidents:[], expenses:[], medSchedule:{medications:[],log:[]}, emergencyPlans:EMERGENCY_SCENARIOS.map(s=>({key:s.key,steps:[...s.steps]})), shifts:{}, careShifts:[], availability:{}, transitionTriggers:{}, statusHistory:[], postDeathChecklist:POST_DEATH_SECTIONS.map(s=>s.items.map(()=>false)), selfReports:[], savedDocs:[], caregiverWellness:[], capacityLog:[], poaDecisions:[], log:[], domainOverrides:{}, settings:{caregiverPasscode:"1234",clientPasscode:"0000",deviceId:genDeviceId(),deviceName:"",stateCode:stateCode||"",schemaVersion:SCHEMA_VERSION}, _sync:{} };
+  return { domains, contacts:[], appointments:[], messages:[], incidents:[], expenses:[], medSchedule:{medications:[],log:[]}, emergencyPlans:EMERGENCY_SCENARIOS.map(s=>({key:s.key,steps:[...s.steps]})), careShifts:[], availability:{}, transitionTriggers:{}, statusHistory:[], postDeathChecklist:POST_DEATH_SECTIONS.map(s=>s.items.map(()=>false)), selfReports:[], savedDocs:[], caregiverWellness:[], capacityLog:[], poaDecisions:[], log:[], domainOverrides:{}, settings:{caregiverPasscode:"1234",clientPasscode:"0000",deviceId:genDeviceId(),deviceName:"",stateCode:stateCode||"",schemaVersion:SCHEMA_VERSION}, _sync:{} };
 }
 
 /* ═══ Merge engine ═══ */
@@ -458,15 +449,6 @@ function mergeData(local, remote) {
     }
   });
 
-  // Merge shifts - per cell, keep remote if local is empty
-  const remoteShifts = remote.shifts || {};
-  Object.keys(remoteShifts).forEach(key => {
-    if(remoteShifts[key] && !(merged.shifts||{})[key]) {
-      merged.shifts = { ...(merged.shifts||{}), [key]: remoteShifts[key] };
-      report.added.push("Shift: "+key);
-    }
-  });
-
   // Merge transition triggers - per key, keep remote if active and local isn't
   const remoteTriggers = remote.transitionTriggers || {};
   Object.keys(remoteTriggers).forEach(key => {
@@ -495,7 +477,7 @@ function mergeData(local, remote) {
   const newLogEntries = (remote.log||[]).filter(l=>!localLogTimes.has(l.time+l.action));
   merged.log = [...(merged.log||[]), ...newLogEntries].sort((a,b)=>(b.time||"").localeCompare(a.time||"")).slice(0,60);
 
-  // Preserve local settings (passcodes, deviceId, tabOrder)
+  // Preserve local settings (passcodes, deviceId)
   merged.settings = { ...local.settings };
   // Merge team roster if both are on the same team
   if(local.settings&&local.settings.team&&local.settings.team.id && remote.settings&&remote.settings.team&&remote.settings.team.id && local.settings.team.id===remote.settings.team.id){
@@ -1190,11 +1172,6 @@ const ROLES = [
   {key:"client-restricted",label:"Client (Supported)",desc:"Limited view. Can submit self-reports and view messages.",icon:"🛡"},
 ];
 const CAREPRO_DOMAINS = ["physical","cognitive","wellness"];
-const CAREPRO_CONTACT_CATS = ["medical","care"];
-const CAREPRO_TABS = ["overview","physical","cognitive","wellness","incidents","medadmin","shifts","messages","emergency","sync"];
-const FAMILY_HIDDEN_TABS = [];
-const CLIENT_FULL_TABS = ["overview","physical","cognitive","wellness","legal","financial","incidents","expenses","medadmin","contacts","calendar","messages","selfreport","documents","emergency","triggers","tracking","visit","help"];
-const CLIENT_RESTRICTED_TABS = ["overview","physical","cognitive","wellness","messages","selfreport","help"];
 
 function downloadFile(content,filename,type="application/json") {
   // Try standard download first
@@ -1499,6 +1476,138 @@ function getMonthDays(y,m) { return new Date(y,m+1,0).getDate(); }
 function getFirstDow(y,m) { return new Date(y,m,1).getDay(); }
 function fmtDate(y,m,d) { return `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`; }
 
+/* ═══════════════ MODAL / FORM COMPONENTS ═══════════════
+   These are defined at module scope on purpose. Defining a component inside
+   App()'s body gives it a new function identity on every parent render, which
+   makes React unmount and remount it — wiping the local useState that holds
+   whatever the user has typed or attached. Keep them out here. */
+
+const ContactFormUI=({contactForm,setContactForm,saveContact})=>{const[f,setF]=useState({...contactForm.contact,customFields:[...(contactForm.contact.customFields||[])]});const[nfl,setNfl]=useState("");const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
+  <div className="cf-overlay" onClick={()=>setContactForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()}>
+    <h2 className="cf-title">{contactForm.mode==="edit"?"Edit Contact":"Add Contact"}</h2>
+    <div className="cf-grid">
+      <label className="cf-label">Name *<input value={f.name} onChange={e=>upd("name",e.target.value)} className="cf-input"/></label>
+      <label className="cf-label">Role / Title<input value={f.role} onChange={e=>upd("role",e.target.value)} className="cf-input"/></label>
+      <label className="cf-label">Organization<input value={f.org} onChange={e=>upd("org",e.target.value)} className="cf-input"/></label>
+      <label className="cf-label">Category<select value={f.category} onChange={e=>upd("category",e.target.value)} className="cf-input">{CONTACT_CATS.map(c=><option key={c.key} value={c.key}>{c.icon} {c.label}</option>)}</select></label>
+      <label className="cf-label">Phone<input value={f.phone} onChange={e=>upd("phone",e.target.value)} className="cf-input" type="tel"/></label>
+      <label className="cf-label">Email<input value={f.email} onChange={e=>upd("email",e.target.value)} className="cf-input" type="email"/></label>
+    </div>
+    {f.customFields.length>0&&<div className="cf-custom-section"><h4 className="cf-custom-title">Custom Fields</h4>
+      {f.customFields.map((cf,i)=>(<div key={i} className="cf-custom-row"><input value={cf.label} onChange={e=>{const c=[...f.customFields];c[i]={...c[i],label:e.target.value};setF(p=>({...p,customFields:c}))}} className="cf-input cf-custom-label" placeholder="Field name"/><input value={cf.value} onChange={e=>{const c=[...f.customFields];c[i]={...c[i],value:e.target.value};setF(p=>({...p,customFields:c}))}} className="cf-input cf-custom-value" placeholder="Value"/><button onClick={()=>setF(p=>({...p,customFields:p.customFields.filter((_,j)=>j!==i)}))} className="remove-sub">×</button></div>))}
+    </div>}
+    <div className="cf-add-field-row"><input value={nfl} onChange={e=>setNfl(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&nfl.trim()){setF(p=>({...p,customFields:[...p.customFields,{label:nfl.trim(),value:""}]}));setNfl("")}}} className="cf-input" placeholder="New field name" style={{flex:1}}/><button onClick={()=>{if(nfl.trim()){setF(p=>({...p,customFields:[...p.customFields,{label:nfl.trim(),value:""}]}));setNfl("")}}} className="add-sub-btn">+ Field</button></div>
+    <div className="cf-actions"><button disabled={!f.name.trim()} onClick={()=>saveContact(f,contactForm.id)} className="save-btn" style={{opacity:f.name.trim()?1:.4}}>{contactForm.mode==="edit"?"Save":"Add Contact"}</button><button onClick={()=>setContactForm(null)} className="cancel-btn">Cancel</button></div>
+  </div></div>)};
+
+const ApptFormUI=({apptForm,setApptForm,saveAppt,deleteAppt})=>{const[f,setF]=useState(apptForm.appt);const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
+  <div className="cf-overlay" onClick={()=>setApptForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
+    <h2 className="cf-title">{apptForm.mode==="edit"?"Edit Appointment":"Add Appointment"}</h2>
+    <label className="cf-label" style={{marginBottom:12}}>Title *<input value={f.title} onChange={e=>upd("title",e.target.value)} className="cf-input" placeholder="Dr. visit, Lab work, etc."/></label>
+    <div className="cf-grid">
+      <label className="cf-label">Date<input type="date" value={f.date} onChange={e=>upd("date",e.target.value)} className="cf-input"/></label>
+      <label className="cf-label">Time<input type="time" value={f.time} onChange={e=>upd("time",e.target.value)} className="cf-input"/></label>
+    </div>
+    <label className="cf-label" style={{marginTop:12,marginBottom:12}}>Notes<textarea value={f.notes} onChange={e=>upd("notes",e.target.value)} className="notes-ta" rows={2}/></label>
+    <div className="cf-actions">
+      <button disabled={!f.title.trim()||!f.date} onClick={()=>saveAppt(f,apptForm.id)} className="save-btn" style={{opacity:f.title.trim()&&f.date?1:.4}}>Save</button>
+      {apptForm.mode==="edit"&&<button onClick={()=>deleteAppt(apptForm.id)} className="cd-delete-btn">Delete</button>}
+      <button onClick={()=>setApptForm(null)} className="cancel-btn">Cancel</button>
+    </div>
+  </div></div>)};
+
+const DomainEditModal=({editingDomain,setEditingDomain,setData,addLog})=>{const[l,setL]=useState(editingDomain.label);const[d,setD]=useState(editingDomain.desc);
+  const doSave=()=>{if(!l.trim())return;setData(p=>addLog({...p,domainOverrides:{...(p.domainOverrides||{}),[editingDomain.key]:{label:l.trim(),desc:d.trim()}}},editingDomain.key,`Renamed to "${l.trim()}"`));setEditingDomain(null)};
+  return(<div className="cf-overlay" onClick={()=>setEditingDomain(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
+    <h2 className="cf-title">Edit Category</h2>
+    <label className="cf-label" style={{marginBottom:14}}>Name<input value={l} onChange={e=>setL(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doSave()} className="cf-input"/></label>
+    <label className="cf-label" style={{marginBottom:20}}>Description<textarea value={d} onChange={e=>setD(e.target.value)} className="notes-ta" rows={2}/></label>
+    <div className="cf-actions"><button disabled={!l.trim()} onClick={doSave} className="save-btn">Save</button><button onClick={()=>setEditingDomain(null)} className="cancel-btn">Cancel</button></div>
+  </div></div>)};
+
+const IncidentFormUI=({incidentForm,setIncidentForm,saveIncident,deleteIncident,incidentPhotoRef,handlePhotoCapture})=>{const[f,setF]=useState(incidentForm.incident);const[incPhotos,setIncPhotos]=useState(incidentForm.incident.photos||[]);const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
+  <div className="cf-overlay" onClick={()=>setIncidentForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()}>
+    <h2 className="cf-title">{incidentForm.mode==="edit"?"Edit Incident":"Log Incident"}</h2>
+    <div className="cf-grid">
+      <label className="cf-label">Type<select value={f.type} onChange={e=>upd("type",e.target.value)} className="cf-input">{INCIDENT_TYPES.map(t=><option key={t.key} value={t.key}>{t.icon} {t.label}</option>)}</select></label>
+      <label className="cf-label">Severity<select value={f.severity} onChange={e=>upd("severity",e.target.value)} className="cf-input">{SEVERITY_LEVELS.map(s=><option key={s.key} value={s.key}>{s.label}</option>)}</select></label>
+      <label className="cf-label">Date<input type="date" value={f.date} onChange={e=>upd("date",e.target.value)} className="cf-input"/></label>
+      <label className="cf-label">Time<input type="time" value={f.time} onChange={e=>upd("time",e.target.value)} className="cf-input"/></label>
+    </div>
+    <label className="cf-label" style={{marginBottom:10}}>What happened<textarea value={f.description} onChange={e=>upd("description",e.target.value)} className="notes-ta" rows={3} placeholder="Describe the incident…"/></label>
+    <label className="cf-label" style={{marginBottom:10}}>Response / Action taken<textarea value={f.response} onChange={e=>upd("response",e.target.value)} className="notes-ta" rows={2} placeholder="What was done in response?"/></label>
+    <div className="cf-grid">
+      <label className="cf-label">Injuries (if any)<input value={f.injuries} onChange={e=>upd("injuries",e.target.value)} className="cf-input" placeholder="None, bruise, laceration…"/></label>
+      <label className="cf-label">Provider notified<input value={f.providerNotified} onChange={e=>upd("providerNotified",e.target.value)} className="cf-input" placeholder="Dr. name, 911, none…"/></label>
+    </div>
+    <label className="cf-label">Photos</label>
+    <div className="photo-attach-row">
+      <button onClick={()=>incidentPhotoRef.current&&incidentPhotoRef.current.click()} type="button" className="edit-btn" style={{marginTop:0,fontSize:12}}>📷 Add photo{incPhotos.length>0?" ("+incPhotos.length+")":""}</button>
+      <input ref={incidentPhotoRef} type="file" accept="image/*" capture="environment" multiple style={{display:"none"}} onChange={e=>handlePhotoCapture(e,setIncPhotos)}/>
+      {incPhotos.length>0&&<button onClick={()=>setIncPhotos([])} type="button" className="cancel-btn" style={{fontSize:11,padding:"4px 10px"}}>Clear</button>}
+    </div>
+    {incPhotos.length>0&&<div className="photo-preview-row" style={{marginBottom:8}}>{incPhotos.map((p,i)=>(<div key={i} className="photo-thumb"><img src={p} alt={"Photo "+(i+1)}/><button onClick={()=>setIncPhotos(prev=>prev.filter((_,j)=>j!==i))} className="photo-remove">×</button></div>))}</div>}
+    <div className="cf-actions" style={{marginTop:12}}>
+      <button disabled={!f.description.trim()} onClick={()=>{f.photos=incPhotos;saveIncident(f,incidentForm.id)}} className="save-btn" style={{opacity:f.description.trim()?1:.4}}>Save</button>
+      {incidentForm.mode==="edit"&&<button onClick={()=>deleteIncident(incidentForm.id)} className="cd-delete-btn">Delete</button>}
+      <button onClick={()=>setIncidentForm(null)} className="cancel-btn">Cancel</button>
+    </div>
+  </div></div>)};
+
+const ExpenseFormUI=({expenseForm,setExpenseForm,saveExpense,deleteExpense})=>{const[f,setF]=useState(expenseForm.expense);const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
+  <div className="cf-overlay" onClick={()=>setExpenseForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
+    <h2 className="cf-title">{expenseForm.mode==="edit"?"Edit Expense":"Add Expense"}</h2>
+    <div className="cf-grid">
+      <label className="cf-label">Date<input type="date" value={f.date} onChange={e=>upd("date",e.target.value)} className="cf-input"/></label>
+      <label className="cf-label">Amount ($)<input type="number" step="0.01" min="0" value={f.amount} onChange={e=>upd("amount",e.target.value)} className="cf-input" placeholder="0.00"/></label>
+    </div>
+    <label className="cf-label" style={{marginBottom:10}}>Category<select value={f.category} onChange={e=>upd("category",e.target.value)} className="cf-input">{EXPENSE_CATS.map(c=><option key={c.key} value={c.key}>{c.label}</option>)}</select></label>
+    <label className="cf-label" style={{marginBottom:10}}>Description<input value={f.description} onChange={e=>upd("description",e.target.value)} className="cf-input" placeholder="Pharmacy copay, aide hours, etc."/></label>
+    <label className="cf-label" style={{marginBottom:10}}>Payee / Vendor<input value={f.payee} onChange={e=>upd("payee",e.target.value)} className="cf-input" placeholder="Walgreens, Home Instead, etc."/></label>
+    <label className="cf-label" style={{marginBottom:10}}>Receipt / Reference<input value={f.receipt} onChange={e=>upd("receipt",e.target.value)} className="cf-input" placeholder="Receipt #, check #, confirmation…"/></label>
+    <div className="cf-actions">
+      <button disabled={!f.amount||!f.date} onClick={()=>saveExpense(f,expenseForm.id)} className="save-btn" style={{opacity:f.amount&&f.date?1:.4}}>Save</button>
+      {expenseForm.mode==="edit"&&<button onClick={()=>deleteExpense(expenseForm.id)} className="cd-delete-btn">Delete</button>}
+      <button onClick={()=>setExpenseForm(null)} className="cancel-btn">Cancel</button>
+    </div>
+  </div></div>)};
+
+const MedFormUI=({medForm,setMedForm,addMedToSchedule,editMedInSchedule,removeMedFromSchedule})=>{const[f,setF]=useState(medForm.med);const toggleSlot=(s)=>setF(p=>({...p,timeSlots:p.timeSlots.includes(s)?p.timeSlots.filter(x=>x!==s):[...p.timeSlots,s]}));return(
+  <div className="cf-overlay" onClick={()=>setMedForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
+    <h2 className="cf-title">{medForm.mode==="edit"?"Edit Medication":"Add Medication to Schedule"}</h2>
+    <label className="cf-label" style={{marginBottom:10}}>Medication Name<input value={f.name} onChange={e=>setF(p=>({...p,name:e.target.value}))} className="cf-input" placeholder="Donepezil"/></label>
+    <label className="cf-label" style={{marginBottom:10}}>Dosage<input value={f.dosage} onChange={e=>setF(p=>({...p,dosage:e.target.value}))} className="cf-input" placeholder="10 mg"/></label>
+    <label className="cf-label" style={{marginBottom:10}}>Time Slots</label>
+    <div className="med-slot-row">{MED_TIME_SLOTS.map(s=>(<button key={s} onClick={()=>toggleSlot(s)} className={`cc-btn ${f.timeSlots.includes(s)?"cc-active":""}`}>{s}</button>))}</div>
+    <label className="cf-label" style={{marginTop:12,marginBottom:10}}>Notes<input value={f.notes||""} onChange={e=>setF(p=>({...p,notes:e.target.value}))} className="cf-input" placeholder="Take with food, etc."/></label>
+    <div className="cf-actions" style={{marginTop:8}}>
+      <button disabled={!f.name.trim()||!f.timeSlots.length} onClick={()=>medForm.mode==="edit"?editMedInSchedule(f,medForm.id):addMedToSchedule(f)} className="save-btn" style={{opacity:f.name.trim()&&f.timeSlots.length?1:.4}}>Save</button>
+      {medForm.mode==="edit"&&<button onClick={()=>{removeMedFromSchedule(medForm.id);setMedForm(null)}} className="cd-delete-btn">Remove</button>}
+      <button onClick={()=>setMedForm(null)} className="cancel-btn">Cancel</button>
+    </div>
+  </div></div>)};
+
+const CreateTeamForm=({data,flash,createTeam,setTeamSetupMode})=>{const[tn,setTn]=useState("");const[cn,setCn]=useState("");const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[mr,setMr]=useState("Primary Caregiver");return(
+  <div className="team-form">
+    <h4 className="sync-sub-title">Create Your Care Team</h4>
+    <label className="cf-label">Team name<input value={tn} onChange={e=>setTn(e.target.value)} className="cf-input" placeholder="e.g., Mom's Care Team"/></label>
+    <label className="cf-label">Who are you caring for?<input value={cn} onChange={e=>setCn(e.target.value)} className="cf-input" placeholder="e.g., Margaret Johnson"/></label>
+    <label className="cf-label">Your name<input value={mn} onChange={e=>setMn(e.target.value)} className="cf-input" placeholder="e.g., David"/></label>
+    <label className="cf-label">Your role<input value={mr} onChange={e=>setMr(e.target.value)} className="cf-input" placeholder="e.g., Primary Caregiver, Daughter, Aide"/></label>
+    <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!tn.trim()||!cn.trim()||!mn.trim()){flash("Please fill in all fields.");return}createTeam(tn,cn,mn,mr)}} className="save-btn">Create Team</button><button onClick={()=>setTeamSetupMode(null)} className="cancel-btn">Cancel</button></div>
+  </div>)};
+
+const JoinTeamForm=({data,joinCode,setJoinCode,parseInviteCode,flash,joinTeamFromCode,setTeamSetupMode})=>{const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[mr,setMr]=useState("");const[rk,setRk]=useState("family");return(
+  <div className="team-form">
+    <h4 className="sync-sub-title">Join an Existing Team</h4>
+    <label className="cf-label">Invite code<input value={joinCode} onChange={e=>setJoinCode(e.target.value)} className="cf-input" placeholder="Paste the code from your team member" style={{fontFamily:"monospace",fontSize:12}}/></label>
+    {joinCode&&parseInviteCode(joinCode)&&<p className="hint" style={{color:"#718355"}}>✓ Team: <strong>{parseInviteCode(joinCode).teamName}</strong> · Caring for: <strong>{parseInviteCode(joinCode).clientName}</strong></p>}
+    <label className="cf-label">Your name<input value={mn} onChange={e=>setMn(e.target.value)} className="cf-input" placeholder="e.g., Sarah"/></label>
+    <label className="cf-label">Your role title<input value={mr} onChange={e=>setMr(e.target.value)} className="cf-input" placeholder="e.g., Weekend Caregiver, Son, Home Health Aide"/></label>
+    <label className="cf-label">Access level<select value={rk} onChange={e=>setRk(e.target.value)} className="cf-select">{ROLES.filter(r=>r.key!=="admin"&&!r.key.startsWith("client")).map(r=>(<option key={r.key} value={r.key}>{r.icon} {r.label} — {r.desc}</option>))}</select></label>
+    <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!joinCode.trim()||!mn.trim()){flash("Please enter the invite code and your name.");return}joinTeamFromCode(joinCode,mn,mr,rk)}} className="save-btn">Join Team</button><button onClick={()=>{setTeamSetupMode(null);setJoinCode("")}} className="cancel-btn">Cancel</button></div>
+  </div>)};
+
 /* ═══════════════ COMPONENT ═══════════════ */
 export default function App() {
   const [authed,setAuthed]=useState(false);
@@ -1608,7 +1717,6 @@ export default function App() {
       case "manage-settings": return isAdmin;
       case "manage-sync": return isAdmin;
       case "change-passcodes": return isAdmin;
-      case "edit-shifts": return isAdmin||isFamily;
       case "manage-schedule": return isAdmin;
       case "claim-shift": return isAdmin||isFamily||isCarePro;
       case "log-visit": return isAdmin||isFamily||isCarePro;
@@ -1622,15 +1730,6 @@ export default function App() {
     }
   };
 
-  const getVisibleTabs=()=>{
-    const all=TABS;
-    if(isCarePro)return all.filter(t=>CAREPRO_TABS.includes(t.key));
-    if(isClientFull)return all.filter(t=>CLIENT_FULL_TABS.includes(t.key));
-    if(isClientRestricted)return all.filter(t=>CLIENT_RESTRICTED_TABS.includes(t.key));
-    if(isFamily)return all.filter(t=>t.key!=="settings");
-    return all; // admin sees everything
-  };
-  // visibleTabs is computed below in the tab ordering section using getVisibleTabs()
   const switchState=(newCode)=>{const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{const existing=data.domains[d.key];if(existing&&existing.goals){newDomains[d.key]={...existing,goals:d.goals.map((g,gi)=>{const eg=existing.goals[gi];if(eg)return{...eg,subs:g.subs.map((s,si)=>eg.subs[si]||{done:false,lastDone:null,typeOverride:null}),titleOverride:eg.titleOverride,subOverrides:eg.subOverrides,customSubs:eg.customSubs||[]};return{done:false,subs:g.subs.map(()=>({done:false,lastDone:null,typeOverride:null})),customSubs:[],titleOverride:null,subOverrides:{}}})}}else{newDomains[d.key]={status:"not-started",notes:"",lastUpdated:null,goals:d.goals.map(g=>({done:false,subs:g.subs.map(()=>({done:false,lastDone:null,typeOverride:null})),customSubs:[],titleOverride:null,subOverrides:{}}))}}});setData(p=>({...p,domains:newDomains,settings:{...p.settings,stateCode:newCode}}));flash(newCode?"Switched to "+(AVAILABLE_STATES.find(s=>s.code===newCode)||{}).name+" mode.":"Switched to Generic mode.")};
   const [view,setView]=useState("today-hub");
   const [currentHub,setCurrentHub]=useState("today");
@@ -1638,7 +1737,6 @@ export default function App() {
   const [expanded,setExpanded]=useState({});
   const [editNotes,setEditNotes]=useState(false); const [notesDraft,setNotesDraft]=useState("");
   const [addSubFor,setAddSubFor]=useState(null); const [newSubText,setNewSubText]=useState("");
-  const [sideOpen,setSideOpen]=useState(false);
   const [editing,setEditing]=useState(null); const [editText,setEditText]=useState("");
   const [editingDomain,setEditingDomain]=useState(null);
   const [contactSort,setContactSort]=useState("category"); const [contactFilter,setContactFilter]=useState("all");
@@ -2504,10 +2602,6 @@ export default function App() {
   const addPlanStep=(planIdx)=>{setData(p=>{const plans=[...(p.emergencyPlans||getPlans())];plans[planIdx]={...plans[planIdx],steps:[...plans[planIdx].steps,""]};return{...p,emergencyPlans:plans}})};
   const removePlanStep=(planIdx,stepIdx)=>{setData(p=>{const plans=[...(p.emergencyPlans||getPlans())];plans[planIdx]={...plans[planIdx],steps:plans[planIdx].steps.filter((_,i)=>i!==stepIdx)};return{...p,emergencyPlans:plans}})};
 
-  /* ── legacy weekly shift grid ── */
-  const getShift=(day,slot)=>(data.shifts||{})[`${day}|${slot}`]||"";
-  const setShift=(day,slot,name)=>{setData(p=>({...p,shifts:{...(p.shifts||{}),  [`${day}|${slot}`]:name}}))};
-
   /* ── care schedule (rich shifts) ── */
   const myDeviceId=()=>(data.settings&&data.settings.deviceId)||"";
   // Merge wrapper: after merging, advance the local HLC past any remote shift stamps so causal order
@@ -3030,7 +3124,7 @@ export default function App() {
   const navHub=(hub)=>{setCurrentHub(hub);setView(hub+"-hub");setNavStack([]);setExpanded({})};
   const navBack=()=>{if(navStack.length>0){const prev=navStack[navStack.length-1];setNavStack(p=>p.slice(0,-1));setView(prev.view);setCurrentHub(prev.hub)}else{navHub(currentHub)}};
   const isHubView=view.endsWith("-hub");
-  const getViewTitle=()=>{const t={"today-hub":"Today","care-hub":"Care plan","records-hub":"Records","team-hub":"Team",physical:"Physical health",cognitive:"Cognitive health",wellness:"Wellness",legal:"Legal safety",financial:"Financial security",incidents:"Incidents",medadmin:"Medication admin",expenses:"Expenses",calendar:"Calendar",contacts:"Contacts",documents:"Documents",shifts:"Shifts",triggers:"Escalation triggers",tracking:"Tracking",visit:"Visit prep",emergency:"Emergency plans",postdeath:"After death",messages:"Messages",sync:"Sync",selfreport:"Self-report",settings:"Settings",help:"Help",overview:"Overview",handoff:"Shift Handoff","emergency-card":"Emergency Card","caregiver-wellness":"Caregiver Check-in","incident-patterns":"Incident Patterns",capacity:"Capacity Observations",binder:"Care Plan Binder","poa-decisions":"POA Decisions",schedule:"Care Schedule",availability:"My Availability"};return t[view]||"Care Guardian"};
+  const getViewTitle=()=>{const t={"today-hub":"Today","care-hub":"Care plan","records-hub":"Records","team-hub":"Team",physical:"Physical health",cognitive:"Cognitive health",wellness:"Wellness",legal:"Legal safety",financial:"Financial security",incidents:"Incidents",medadmin:"Medication admin",expenses:"Expenses",calendar:"Calendar",contacts:"Contacts",documents:"Documents",triggers:"Escalation triggers",tracking:"Tracking",visit:"Visit prep",emergency:"Emergency plans",postdeath:"After death",messages:"Messages",sync:"Sync",selfreport:"Self-report",settings:"Settings",help:"Help",overview:"Overview",handoff:"Shift Handoff","emergency-card":"Emergency Card","caregiver-wellness":"Caregiver Check-in","incident-patterns":"Incident Patterns",capacity:"Capacity Observations",binder:"Care Plan Binder","poa-decisions":"POA Decisions",schedule:"Care Schedule",availability:"My Availability"};return t[view]||"Care Guardian"};
   const getBreadcrumb=()=>{const h={today:"Today",care:"Care plan",records:"Records",team:"Team"};if(isHubView)return null;return h[currentHub]||null};
 
   // Universal search
@@ -3043,11 +3137,10 @@ export default function App() {
     {label:"Contacts",hub:"records",view:"contacts",icon:"☷",keywords:"contact phone email doctor nurse lawyer provider"},
     {label:"Calendar",hub:"records",view:"calendar",icon:"▦",keywords:"calendar appointment schedule date"},
     {label:"Care Schedule",hub:"records",view:"schedule",icon:"🗓",keywords:"schedule shift open swap claim visit clock availability roster assignment"},
-    {label:"Shifts",hub:"records",view:"shifts",icon:"👥",keywords:"shift schedule caregiver aide worker weekly grid"},
     {label:"Messages",hub:"team",view:"messages",icon:"✉",keywords:"message chat text communication team"},
     {label:"Self-Reports",hub:"team",view:"selfreport",icon:"🗣",keywords:"self report mood pain sleep voice concern"},
     {label:"Sync",hub:"team",view:"sync",icon:"📡",keywords:"sync backup export import cloud server team invite"},
-    {label:"Settings",hub:"team",view:"settings",icon:"⚙",keywords:"settings passcode password state region tab order device"},
+    {label:"Settings",hub:"team",view:"settings",icon:"⚙",keywords:"settings passcode password state region device"},
     {label:"Help",hub:"team",view:"help",icon:"?",keywords:"help guide how to feature"},
     {label:"Physical Health",hub:"care",view:"physical",icon:"♥",keywords:"physical health mobility fall nutrition dental vision sleep"},
     {label:"Cognitive Health",hub:"care",view:"cognitive",icon:"◐",keywords:"cognitive memory assessment routine behavior orientation"},
@@ -3607,152 +3700,11 @@ export default function App() {
     </div></div>
   </>);
 
-  /* ══════════ MODALS ══════════ */
-  const ContactFormUI=()=>{const[f,setF]=useState({...contactForm.contact,customFields:[...(contactForm.contact.customFields||[])]});const[nfl,setNfl]=useState("");const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
-    <div className="cf-overlay" onClick={()=>setContactForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()}>
-      <h2 className="cf-title">{contactForm.mode==="edit"?"Edit Contact":"Add Contact"}</h2>
-      <div className="cf-grid">
-        <label className="cf-label">Name *<input value={f.name} onChange={e=>upd("name",e.target.value)} className="cf-input"/></label>
-        <label className="cf-label">Role / Title<input value={f.role} onChange={e=>upd("role",e.target.value)} className="cf-input"/></label>
-        <label className="cf-label">Organization<input value={f.org} onChange={e=>upd("org",e.target.value)} className="cf-input"/></label>
-        <label className="cf-label">Category<select value={f.category} onChange={e=>upd("category",e.target.value)} className="cf-input">{CONTACT_CATS.map(c=><option key={c.key} value={c.key}>{c.icon} {c.label}</option>)}</select></label>
-        <label className="cf-label">Phone<input value={f.phone} onChange={e=>upd("phone",e.target.value)} className="cf-input" type="tel"/></label>
-        <label className="cf-label">Email<input value={f.email} onChange={e=>upd("email",e.target.value)} className="cf-input" type="email"/></label>
-      </div>
-      {f.customFields.length>0&&<div className="cf-custom-section"><h4 className="cf-custom-title">Custom Fields</h4>
-        {f.customFields.map((cf,i)=>(<div key={i} className="cf-custom-row"><input value={cf.label} onChange={e=>{const c=[...f.customFields];c[i]={...c[i],label:e.target.value};setF(p=>({...p,customFields:c}))}} className="cf-input cf-custom-label" placeholder="Field name"/><input value={cf.value} onChange={e=>{const c=[...f.customFields];c[i]={...c[i],value:e.target.value};setF(p=>({...p,customFields:c}))}} className="cf-input cf-custom-value" placeholder="Value"/><button onClick={()=>setF(p=>({...p,customFields:p.customFields.filter((_,j)=>j!==i)}))} className="remove-sub">×</button></div>))}
-      </div>}
-      <div className="cf-add-field-row"><input value={nfl} onChange={e=>setNfl(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&nfl.trim()){setF(p=>({...p,customFields:[...p.customFields,{label:nfl.trim(),value:""}]}));setNfl("")}}} className="cf-input" placeholder="New field name" style={{flex:1}}/><button onClick={()=>{if(nfl.trim()){setF(p=>({...p,customFields:[...p.customFields,{label:nfl.trim(),value:""}]}));setNfl("")}}} className="add-sub-btn">+ Field</button></div>
-      <div className="cf-actions"><button disabled={!f.name.trim()} onClick={()=>saveContact(f,contactForm.id)} className="save-btn" style={{opacity:f.name.trim()?1:.4}}>{contactForm.mode==="edit"?"Save":"Add Contact"}</button><button onClick={()=>setContactForm(null)} className="cancel-btn">Cancel</button></div>
-    </div></div>)};
-
-  const ApptFormUI=()=>{const[f,setF]=useState(apptForm.appt);const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
-    <div className="cf-overlay" onClick={()=>setApptForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
-      <h2 className="cf-title">{apptForm.mode==="edit"?"Edit Appointment":"Add Appointment"}</h2>
-      <label className="cf-label" style={{marginBottom:12}}>Title *<input value={f.title} onChange={e=>upd("title",e.target.value)} className="cf-input" placeholder="Dr. visit, Lab work, etc."/></label>
-      <div className="cf-grid">
-        <label className="cf-label">Date<input type="date" value={f.date} onChange={e=>upd("date",e.target.value)} className="cf-input"/></label>
-        <label className="cf-label">Time<input type="time" value={f.time} onChange={e=>upd("time",e.target.value)} className="cf-input"/></label>
-      </div>
-      <label className="cf-label" style={{marginTop:12,marginBottom:12}}>Notes<textarea value={f.notes} onChange={e=>upd("notes",e.target.value)} className="notes-ta" rows={2}/></label>
-      <div className="cf-actions">
-        <button disabled={!f.title.trim()||!f.date} onClick={()=>saveAppt(f,apptForm.id)} className="save-btn" style={{opacity:f.title.trim()&&f.date?1:.4}}>Save</button>
-        {apptForm.mode==="edit"&&<button onClick={()=>deleteAppt(apptForm.id)} className="cd-delete-btn">Delete</button>}
-        <button onClick={()=>setApptForm(null)} className="cancel-btn">Cancel</button>
-      </div>
-    </div></div>)};
-
-  const DomainEditModal=()=>{const[l,setL]=useState(editingDomain.label);const[d,setD]=useState(editingDomain.desc);
-    const doSave=()=>{if(!l.trim())return;setData(p=>addLog({...p,domainOverrides:{...(p.domainOverrides||{}),[editingDomain.key]:{label:l.trim(),desc:d.trim()}}},editingDomain.key,`Renamed to "${l.trim()}"`));setEditingDomain(null)};
-    return(<div className="cf-overlay" onClick={()=>setEditingDomain(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
-      <h2 className="cf-title">Edit Category</h2>
-      <label className="cf-label" style={{marginBottom:14}}>Name<input value={l} onChange={e=>setL(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doSave()} className="cf-input"/></label>
-      <label className="cf-label" style={{marginBottom:20}}>Description<textarea value={d} onChange={e=>setD(e.target.value)} className="notes-ta" rows={2}/></label>
-      <div className="cf-actions"><button disabled={!l.trim()} onClick={doSave} className="save-btn">Save</button><button onClick={()=>setEditingDomain(null)} className="cancel-btn">Cancel</button></div>
-    </div></div>)};
-
-  const IncidentFormUI=()=>{const[f,setF]=useState(incidentForm.incident);const[incPhotos,setIncPhotos]=useState(incidentForm.incident.photos||[]);const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
-    <div className="cf-overlay" onClick={()=>setIncidentForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()}>
-      <h2 className="cf-title">{incidentForm.mode==="edit"?"Edit Incident":"Log Incident"}</h2>
-      <div className="cf-grid">
-        <label className="cf-label">Type<select value={f.type} onChange={e=>upd("type",e.target.value)} className="cf-input">{INCIDENT_TYPES.map(t=><option key={t.key} value={t.key}>{t.icon} {t.label}</option>)}</select></label>
-        <label className="cf-label">Severity<select value={f.severity} onChange={e=>upd("severity",e.target.value)} className="cf-input">{SEVERITY_LEVELS.map(s=><option key={s.key} value={s.key}>{s.label}</option>)}</select></label>
-        <label className="cf-label">Date<input type="date" value={f.date} onChange={e=>upd("date",e.target.value)} className="cf-input"/></label>
-        <label className="cf-label">Time<input type="time" value={f.time} onChange={e=>upd("time",e.target.value)} className="cf-input"/></label>
-      </div>
-      <label className="cf-label" style={{marginBottom:10}}>What happened<textarea value={f.description} onChange={e=>upd("description",e.target.value)} className="notes-ta" rows={3} placeholder="Describe the incident…"/></label>
-      <label className="cf-label" style={{marginBottom:10}}>Response / Action taken<textarea value={f.response} onChange={e=>upd("response",e.target.value)} className="notes-ta" rows={2} placeholder="What was done in response?"/></label>
-      <div className="cf-grid">
-        <label className="cf-label">Injuries (if any)<input value={f.injuries} onChange={e=>upd("injuries",e.target.value)} className="cf-input" placeholder="None, bruise, laceration…"/></label>
-        <label className="cf-label">Provider notified<input value={f.providerNotified} onChange={e=>upd("providerNotified",e.target.value)} className="cf-input" placeholder="Dr. name, 911, none…"/></label>
-      </div>
-      <label className="cf-label">Photos</label>
-      <div className="photo-attach-row">
-        <button onClick={()=>incidentPhotoRef.current&&incidentPhotoRef.current.click()} type="button" className="edit-btn" style={{marginTop:0,fontSize:12}}>📷 Add photo{incPhotos.length>0?" ("+incPhotos.length+")":""}</button>
-        <input ref={incidentPhotoRef} type="file" accept="image/*" capture="environment" multiple style={{display:"none"}} onChange={e=>handlePhotoCapture(e,setIncPhotos)}/>
-        {incPhotos.length>0&&<button onClick={()=>setIncPhotos([])} type="button" className="cancel-btn" style={{fontSize:11,padding:"4px 10px"}}>Clear</button>}
-      </div>
-      {incPhotos.length>0&&<div className="photo-preview-row" style={{marginBottom:8}}>{incPhotos.map((p,i)=>(<div key={i} className="photo-thumb"><img src={p} alt={"Photo "+(i+1)}/><button onClick={()=>setIncPhotos(prev=>prev.filter((_,j)=>j!==i))} className="photo-remove">×</button></div>))}</div>}
-      <div className="cf-actions" style={{marginTop:12}}>
-        <button disabled={!f.description.trim()} onClick={()=>{f.photos=incPhotos;saveIncident(f,incidentForm.id)}} className="save-btn" style={{opacity:f.description.trim()?1:.4}}>Save</button>
-        {incidentForm.mode==="edit"&&<button onClick={()=>deleteIncident(incidentForm.id)} className="cd-delete-btn">Delete</button>}
-        <button onClick={()=>setIncidentForm(null)} className="cancel-btn">Cancel</button>
-      </div>
-    </div></div>)};
-
-  const ExpenseFormUI=()=>{const[f,setF]=useState(expenseForm.expense);const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
-    <div className="cf-overlay" onClick={()=>setExpenseForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
-      <h2 className="cf-title">{expenseForm.mode==="edit"?"Edit Expense":"Add Expense"}</h2>
-      <div className="cf-grid">
-        <label className="cf-label">Date<input type="date" value={f.date} onChange={e=>upd("date",e.target.value)} className="cf-input"/></label>
-        <label className="cf-label">Amount ($)<input type="number" step="0.01" min="0" value={f.amount} onChange={e=>upd("amount",e.target.value)} className="cf-input" placeholder="0.00"/></label>
-      </div>
-      <label className="cf-label" style={{marginBottom:10}}>Category<select value={f.category} onChange={e=>upd("category",e.target.value)} className="cf-input">{EXPENSE_CATS.map(c=><option key={c.key} value={c.key}>{c.label}</option>)}</select></label>
-      <label className="cf-label" style={{marginBottom:10}}>Description<input value={f.description} onChange={e=>upd("description",e.target.value)} className="cf-input" placeholder="Pharmacy copay, aide hours, etc."/></label>
-      <label className="cf-label" style={{marginBottom:10}}>Payee / Vendor<input value={f.payee} onChange={e=>upd("payee",e.target.value)} className="cf-input" placeholder="Walgreens, Home Instead, etc."/></label>
-      <label className="cf-label" style={{marginBottom:10}}>Receipt / Reference<input value={f.receipt} onChange={e=>upd("receipt",e.target.value)} className="cf-input" placeholder="Receipt #, check #, confirmation…"/></label>
-      <div className="cf-actions">
-        <button disabled={!f.amount||!f.date} onClick={()=>saveExpense(f,expenseForm.id)} className="save-btn" style={{opacity:f.amount&&f.date?1:.4}}>Save</button>
-        {expenseForm.mode==="edit"&&<button onClick={()=>deleteExpense(expenseForm.id)} className="cd-delete-btn">Delete</button>}
-        <button onClick={()=>setExpenseForm(null)} className="cancel-btn">Cancel</button>
-      </div>
-    </div></div>)};
-
-  const MedFormUI=()=>{const[f,setF]=useState(medForm.med);const toggleSlot=(s)=>setF(p=>({...p,timeSlots:p.timeSlots.includes(s)?p.timeSlots.filter(x=>x!==s):[...p.timeSlots,s]}));return(
-    <div className="cf-overlay" onClick={()=>setMedForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
-      <h2 className="cf-title">{medForm.mode==="edit"?"Edit Medication":"Add Medication to Schedule"}</h2>
-      <label className="cf-label" style={{marginBottom:10}}>Medication Name<input value={f.name} onChange={e=>setF(p=>({...p,name:e.target.value}))} className="cf-input" placeholder="Donepezil"/></label>
-      <label className="cf-label" style={{marginBottom:10}}>Dosage<input value={f.dosage} onChange={e=>setF(p=>({...p,dosage:e.target.value}))} className="cf-input" placeholder="10 mg"/></label>
-      <label className="cf-label" style={{marginBottom:10}}>Time Slots</label>
-      <div className="med-slot-row">{MED_TIME_SLOTS.map(s=>(<button key={s} onClick={()=>toggleSlot(s)} className={`cc-btn ${f.timeSlots.includes(s)?"cc-active":""}`}>{s}</button>))}</div>
-      <label className="cf-label" style={{marginTop:12,marginBottom:10}}>Notes<input value={f.notes||""} onChange={e=>setF(p=>({...p,notes:e.target.value}))} className="cf-input" placeholder="Take with food, etc."/></label>
-      <div className="cf-actions" style={{marginTop:8}}>
-        <button disabled={!f.name.trim()||!f.timeSlots.length} onClick={()=>medForm.mode==="edit"?editMedInSchedule(f,medForm.id):addMedToSchedule(f)} className="save-btn" style={{opacity:f.name.trim()&&f.timeSlots.length?1:.4}}>Save</button>
-        {medForm.mode==="edit"&&<button onClick={()=>{removeMedFromSchedule(medForm.id);setMedForm(null)}} className="cd-delete-btn">Remove</button>}
-        <button onClick={()=>setMedForm(null)} className="cancel-btn">Cancel</button>
-      </div>
-    </div></div>)};
-
-  const CreateTeamForm=()=>{const[tn,setTn]=useState("");const[cn,setCn]=useState("");const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[mr,setMr]=useState("Primary Caregiver");return(
-    <div className="team-form">
-      <h4 className="sync-sub-title">Create Your Care Team</h4>
-      <label className="cf-label">Team name<input value={tn} onChange={e=>setTn(e.target.value)} className="cf-input" placeholder="e.g., Mom's Care Team"/></label>
-      <label className="cf-label">Who are you caring for?<input value={cn} onChange={e=>setCn(e.target.value)} className="cf-input" placeholder="e.g., Margaret Johnson"/></label>
-      <label className="cf-label">Your name<input value={mn} onChange={e=>setMn(e.target.value)} className="cf-input" placeholder="e.g., David"/></label>
-      <label className="cf-label">Your role<input value={mr} onChange={e=>setMr(e.target.value)} className="cf-input" placeholder="e.g., Primary Caregiver, Daughter, Aide"/></label>
-      <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!tn.trim()||!cn.trim()||!mn.trim()){flash("Please fill in all fields.");return}createTeam(tn,cn,mn,mr)}} className="save-btn">Create Team</button><button onClick={()=>setTeamSetupMode(null)} className="cancel-btn">Cancel</button></div>
-    </div>)};
-  const JoinTeamForm=()=>{const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[mr,setMr]=useState("");const[rk,setRk]=useState("family");return(
-    <div className="team-form">
-      <h4 className="sync-sub-title">Join an Existing Team</h4>
-      <label className="cf-label">Invite code<input value={joinCode} onChange={e=>setJoinCode(e.target.value)} className="cf-input" placeholder="Paste the code from your team member" style={{fontFamily:"monospace",fontSize:12}}/></label>
-      {joinCode&&parseInviteCode(joinCode)&&<p className="hint" style={{color:"#718355"}}>✓ Team: <strong>{parseInviteCode(joinCode).teamName}</strong> · Caring for: <strong>{parseInviteCode(joinCode).clientName}</strong></p>}
-      <label className="cf-label">Your name<input value={mn} onChange={e=>setMn(e.target.value)} className="cf-input" placeholder="e.g., Sarah"/></label>
-      <label className="cf-label">Your role title<input value={mr} onChange={e=>setMr(e.target.value)} className="cf-input" placeholder="e.g., Weekend Caregiver, Son, Home Health Aide"/></label>
-      <label className="cf-label">Access level<select value={rk} onChange={e=>setRk(e.target.value)} className="cf-select">{ROLES.filter(r=>r.key!=="admin"&&!r.key.startsWith("client")).map(r=>(<option key={r.key} value={r.key}>{r.icon} {r.label} — {r.desc}</option>))}</select></label>
-      <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!joinCode.trim()||!mn.trim()){flash("Please enter the invite code and your name.");return}joinTeamFromCode(joinCode,mn,mr,rk)}} className="save-btn">Join Team</button><button onClick={()=>{setTeamSetupMode(null);setJoinCode("")}} className="cancel-btn">Cancel</button></div>
-    </div>)};
 
   const detailContact=contactDetail?data.contacts.find(c=>c.id===contactDetail):null;
   const detailCat=detailContact?CONTACT_CATS.find(c=>c.key===detailContact.category):null;
 
   /* ══════════ RENDER ══════════ */
-  const TABS=[{key:"overview",icon:"⊞",label:"Overview"},...DOMAINS.map(d=>({key:d.key,icon:d.icon,label:getDomLabel(d.key),color:d.color,pct:getProgress(d.key).pct+"%"})),{key:"incidents",icon:"⚠",label:"Incidents",color:"#b56576",pct:((data.incidents&&data.incidents.length)||0)},{key:"medadmin",icon:"💊",label:"Meds Log",color:"#6d6875"},{key:"expenses",icon:"$",label:"Expenses",color:"#bc6c25"},{key:"calendar",icon:"▦",label:"Calendar",color:"#6d6875"},{key:"contacts",icon:"☷",label:"Contacts",color:"#457b9d"},{key:"documents",icon:"📄",label:"Docs",color:"#b56576"},{key:"selfreport",icon:"🗣",label:"Self Report",color:"#718355"},{key:"emergency",icon:"🚨",label:"Emergency",color:"#8b0000"},{key:"shifts",icon:"👥",label:"Shifts",color:"#457b9d"},{key:"triggers",icon:"📊",label:"Escalation",color:"#bc6c25"},{key:"tracking",icon:"📈",label:"Tracking",color:"#6d6875"},{key:"visit",icon:"📋",label:"Visit Prep",color:"#718355"},{key:"postdeath",icon:"🕊",label:"After Death",color:"#8d99ae"},{key:"messages",icon:"✉",label:"Messages",color:"#718355"},{key:"sync",icon:"📡",label:"Sync",color:"#457b9d"},{key:"help",icon:"?",label:"Help",color:"#8d99ae"},{key:"settings",icon:"⚙",label:"Settings",color:"#8d99ae"}];
-
-  // Ordered tabs: use saved order if it exists, otherwise default
-  const savedOrder=(data.settings&&data.settings.tabOrder);
-  const orderedTabs=(savedOrder&&savedOrder.length)?savedOrder.map(k=>TABS.find(t=>t.key===k)).filter(Boolean).concat(TABS.filter(t=>!savedOrder.includes(t.key))):TABS;
-  const roleTabs=getVisibleTabs();
-  const visibleTabs=orderedTabs.filter(t=>t.key!=="postdeath"&&roleTabs.some(rt=>rt.key===t.key));
-
-  const moveTab=(key,dir)=>{
-    const order=orderedTabs.map(t=>t.key);
-    const idx=order.indexOf(key);if(idx<0)return;
-    const newIdx=idx+dir;if(newIdx<0||newIdx>=order.length)return;
-    [order[idx],order[newIdx]]=[order[newIdx],order[idx]];
-    setData(p=>({...p,settings:{...p.settings,tabOrder:order}}));
-  };
-  const resetTabOrder=()=>{setData(p=>{const s={...p.settings};delete s.tabOrder;return{...p,settings:s}});flash("Tab order reset to default.")};
 
   // First Win — personalize before the dashboard appears (fresh setup only)
   if(authed&&showFirstWin) return(<>
@@ -3818,12 +3770,12 @@ export default function App() {
           </div>):<div className="search-hint">Type at least 2 characters to search</div>})()}
       </div>
     </div>)}
-    {contactForm&&!isClient&&<ContactFormUI/>}
-    {apptForm&&!isClient&&<ApptFormUI/>}
-    {editingDomain&&!isClient&&<DomainEditModal/>}
-    {incidentForm&&!isClient&&<IncidentFormUI/>}
-    {expenseForm&&!isClient&&<ExpenseFormUI/>}
-    {medForm&&!isClient&&<MedFormUI/>}
+    {contactForm&&!isClient&&<ContactFormUI key={"contact-"+(contactForm.id||contactForm.mode)} contactForm={contactForm} setContactForm={setContactForm} saveContact={saveContact}/>}
+    {apptForm&&!isClient&&<ApptFormUI key={"appt-"+(apptForm.id||apptForm.mode)} apptForm={apptForm} setApptForm={setApptForm} saveAppt={saveAppt} deleteAppt={deleteAppt}/>}
+    {editingDomain&&!isClient&&<DomainEditModal key={"domain-"+editingDomain.key} editingDomain={editingDomain} setEditingDomain={setEditingDomain} setData={setData} addLog={addLog}/>}
+    {incidentForm&&!isClient&&<IncidentFormUI key={"incident-"+(incidentForm.id||incidentForm.mode)} incidentForm={incidentForm} setIncidentForm={setIncidentForm} saveIncident={saveIncident} deleteIncident={deleteIncident} incidentPhotoRef={incidentPhotoRef} handlePhotoCapture={handlePhotoCapture}/>}
+    {expenseForm&&!isClient&&<ExpenseFormUI key={"expense-"+(expenseForm.id||expenseForm.mode)} expenseForm={expenseForm} setExpenseForm={setExpenseForm} saveExpense={saveExpense} deleteExpense={deleteExpense}/>}
+    {medForm&&!isClient&&<MedFormUI key={"med-"+(medForm.id||medForm.mode)} medForm={medForm} setMedForm={setMedForm} addMedToSchedule={addMedToSchedule} editMedInSchedule={editMedInSchedule} removeMedFromSchedule={removeMedFromSchedule}/>}
     {/* Merge Preview Modal */}
     {/* MFA enrollment */}
     {mfaEnroll&&(<div className="cf-overlay" onClick={()=>{if(mfaEnroll!=="registering"){setMfaEnroll(null);setMfaEnrollPrepared(null)}}}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
@@ -3884,7 +3836,7 @@ export default function App() {
         <button onClick={applyMerge} className="save-btn" disabled={mergePreview.report.added.length===0&&mergePreview.report.updated.length===0}>Apply Merge</button>
         <button onClick={()=>setMergePreview(null)} className="cancel-btn">Cancel</button>
       </div>
-      <p className="hint" style={{marginTop:12,fontSize:11.5}}>Merge adds new items and keeps the more recent version of each changed section. Your passcodes, device ID, and tab order are never overwritten.</p>
+      <p className="hint" style={{marginTop:12,fontSize:11.5}}>Merge adds new items and keeps the more recent version of each changed section. Your passcodes and device ID are never overwritten.</p>
     </div></div>)}
     <input ref={fileRef} type="file" accept=".vcf,.vcard" style={{display:"none"}} onChange={handleImportVCard}/>
     <input ref={importFileRef} type="file" accept=".json" style={{display:"none"}} onChange={handleEncryptedImport}/>
@@ -3972,7 +3924,6 @@ export default function App() {
             {can("view-contacts")&&<div className="hub-card" onClick={()=>nav("contacts")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>☷</span></div><div className="hub-card-body"><div className="hub-card-title">Contacts <span className="pill pill-b">{(data.contacts||[]).length}</span></div><div className="hub-card-sub">Medical, legal, family</div></div><span className="hub-card-arr">›</span></div>}
             <div className="hub-card" onClick={()=>nav("calendar")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>▦</span></div><div className="hub-card-body"><div className="hub-card-title">Calendar</div><div className="hub-card-sub">Month view · Appointments</div></div><span className="hub-card-arr">›</span></div>
             {can("view-shifts")&&<div className="hub-card" onClick={()=>nav("schedule")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🗓</span></div><div className="hub-card-body"><div className="hub-card-title">Care schedule <span className="pill pill-b">{(data.careShifts||[]).filter(s=>new Date(s.date)>=new Date(new Date().toDateString())).length}</span></div><div className="hub-card-sub">Shifts, open shifts, swaps, visit logging</div></div><span className="hub-card-arr">›</span></div>}
-            {can("view-shifts")&&<div className="hub-card" onClick={()=>nav("shifts")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>👥</span></div><div className="hub-card-body"><div className="hub-card-title">Weekly grid</div><div className="hub-card-sub">Simple recurring shift pattern</div></div><span className="hub-card-arr">›</span></div>}
           </>)}
 
           {/* ═══ TEAM HUB ═══ */}
@@ -4473,24 +4424,6 @@ export default function App() {
               </div>)})}</div>
           </>)}
 
-          {/* ═══ CAREGIVER SHIFTS ═══ */}
-          {view==="shifts"&&(<>
-            <h1 className="page-title">👥 Caregiver Shift Schedule</h1>
-            <p className="page-sub">Weekly coverage grid. Tap any cell to assign a caregiver. Ensure no gaps — especially evenings and overnights.</p>
-            <div className="doc-table-wrap"><table className="doc-table shift-table">
-              <thead><tr><th></th>{SHIFT_DAYS.map(d=><th key={d}>{d}</th>)}</tr></thead>
-              <tbody>{SHIFT_SLOTS.map(slot=>(<tr key={slot}>
-                <td className="shift-slot-label">{slot}</td>
-                {SHIFT_DAYS.map(day=>{const val=getShift(day,slot);const empty=!val.trim();return(
-                  <td key={day} className={`shift-cell ${empty?"shift-empty":""}`}>
-                    {isClient?<span className="shift-name">{val||"—"}</span>:
-                      <input value={val} onChange={e=>setShift(day,slot,e.target.value)} className="shift-input" placeholder="—"/>}
-                  </td>)})}
-              </tr>))}</tbody>
-            </table></div>
-            <p className="hint" style={{marginTop:12}}>Tip: Use consistent names (e.g., "Sarah", "Home Health Aide", "David"). Empty cells indicate uncovered time.</p>
-          </>)}
-
           {/* ═══ CARE ESCALATION TRIGGERS ═══ */}
           {view==="triggers"&&(<>
             <h1 className="page-title">📊 Care Escalation Triggers</h1>
@@ -4571,7 +4504,7 @@ export default function App() {
               {t:"After Death Checklist",b:"Oregon-specific administrative steps organized by timeframe: immediate (24–48 hours), first week, first month, and months 2–6. Includes Social Security notification, Oregon Medicaid/OSIPM termination, estate recovery under ORS 416.350, probate filing (ORS 113.035), and more. This checklist exists so you don't have to figure this out while grieving."},
               {t:"Team Sync",b:"One-button sync for your care team. Two connection methods: Cloud Folder (save sync file in shared Google Drive/Dropbox/iCloud/OneDrive — each team member selects same file) or Self-Hosted Server (deploy sync-server.js on your own hardware, enter the URL). Both use the same Sync Now button. Room IDs are derived from your sync passcode via SHA-256 so the server never sees it. Daily use: tap Sync Now at the start and end of each session. Manual options (clipboard, file, URL) are under Advanced."},
               {t:"Messages",b:"A local message board for family care coordination. Enter your name and type a message. Messages sync across devices via the encrypted backup/import cycle in Settings. Read-only in client mode."},
-              {t:"Settings & Security",b:"Set your device name so team members know whose backup is whose. Change caregiver and client passcodes. Customize tab order. Export an encrypted backup (AES-256-GCM) and share it with your care team via text, Signal, AirDrop, or a shared Drive folder. When a team member imports your backup, the merge engine adds new items and keeps the most recent version of each changed section. Passcodes, device ID, and tab order are never overwritten during merge. Import FHIR R4 health record bundles. View data inventory and sync status."},
+              {t:"Settings & Security",b:"Set your device name so team members know whose backup is whose. Change caregiver and client passcodes. Export an encrypted backup (AES-256-GCM) and share it with your care team via text, Signal, AirDrop, or a shared Drive folder. When a team member imports your backup, the merge engine adds new items and keeps the most recent version of each changed section. Passcodes and device ID are never overwritten during merge. Import FHIR R4 health record bundles. View data inventory and sync status."},
               {t:"Privacy",b:"All data is stored on this device and encrypted at rest with AES-256-GCM. Nothing is transmitted to any server, and there is no analytics, tracking, or telemetry. Keys are derived from your passcodes using PBKDF2-HMAC-SHA256 at 600,000 iterations (OWASP-recommended), with older vaults upgraded automatically. Fonts and the PDF text-extraction engine are bundled into the app, so even the document scanner runs entirely offline with no external requests. The encryption passcode for backups is chosen by you and never stored; if it is lost, the backup cannot be recovered."},
             ].map((h,i)=>(<div key={i} id={"help-"+i} className="help-section"><h3 className="sec-title">{h.t}</h3><p className="help-body">{h.b}</p></div>))}
           </>)}
@@ -4654,8 +4587,8 @@ export default function App() {
                   <div className="sync-method-card" onClick={()=>setTeamSetupMode("create")}><div className="sync-method-icon">✦</div><div className="sync-method-info"><strong>Create a Team</strong><span>You're the first caregiver setting this up</span></div></div>
                   <div className="sync-method-card" onClick={()=>setTeamSetupMode("join")}><div className="sync-method-icon">🔗</div><div className="sync-method-info"><strong>Join a Team</strong><span>Someone shared an invite code with you</span></div></div>
                 </div>)}
-                {teamSetupMode==="create"&&<CreateTeamForm/>}
-                {teamSetupMode==="join"&&<JoinTeamForm/>}
+                {teamSetupMode==="create"&&<CreateTeamForm data={data} flash={flash} createTeam={createTeam} setTeamSetupMode={setTeamSetupMode}/>}
+                {teamSetupMode==="join"&&<JoinTeamForm data={data} joinCode={joinCode} setJoinCode={setJoinCode} parseInviteCode={parseInviteCode} flash={flash} joinTeamFromCode={joinTeamFromCode} setTeamSetupMode={setTeamSetupMode}/>}
               </>):(<>
                 {/* Team is set up — show roster */}
                 <div className="team-header">
@@ -4853,21 +4786,7 @@ export default function App() {
                 </div>
                 <button onClick={updatePasscodes} className="save-btn" style={{marginTop:12}}>Update Passcodes</button>
               </div>
-              }<div className="section"><h3 className="sec-title">Tab Order</h3>
-                <p className="hint">Rearrange navigation tabs using the ↑ ↓ buttons. Both the tab bar and sidebar follow this order.</p>
-                <div className="tab-order-list">
-                  {orderedTabs.map((t,i)=>(<div key={t.key} className="tab-order-item">
-                    <span className="tab-order-icon" style={{color:t.color||"#8d99ae"}}>{t.icon}</span>
-                    <span className="tab-order-label">{t.label}</span>
-                    <div className="tab-order-btns">
-                      <button onClick={()=>moveTab(t.key,-1)} disabled={i===0} className="tab-order-btn" title="Move up">↑</button>
-                      <button onClick={()=>moveTab(t.key,1)} disabled={i===orderedTabs.length-1} className="tab-order-btn" title="Move down">↓</button>
-                    </div>
-                  </div>))}
-                </div>
-                <button onClick={resetTabOrder} className="edit-btn" style={{marginTop:8}}>Reset to Default Order</button>
-              </div>
-              <div className="section"><h3 className="sec-title">📡 Device Identity & Sync</h3>
+              }<div className="section"><h3 className="sec-title">📡 Device Identity & Sync</h3>
                 <p className="hint">Each device has a unique ID used during sync. Set a name so team members know whose backup is whose.</p>
                 <div className="cf-grid" style={{maxWidth:400}}>
                   <label className="cf-label">Device name<input value={(data.settings&&data.settings.deviceName)||""} onChange={e=>setData(p=>({...p,settings:{...p.settings,deviceName:e.target.value}}))} className="cf-input" placeholder="e.g., David's phone, Sarah's laptop"/></label>
@@ -5301,19 +5220,7 @@ const CSS=`
 .shell{display:flex;min-height:100vh;font-family:'Source Sans 3',sans-serif;color:#3d3730;background:#f6f4f0;color-scheme:light dark}
 button,input,select,textarea{color:inherit;font-family:inherit}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.25);z-index:90}
-.sidebar{width:260px;background:#fff;border-right:1px solid #e8e4de;display:flex;flex-direction:column;padding:0 0 16px;position:fixed;top:0;left:0;bottom:0;z-index:100;overflow-y:auto;transition:transform .25s ease;transform:translateX(-100%)}
-.sidebar-open{transform:translateX(0)!important}
-.side-header{display:flex;align-items:center;gap:10px;padding:20px 20px 16px;border-bottom:1px solid #ede8df}
-.side-header-text{font-family:'Libre Baskerville',serif;font-weight:700;font-size:16px;color:#3d3730}
-.side-item{display:flex;align-items:center;gap:10px;padding:11px 20px;border:none;background:transparent;font-size:14px;color:#6b6560;text-align:left;width:100%;border-left:3px solid transparent;transition:background .12s}
-.side-item:hover{background:#f6f4f0}.side-active{background:#f6f4f0!important;color:#3d3730;font-weight:600;border-left-color:#6d6875}
-.side-icon{font-size:21px;width:29px;text-align:center;flex-shrink:0}.side-badge{font-size:11px;font-weight:700;padding:2px 7px;border-radius:10px;background:#eef0f3;color:#8d99ae}
-.side-lock{margin:8px 16px 0;padding:10px;border:1px solid #e5e1db;border-radius:8px;background:transparent;font-size:13px;color:#6b6560}
 .client-badge{font-size:11px;font-weight:600;background:#fdf0d5;color:#bc6c25;padding:2px 8px;border-radius:8px;white-space:nowrap}
-.top-bar{display:flex;align-items:center;gap:12px;padding:14px 24px;border-bottom:1px solid #e8e4de;background:rgba(255,255,255,.85);backdrop-filter:blur(8px);position:sticky;top:0;z-index:50}
-.hamburger{background:none;border:none;font-size:22px;color:#6b6560;padding:4px 8px;display:block}
-.breadcrumbs{display:flex;align-items:center;gap:8px;flex:1}.crumb{background:none;border:none;font-size:13.5px;color:#8d99ae;padding:0;text-decoration:underline;text-underline-offset:3px}
-.crumb-sep{color:#c5c0b8;font-size:14px}.crumb-current{font-size:13.5px;font-weight:600}.top-lock{background:none;border:none;font-size:16px;opacity:.5}
 
 /* universal search */
 .search-btn{background:none;border:none;font-size:16px;cursor:pointer;padding:4px 8px;color:#8d99ae}
@@ -5336,7 +5243,7 @@ button,input,select,textarea{color:inherit;font-family:inherit}
 .search-result-arrow{color:#c5c0b8;font-size:16px;flex-shrink:0;margin-left:4px}
 .search-empty{padding:24px 16px;text-align:center;color:#8d99ae;font-size:13px}
 .search-hint{padding:24px 16px;text-align:center;color:#c5c0b8;font-size:13px}
-.main-area{flex:1;margin-left:0;display:flex;flex-direction:column;min-height:100vh}.content{flex:1;padding:28px 32px 40px;max-width:960px}
+.content{flex:1;padding:28px 32px 40px;max-width:960px}
 
 /* hub navigation v2 */
 .main-area-v2{flex:1;min-height:100vh;display:flex;flex-direction:column}
@@ -5539,20 +5446,6 @@ button,input,select,textarea{color:inherit;font-family:inherit}
 .notes-display{font-size:14px;color:#6b6560;line-height:1.6;background:#fff;padding:13px 16px;border-radius:10px;border:1px solid #e5e1db;white-space:pre-wrap}
 .last-up{font-size:12px;color:#b5b0a8;font-style:italic;margin-top:16px}
 .app-footer{text-align:center;font-size:12.5px;color:#a09a92;padding:18px 24px;border-top:1px solid #e8e4de;margin-top:auto}
-.tab-bar{display:flex;flex-wrap:wrap;gap:0;border-bottom:2px solid #e8e4de;background:#fff;padding:0 4px}
-.tab-item{display:flex;flex-direction:column;align-items:center;gap:1px;padding:6px 8px 5px;border:none;background:transparent;font-size:11px;color:#8d99ae;white-space:nowrap;border-bottom:3px solid transparent;transition:all .15s}
-.tab-item:hover{color:#3d3730;background:#faf9f7}.tab-active{color:#3d3730!important;font-weight:600;border-bottom-color:#6d6875}
-.tab-icon{font-size:20px;line-height:1}.tab-label{font-size:10px;line-height:1.2}
-
-/* tab order editor */
-.tab-order-list{display:flex;flex-direction:column;gap:4px;max-width:400px}
-.tab-order-item{display:flex;align-items:center;gap:10px;padding:8px 12px;background:#fff;border:1px solid #e8e4de;border-radius:8px}
-.tab-order-icon{font-size:21px;width:29px;text-align:center;flex-shrink:0}
-.tab-order-label{flex:1;font-size:13.5px;font-weight:500;color:#3d3730}
-.tab-order-btns{display:flex;gap:2px}
-.tab-order-btn{width:28px;height:28px;border:1px solid #e5e1db;border-radius:6px;background:#faf9f7;font-size:14px;color:#6b6560;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .12s}
-.tab-order-btn:hover:not(:disabled){background:#e8f0df;border-color:#718355;color:#718355}
-.tab-order-btn:disabled{opacity:.3;cursor:default}
 .pn-row{display:flex;justify-content:space-between;gap:12px;margin-top:36px;padding-top:24px;border-top:1px solid #e8e4de}
 .pn-btn{display:flex;flex-direction:column;gap:2px;padding:14px 18px;border:1px solid #e5e1db;border-radius:12px;background:#fff;text-align:left;min-width:100px;transition:all .15s}
 .pn-btn:hover{background:#faf9f7;box-shadow:0 2px 8px rgba(0,0,0,.05)}
@@ -5697,14 +5590,6 @@ select.cf-input{background:#fff}.cf-actions{display:flex;gap:8px;margin-top:4px}
 .emergency-step-input{flex:1;padding:6px 10px;border:1px solid transparent;border-radius:6px;font-size:13.5px;outline:none;background:transparent;color:#3d3730}
 .emergency-step-input:hover{border-color:#e5e1db}.emergency-step-input:focus{border-color:#8b0000;background:#fff}
 
-/* shifts */
-.shift-table td,.shift-table th{text-align:center;padding:6px 4px;font-size:13px}
-.shift-slot-label{text-align:left!important;font-weight:600;font-size:12px;color:#6b6560;white-space:nowrap;min-width:80px}
-.shift-cell{min-width:70px}.shift-empty{background:#fdf0f2!important}
-.shift-input{width:100%;padding:4px 6px;border:1px solid transparent;border-radius:4px;font-size:12.5px;text-align:center;outline:none;background:transparent}
-.shift-input:hover{border-color:#e5e1db}.shift-input:focus{border-color:#457b9d;background:#fff}
-.shift-name{font-size:12.5px}
-
 /* triggers */
 .trigger-alert{padding:14px 18px;border-radius:10px;font-size:14px;font-weight:600;margin-bottom:20px}
 .trigger-list{display:flex;flex-direction:column;gap:8px}
@@ -5826,8 +5711,7 @@ select.cf-input{background:#fff}.cf-actions{display:flex;gap:8px;margin-top:4px}
 
 /* print styles for expenses */
 @media print{
-  .sidebar,.tab-bar,.top-bar,.app-footer,.hamburger,.contacts-header-actions,.cc-group,.expense-summary,.contacts-controls,.edit-icon,.remove-sub,.save-btn,.edit-btn,.cancel-btn,.add-sub-trigger,.cf-overlay,.overlay,.import-toast{display:none!important}
-  .main-area{margin-left:0!important}
+  .app-footer,.contacts-header-actions,.cc-group,.expense-summary,.contacts-controls,.edit-icon,.remove-sub,.save-btn,.edit-btn,.cancel-btn,.add-sub-trigger,.cf-overlay,.overlay,.import-toast{display:none!important}
   .content{padding:10px!important;max-width:none!important}
   .shell{display:block!important}
   .doc-table-wrap{border:2px solid #000!important;overflow:visible!important}
@@ -5836,7 +5720,6 @@ select.cf-input{background:#fff}.cf-actions{display:flex;gap:8px;margin-top:4px}
   .page-sub{display:none!important}
 }
 
-@media(min-width:1024px){.sidebar{transform:translateX(0)}.main-area{margin-left:260px!important}.hamburger{display:none!important}.tab-bar{display:none}}
 @media(max-width:480px){.content{padding:16px 12px 28px}.subs-wrap{padding-left:28px}.add-sub-row,.cf-add-field-row,.msg-compose,.settings-row,.doc-table-actions{flex-wrap:wrap}.pn-btn{min-width:0;padding:12px 14px}.domain-pct{font-size:24px}.edit-icon{opacity:.5!important}.cf-grid{grid-template-columns:1fr}.cd-header{flex-direction:column;align-items:flex-start}.cd-info-item{min-width:0}.cf-custom-label{width:100px}.doc-table{font-size:12px}.doc-cell-input{font-size:12px;padding:4px 6px}}
 
 @media(prefers-color-scheme:dark){
@@ -5880,21 +5763,6 @@ body,.app{background:#1a1a1e!important;color:#e0ddd8}
 .auth-input-err{border-color:#b56576}
 .auth-btn{background:#457b9d;color:#fff}
 .auth-footer,.auth-error{color:#a08090}
-
-/* sidebar */
-.sidebar{background:#1e1e22;border-color:#2e2e32}
-.side-header-text{color:#fff}
-.side-nav button{color:#b0aca6}
-.side-nav button:hover,.side-nav button.side-active{background:#2a2a2e;color:#e0ddd8}
-
-/* tab bar */
-.tab-bar{background:#1e1e22;border-color:#2e2e32}
-.tab-btn{color:#807a72}
-.tab-btn.tab-active{color:#e0ddd8}
-
-/* top bar */
-.top-bar{background:#1e1e22;border-color:#2e2e32}
-.hamburger{color:#e0ddd8}
 
 /* headings & text */
 .page-title{color:#fff}
@@ -6030,10 +5898,6 @@ body,.app{background:#1a1a1e!important;color:#e0ddd8}
 
 /* med admin */
 .med-grid-cell{background:#242428;border-color:#3a3a3e;color:#b0aca6}
-
-/* shifts */
-.shift-cell{background:#242428;border-color:#3a3a3e;color:#b0aca6}
-.shift-input{background:#1e1e22;color:#e0ddd8}
 
 /* emergency, triggers */
 .ep-card{background:#242428;border-color:#3a3a3e}

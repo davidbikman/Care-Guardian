@@ -60,7 +60,7 @@ Teams can sync through a shared cloud folder (no server) OR through this optiona
 
 ```bash
 cd sync-server
-docker compose up -d        # starts on port 8787
+docker compose up -d        # starts on port 3000
 ```
 
 Then in the app: Team → Sync → Self-hosted server → enter your relay URL (must be HTTPS).
