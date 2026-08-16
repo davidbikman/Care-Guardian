@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Care Guardian — consent UX (design sketch)</title>
+<style>
+  :root{--sage:#718355;--blue:#457b9d;--cream:#f6f4f0;--ink:#3d3730;--muted:#8d99ae;--amber:#c9962f;--red:#c0594f;--green:#4a7350;}
+  *{box-sizing:border-box;margin:0;-webkit-tap-highlight-color:transparent;}
+  body{background:#ece8e1;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;line-height:1.5;padding:16px;max-width:760px;margin:0 auto;}
+  h1{font-family:Georgia,serif;font-size:21px;margin-bottom:4px;}
+  .lead{color:#6b6560;font-size:14px;margin-bottom:18px;}
+  .lead b{color:var(--ink);}
+  .kick{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:22px 0 9px;}
+  .phone{background:var(--cream);border:1.5px solid #ddd5c7;border-radius:18px;padding:16px;max-width:390px;margin:0 auto 8px;box-shadow:0 1px 3px rgba(0,0,0,.05);}
+  .ptitle{font-family:Georgia,serif;font-size:18px;margin-bottom:2px;}
+  .psub{font-size:12.5px;color:#8a857d;margin-bottom:12px;}
+
+  .who{background:#eef4f8;border:1px solid #d4e3ec;border-radius:11px;padding:11px;margin-bottom:11px;}
+  .who b{font-size:14.5px;}
+  .who .arch{display:inline-block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;background:#457b9d;color:#fff;padding:2px 8px;border-radius:10px;margin-top:4px;}
+  .fp{margin-top:9px;background:#fff;border:1px dashed #b9c9d3;border-radius:8px;padding:8px 10px;}
+  .fp .code{font-family:ui-monospace,Menlo,monospace;font-size:15px;letter-spacing:.08em;color:#2a4d63;font-weight:600;}
+  .fp .q{font-size:11.5px;color:#73706a;margin-top:3px;}
+  .fp .match{margin-top:7px;display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:var(--green);}
+
+  .blk{margin:13px 0;}
+  .blk h4{font-size:12.5px;font-weight:700;color:#5a554e;margin-bottom:7px;display:flex;align-items:center;gap:6px;}
+  .row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #efe9df;font-size:13.5px;}
+  .row:last-child{border-bottom:none;}
+  .tog{width:38px;height:22px;border-radius:12px;background:var(--sage);position:relative;flex-shrink:0;}
+  .tog::after{content:"";position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;top:2px;right:2px;}
+  .tog.off{background:#cfc9bf;}
+  .tog.off::after{right:auto;left:2px;}
+  .excl{background:#f3f6f1;border-left:3px solid var(--sage);border-radius:0 8px 8px 0;padding:9px 12px;}
+  .excl .x{font-size:13px;color:#5a554e;padding:3px 0;display:flex;gap:7px;align-items:flex-start;}
+  .excl .x b{color:var(--ink);}
+
+  .field{display:flex;align-items:center;justify-content:space-between;background:#fff;border:1px solid #e0dccf;border-radius:9px;padding:10px 12px;font-size:13.5px;margin-top:6px;}
+  .field .v{font-weight:600;color:var(--blue);}
+  .plain{font-size:12.5px;color:#6b6560;background:#faf8f4;border-radius:8px;padding:9px 11px;margin-top:10px;line-height:1.5;}
+  .attest{display:flex;gap:9px;align-items:flex-start;font-size:12.5px;color:#5a554e;margin-top:12px;}
+  .chk{width:19px;height:19px;border-radius:5px;border:2px solid var(--sage);background:var(--sage);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;margin-top:1px;}
+  .grant{width:100%;margin-top:14px;background:var(--blue);color:#fff;border:none;border-radius:11px;padding:13px;font-size:15px;font-weight:600;}
+  .cancel{width:100%;margin-top:8px;background:none;border:none;color:#8a857d;font-size:13px;}
+
+  /* indicator */
+  .indicator{display:flex;align-items:center;gap:11px;background:#fffdf6;border:1.5px solid #e6dcc0;border-radius:12px;padding:12px 13px;}
+  .eye{font-size:20px;}
+  .ind-main{flex:1;min-width:0;}
+  .ind-main b{font-size:13.5px;}
+  .ind-main .upd{font-size:11.5px;color:#8a857d;margin-top:1px;}
+  .ind-act{font-size:12.5px;font-weight:600;color:var(--blue);white-space:nowrap;}
+
+  /* revoke */
+  .rev-q{font-family:Georgia,serif;font-size:17px;margin-bottom:8px;}
+  .rev-body{font-size:13.5px;color:#5a554e;line-height:1.55;}
+  .rev-body b{color:var(--ink);}
+  .rev-stop{width:100%;margin-top:14px;background:var(--red);color:#fff;border:none;border-radius:11px;padding:13px;font-size:15px;font-weight:600;}
+  .note{font-size:12.5px;color:#8a857d;margin:10px auto 0;max-width:390px;line-height:1.5;}
+</style>
+</head>
+<body>
+  <h1>Consent UX — care navigator access</h1>
+  <p class="lead">A design sketch for <b>OQ1</b>, not built. Three screens: granting a scoped view, the standing reminder while it's active, and stopping it. Pairs with <b>CONSENT-VISIBILITY-DESIGN.md</b>.</p>
+
+  <div class="kick">1 · Granting a view</div>
+  <div class="phone">
+    <div class="ptitle">Share with a care program</div>
+    <div class="psub">Settings → Share with a care program</div>
+
+    <div class="who">
+      <b>Willamette Vital Health</b> wants to set up a view for <b>Mom</b>.
+      <div class="arch">Care navigator</div>
+      <div class="fp">
+        <div class="code">K7QF · 2M9X</div>
+        <div class="q">Confirm this matches the code on the program's enrollment paperwork.</div>
+        <div class="match">☑ It matches</div>
+      </div>
+    </div>
+
+    <div class="blk">
+      <h4>✓ What they'll see <span style="font-weight:400;color:#9a948b">— tap to turn any off</span></h4>
+      <div class="row"><span>Care-plan status &amp; progress</span><span class="tog"></span></div>
+      <div class="row"><span>Recent incidents</span><span class="tog"></span></div>
+      <div class="row"><span>Medication-adherence summary</span><span class="tog"></span></div>
+      <div class="row"><span>Upcoming appointments</span><span class="tog"></span></div>
+      <div class="row"><span>Concerns you've flagged</span><span class="tog"></span></div>
+      <div class="row"><span>Expenses &amp; financials</span><span class="tog off"></span></div>
+    </div>
+
+    <div class="blk">
+      <h4>🔒 What they will <i>not</i> see</h4>
+      <div class="excl">
+        <div class="x">🚫 <span><b>Mom's private words.</b> Her own self-reports are never shared.</span></div>
+        <div class="x">🚫 <span>Your financial records and expenses.</span></div>
+        <div class="x">🚫 <span>Scanned documents and your full contact list.</span></div>
+      </div>
+    </div>
+
+    <div class="blk">
+      <h4>📅 How long</h4>
+      <div class="field"><span>This view ends on</span><span class="v">Dec 31, 2026 ▾</span></div>
+    </div>
+
+    <div class="plain">This view updates when you sync. The program sees your information <b>as of your last sync — not live</b>. You can stop sharing at any time.</div>
+
+    <div class="attest"><span class="chk">✓</span><span>I'm Mom's authorized caregiver and have the authority to share this.</span></div>
+
+    <button class="grant">Grant care navigator view</button>
+    <button class="cancel">Not now</button>
+  </div>
+  <p class="note">↑ Inclusions and exclusions are both shown — seeing what's withheld matters as much as what's shared. The family can narrow scope (toggle items off) but never widen it beyond the archetype's ceiling. The fingerprint check blocks a swapped-key impersonator.</p>
+
+  <div class="kick">2 · While it's active (always visible — never hidden)</div>
+  <div class="phone" style="padding:14px;">
+    <div class="indicator">
+      <span class="eye">👁</span>
+      <div class="ind-main"><b>Willamette Vital Health</b> has a care navigator view.<div class="upd">Last updated 2 hours ago</div></div>
+      <span class="ind-act">Manage ›</span>
+    </div>
+  </div>
+  <p class="note">↑ A standing row on the Today hub and atop Settings. The family is reminded, not expected to remember. This is the transparency guarantee made permanent.</p>
+
+  <div class="kick">3 · Stopping it (honest about what revocation does)</div>
+  <div class="phone">
+    <div class="rev-q">Stop sharing with Willamette Vital Health?</div>
+    <div class="rev-body">They'll receive <b>no further updates, starting now.</b><br><br>Information they've <b>already seen or saved can't be pulled back</b> — the same as any record you've shared. Stopping prevents anything new from being shared.</div>
+    <button class="rev-stop">Stop sharing</button>
+    <button class="cancel">Keep sharing</button>
+  </div>
+  <p class="note">↑ No false promises. Revocation stops the future and best-effort deletes the latest bundle; it can't retract a cached snapshot, and the screen says so. Every grant, refresh, and revocation lands in the tamper-evident audit log.</p>
+</body>
+</html>

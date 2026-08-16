@@ -1,0 +1,7 @@
+Care Guardian — distribution package
+Built: 2026-08-16 00:41 UTC
+App: src/App.jsx (9592 lines) · Tests: 57 JS + 3 WAL = 60, all green.
+This build: FIX — "Download a copy now" was a no-op (backup key derived only on the returning-user path, never in
+first-run setup; failure reported via a flash() the onboarding screens don't render). Fallback copy no longer
+claims "iPhone" on desktop browsers. New property test covers all onboarding actions reporting outcomes.
+Blocked on David: Google/Dropbox/Microsoft OAuth app registration.

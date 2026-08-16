@@ -349,7 +349,12 @@ const hasWebShare=typeof navigator!=="undefined"&&typeof navigator.share==="func
 // interface. APP keys are public by design; fill DROPBOX_APP_KEY after registering the app (see DEPLOY.md).
 const DROPBOX_APP_KEY=""; // set at deploy time — a Dropbox "scoped app", App Folder access, PKCE (no secret)
 const GOOGLE_CLIENT_ID=""; // a Google Cloud OAuth client (Web application), scope drive.file, access_type=offline
-const GOOGLE_CLIENT_SECRET=""; // Google's token endpoint requires this for "Web application" clients even with PKCE; it is NOT truly secret for a SPA (see DEPLOY.md). Leave blank if your client type doesn't require it.
+// Google Drive is deliberately NOT offered for direct browser connection. Google's token endpoint requires a
+// client_secret for "Web application" clients even under PKCE, and a secret shipped in a browser bundle is not a
+// secret — anyone can read it out of the JavaScript. Rather than ship a footgun that looks configurable, the
+// provider is marked unavailable and the reason is shown in the UI. Dropbox and OneDrive are true PKCE public
+// clients and need no secret. Google can be restored later via session-only tokens (Google Identity Services,
+// no refresh token) or, for institutional deployments, a token-exchange endpoint the organisation runs.
 const MS_CLIENT_ID=""; // an Azure AD app, "Single-page application" platform, scope Files.ReadWrite.AppFolder + offline_access (PKCE, no secret)
 const CLOUD_SYNC_PATH="/care-guardian-sync.json"; // inside the per-account app folder
 function b64url(bytes){ let s=btoa(String.fromCharCode(...new Uint8Array(bytes))); return s.replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,""); }
@@ -402,10 +407,10 @@ const CLOUD_PROVIDERS={
     // Google needs access_type=offline + prompt=consent to return a refresh token, and its token endpoint wants
     // a client_secret for "Web application" clients even under PKCE (not truly secret for a SPA — see DEPLOY.md).
     // Drive is also file-ID-addressed, not path-addressed, so each call first resolves our sync file by name.
-    id:"googledrive", label:"Google Drive", icon:"🗂",
+    id:"googledrive", label:"Google Drive", icon:"🗂", auth:"gis", scope:"https://www.googleapis.com/auth/drive.file",
     authUrl:({challenge,state,redirectUri})=>`https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(GOOGLE_CLIENT_ID)}&response_type=code&scope=${encodeURIComponent("https://www.googleapis.com/auth/drive.file")}&code_challenge=${encodeURIComponent(challenge)}&code_challenge_method=S256&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}&access_type=offline&prompt=consent`,
-    exchangeBody:({code,verifier,redirectUri})=>{const p={code,grant_type:"authorization_code",code_verifier:verifier,client_id:GOOGLE_CLIENT_ID,redirect_uri:redirectUri};if(GOOGLE_CLIENT_SECRET)p.client_secret=GOOGLE_CLIENT_SECRET;return new URLSearchParams(p);},
-    refreshBody:(refreshToken)=>{const p={grant_type:"refresh_token",refresh_token:refreshToken,client_id:GOOGLE_CLIENT_ID};if(GOOGLE_CLIENT_SECRET)p.client_secret=GOOGLE_CLIENT_SECRET;return new URLSearchParams(p);},
+    exchangeBody:({code,verifier,redirectUri})=>{const p={code,grant_type:"authorization_code",code_verifier:verifier,client_id:GOOGLE_CLIENT_ID,redirect_uri:redirectUri};return new URLSearchParams(p);},
+    refreshBody:(refreshToken)=>{const p={grant_type:"refresh_token",refresh_token:refreshToken,client_id:GOOGLE_CLIENT_ID};return new URLSearchParams(p);},
     tokenUrl:"https://oauth2.googleapis.com/token",
     _findFileId:async(accessToken,name)=>{
       const q=encodeURIComponent(`name='${name.replace(/'/g,"\\'")}' and trashed=false`);
@@ -465,7 +470,7 @@ function initState(stateCode) {
   const doms = buildDomains(stateCode||"");
   const domains = {};
   doms.forEach(d => { domains[d.key] = { status:"not-started",notes:"",lastUpdated:null, goals:d.goals.map(g=>({done:false,subs:g.subs.map(()=>({done:false,lastDone:null,typeOverride:null})),customSubs:[],titleOverride:null,subOverrides:{}})) }; });
-  return { domains, contacts:[], appointments:[], messages:[], incidents:[], expenses:[], medSchedule:{medications:[],log:[]}, emergencyPlans:EMERGENCY_SCENARIOS.map(s=>({key:s.key,steps:[...s.steps]})), shifts:{}, careShifts:[], availability:{}, transitionTriggers:{}, statusHistory:[], postDeathChecklist:POST_DEATH_SECTIONS.map(s=>s.items.map(()=>false)), selfReports:[], savedDocs:[], caregiverWellness:[], capacityLog:[], poaDecisions:[], log:[], domainOverrides:{}, settings:{caregiverPasscode:"1234",clientPasscode:"0000",deviceId:genDeviceId(),deviceName:"",stateCode:stateCode||"",schemaVersion:SCHEMA_VERSION}, _sync:{} };
+  return { domains, contacts:[], appointments:[], messages:[], incidents:[], expenses:[], medSchedule:{medications:[],log:[]}, emergencyPlans:EMERGENCY_SCENARIOS.map(s=>({key:s.key,steps:[...s.steps]})), shifts:{}, careShifts:[], availability:{}, transitionTriggers:{}, statusHistory:[], postDeathChecklist:POST_DEATH_SECTIONS.map(s=>s.items.map(()=>false)), selfReports:[], savedDocs:[], medChanges:[], caregiverWellness:[], capacityLog:[], poaDecisions:[], log:[], domainOverrides:{}, settings:{caregiverPasscode:"1234",clientPasscode:"0000",deviceId:genDeviceId(),deviceName:"",stateCode:stateCode||"",schemaVersion:SCHEMA_VERSION}, _sync:{} };
 }
 
 /* ═══ Merge engine ═══ */
@@ -734,6 +739,10 @@ function openVaultDB(){
 // ── Binary blobs (photos, voice) stored out of the main vault, encrypted with the same DEK ──
 // Keeps the JSON vault small so snapshots, WAL diffs, and encryption stay fast and memory-light.
 const BLOBREF_RE=/^blobref:([a-z0-9]+)$/;
+// Wound-care progress, lab pages and discharge paperwork routinely run to more than three images. Photos are
+// externalised to the blob store (only a small "blobref:" string stays in the vault), so the cap is a UI choice
+// rather than a storage constraint. One constant, used everywhere, so the limit can't drift between paths.
+const MAX_ENTRY_PHOTOS = 8;
 function newBlobId(){ return "b"+Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
 async function putBlob(dataUrl, dek, id){
   id=id||newBlobId();
@@ -830,7 +839,7 @@ function sanitizeOutboxReport(r){
     date:s(r.date,32), timestamp:s(r.timestamp,64)};
   if(!out.id)return null;
   if(typeof r.audioData==="string"&&(r.audioData.startsWith("blobref:")||(r.audioData.startsWith("data:audio/")&&r.audioData.length<8000000)))out.audioData=r.audioData;
-  if(Array.isArray(r.photos))out.photos=r.photos.filter(p=>typeof p==="string"&&(p.startsWith("blobref:")||(p.startsWith("data:image/")&&p.length<3000000))).slice(0,3);
+  if(Array.isArray(r.photos))out.photos=r.photos.filter(p=>typeof p==="string"&&(p.startsWith("blobref:")||(p.startsWith("data:image/")&&p.length<3000000))).slice(0,MAX_ENTRY_PHOTOS);
   if(Array.isArray(r.mediaHashes))out.mediaHashes=r.mediaHashes.filter(h=>typeof h==="string"&&/^[a-f0-9]{64}$/.test(h)).slice(0,8);
   return out; // srSeq/srPrev/srHash/origin and any unknown fields do not survive
 }
@@ -1093,6 +1102,82 @@ async function grantExpPub(k){ return new Uint8Array(await crypto.subtle.exportK
 async function grantImpPub(raw){ return crypto.subtle.importKey("raw",raw,{name:"ECDH",namedCurve:"P-256"},true,[]); }
 async function grantSharedZ(myPriv,theirPub){ return new Uint8Array(await crypto.subtle.deriveBits({name:"ECDH",public:theirPub},myPriv,256)); }
 async function grantHkdfAes(z,salt,info){ const base=await crypto.subtle.importKey("raw",z,"HKDF",false,["deriveKey"]); return crypto.subtle.deriveKey({name:"HKDF",hash:"SHA-256",salt,info:new TextEncoder().encode(info)},base,{name:"AES-GCM",length:256},false,["encrypt","decrypt"]); }
+// ===== Circle (multi-device) symmetric key — pairing & rotation. Proven in circle-*-test.mjs; see CIRCLE-JOIN-DESIGN.md.
+// Reuses the ECDH P-256 helpers above. circleKey is carried as a base64 string everywhere it appears in app state.
+const CIRCLE_PAIR_INFO="cg-circle-pair-v1", CIRCLE_SAS_INFO="cg-circle-sas-v1", CIRCLE_ROT_INFO="cg-circle-rot-v1";
+const _cte=new TextEncoder();
+const _ccat=(...a)=>{const t=new Uint8Array(a.reduce((n,x)=>n+x.length,0));let o=0;for(const x of a){t.set(x,o);o+=x.length;}return t;};
+async function hkdfBytes(z,salt,info,len){ const base=await crypto.subtle.importKey("raw",z,"HKDF",false,["deriveBits"]); return new Uint8Array(await crypto.subtle.deriveBits({name:"HKDF",hash:"SHA-256",salt,info:_cte.encode(info)},base,len*8)); }
+async function circleGcmEnc(rawKey,pt,aad){ const k=await crypto.subtle.importKey("raw",rawKey,{name:"AES-GCM"},false,["encrypt"]); const iv=crypto.getRandomValues(new Uint8Array(12)); const ct=new Uint8Array(await crypto.subtle.encrypt({name:"AES-GCM",iv,additionalData:aad},k,pt)); const o=new Uint8Array(12+ct.length); o.set(iv,0); o.set(ct,12); return o; }
+async function circleGcmDec(rawKey,blob,aad){ const k=await crypto.subtle.importKey("raw",rawKey,{name:"AES-GCM"},false,["decrypt"]); const pt=await crypto.subtle.decrypt({name:"AES-GCM",iv:blob.slice(0,12),additionalData:aad},k,blob.slice(12)); return new Uint8Array(pt); }
+function circleSas6(b){ const n=((b[0]<<24)|(b[1]<<16)|(b[2]<<8)|b[3])>>>0; return String(n%1000000).padStart(6,"0"); }
+const circleNewKey=()=>b64enc(crypto.getRandomValues(new Uint8Array(32)));
+async function circleNewDeviceKey(){ const kp=await grantKeypair(); return {jwkPriv:await crypto.subtle.exportKey("jwk",kp.privateKey), pub:b64enc(await grantExpPub(kp.publicKey))}; }
+async function circleImportPriv(jwk){ return crypto.subtle.importKey("jwk",jwk,{name:"ECDH",namedCurve:"P-256"},true,["deriveBits"]); }
+// two-scan in-person pairing: B starts, A responds with the wrapped key + SAS, B completes
+async function circlePairStartB(){ const kp=await grantKeypair(); return {ephJwk:await crypto.subtle.exportKey("jwk",kp.privateKey), pub:b64enc(await grantExpPub(kp.publicKey))}; }
+async function circlePairRespondA(circleKeyB64, eBpubB64){
+  const eBpub=b64dec(eBpubB64); const eA=await grantKeypair(); const eApub=await grantExpPub(eA.publicKey);
+  const ss=await grantSharedZ(eA.privateKey, await grantImpPub(eBpub)); const salt=crypto.getRandomValues(new Uint8Array(16));
+  const transcript=_ccat(eBpub,eApub,salt); const k=await hkdfBytes(ss,salt,CIRCLE_PAIR_INFO,32);
+  const wrap=await circleGcmEnc(k,b64dec(circleKeyB64),transcript); const sas=circleSas6(await hkdfBytes(ss,salt,CIRCLE_SAS_INFO,4));
+  return {eApub:b64enc(eApub), salt:b64enc(salt), wrap:b64enc(wrap), sas}; }
+async function circlePairCompleteB(ephJwk, eBpubB64, eApubB64, saltB64, wrapB64){
+  const eBpriv=await circleImportPriv(ephJwk); const eBpub=b64dec(eBpubB64); const eApub=b64dec(eApubB64); const salt=b64dec(saltB64);
+  const ss=await grantSharedZ(eBpriv, await grantImpPub(eApub)); const transcript=_ccat(eBpub,eApub,salt);
+  const k=await hkdfBytes(ss,salt,CIRCLE_PAIR_INFO,32); const sas=circleSas6(await hkdfBytes(ss,salt,CIRCLE_SAS_INFO,4));
+  let circleKey=null, ok=false; try{ circleKey=b64enc(await circleGcmDec(k,b64dec(wrapB64),transcript)); ok=true; }catch(e){ ok=false; }
+  return {circleKey, sas, ok}; }
+// pairwise rotation: wrap newKey to each REMAINING device's pubkey; a removed device is simply not a recipient
+async function circleRotate(newKeyB64, epoch, recipients){
+  const eR=await grantKeypair(); const eRpub=await grantExpPub(eR.publicKey); const salt=crypto.getRandomValues(new Uint8Array(16)); const blobs={};
+  for(const r of recipients){ const ss=await grantSharedZ(eR.privateKey, await grantImpPub(b64dec(r.pub))); const k=await hkdfBytes(ss,salt,CIRCLE_ROT_INFO+":"+r.deviceId,32);
+    blobs[r.deviceId]=b64enc(await circleGcmEnc(k,b64dec(newKeyB64),_cte.encode("rot:"+epoch+":"+r.deviceId))); }
+  return {epoch, eRpub:b64enc(eRpub), salt:b64enc(salt), blobs}; }
+async function circleRotationOpen(rotObj, deviceId, jwkPriv){
+  const blob=rotObj.blobs[deviceId]; if(!blob) throw new Error("no rotation blob for this device");
+  const priv=await circleImportPriv(jwkPriv); const ss=await grantSharedZ(priv, await grantImpPub(b64dec(rotObj.eRpub)));
+  const k=await hkdfBytes(ss,b64dec(rotObj.salt),CIRCLE_ROT_INFO+":"+deviceId,32);
+  return b64enc(await circleGcmDec(k,b64dec(blob),_cte.encode("rot:"+rotObj.epoch+":"+deviceId))); }
+// ── Circle sync transport: each device pushes its encrypted state to its own mutable prefix on the intake relay; others pull + merge. ──
+const CIRCLE_STATE_AAD=new TextEncoder().encode("cg-circle-state-v1");
+// An OAuth refresh token is a long-lived credential for the ADMIN's cloud account. It must never ride a sync
+// payload to a teammate's device or sit inside a portable .care file: it cannot be revoked per-device, and a
+// teammate removed from the circle would keep working cloud access even after the circle key is rotated.
+function stripPortableSecrets(d){ if(!d||!d.settings) return d;
+  const {_outbox, ...rest}=d;   // the upload queue is this device's own bookkeeping — never another device's work
+  d=rest;
+  const settings={...d.settings};
+  delete settings.cloudAuth;        // OAuth refresh token for the admin's cloud account
+  delete settings.deviceKey;        // this device's ECDH private key — a restored device mints a fresh one
+  // Credentials found in the line-by-line audit. Each is stored in the clear inside the vault (safe at rest,
+  // since the vault is encrypted) but was riding sync payloads and .care files — so an admin's credential landed
+  // on every teammate's device and in every portable backup, could not be revoked per-device, and outlived
+  // removal from the circle. A shared secret should be given deliberately, never inherited.
+  delete settings.backupPasscode;   // passcode protecting continuous backups
+  delete settings.syncServerApiKey; // bearer key for a self-hosted sync server
+  delete settings.syncPasscode;     // team sync secret — each device should be told it, not handed it
+  if(settings.circle){ const c={...settings.circle}; delete c.key; delete c.relay; settings.circle=c; }
+  return {...d,settings}; }
+function circleStripForSync(d){ const c=JSON.parse(JSON.stringify(d)); delete c._outbox; if(c.settings){ delete c.settings.deviceKey; delete c.settings.cloudAuth; delete c.settings.backupPasscode; delete c.settings.syncServerApiKey; delete c.settings.syncPasscode; if(c.settings.circle){ const cc={...c.settings.circle}; delete cc.key; delete cc.relay; c.settings.circle=cc; } } return c; } // never sync this device's private key, the circle key, or relay caps
+function circleMergeRoster(a,b){ const m={}; for(const r of (a||[])) if(r&&r.deviceId) m[r.deviceId]=r; for(const r of (b||[])){ if(!r||!r.deviceId)continue; const e=m[r.deviceId]; if(!e){ m[r.deviceId]=r; continue; } const pick=(r.pub&&!e.pub)?r:(e.pub&&!r.pub)?e:((new Date(r.addedAt||0)>=new Date(e.addedAt||0))?r:e); m[r.deviceId]={...e,...pick,pending:!(pick.pub||e.pub||r.pub)}; } return Object.values(m); } // converge rosters across devices; a real pubkey wins over a pending placeholder
+async function circleSealState(stateObj, circleKeyB64){ const pt=new TextEncoder().encode(JSON.stringify(circleStripForSync(stateObj))); return b64enc(await circleGcmEnc(b64dec(circleKeyB64), pt, CIRCLE_STATE_AAD)); }
+async function circleOpenState(blobB64, circleKeyB64){ const pt=await circleGcmDec(b64dec(circleKeyB64), b64dec(blobB64), CIRCLE_STATE_AAD); return JSON.parse(new TextDecoder().decode(pt)); }
+async function circleSyncPush(relay, sealedB64){ await INTAKE_BACKENDS.https.push({base:relay.base, prefix:relay.prefix, writeCap:relay.writeCap}, "state", sealedB64); }
+async function circleSyncPull(relay, circleId, myDeviceId){ const cfg={base:relay.base, readCap:relay.readCap}; const names=await INTAKE_BACKENDS.https.list(cfg, "circle/"+circleId+"/"); const out=[]; for(const n of names){ const name=typeof n==="string"?n:(n.key||n.name||n.Key||""); if(!name||name.indexOf("/"+myDeviceId+"/")>=0||name.indexOf("/rotation/")>=0)continue; const blob=await INTAKE_BACKENDS.https.get(cfg, name); if(blob)out.push(blob); } return out; }
+async function circleRotationFetch(relay, circleId){ try{ const txt=await INTAKE_BACKENDS.https.get({base:relay.base, readCap:relay.readCap}, "circle/"+circleId+"/rotation/latest"); if(!txt)return null; return JSON.parse(txt); }catch(e){ return null; } }
+const CIRCLE_WORDS="able acid acre aged airy alarm album alert alien alley amber angel ankle apple april apron arena armor arrow aspen attic audio autumn award awake azure bacon badge baker balmy banjo barge basil batch beach beard beech began begin being bench berry birch bison black blade blaze bliss bloom blue board bonus boost booth brave bread brick brief broad brook brush buddy bugle build bunch cabin cable cacao cadet cameo candy canoe canyon cargo carol cedar chair chalk charm chase cheer chess chest chief chime choir chord cider cinema civic clamp clay clean clerk cliff cloak clock cloud clove clown coast cobra cocoa comet coral cousin cove craft crane crate creek crest crisp crown crumb curve daisy dance dandy delta demon depot diary diner ditch diver dizzy dough dove dozen draft drama dream dress drift drink drove eagle early earth easel ebony edify eight elbow elder elite ember emote epoch equal erase essay ether ethos exact extra fable fancy fauna feast fence ferry fetch fever fiber field final finch flame flask fleet flint flock flora flour flute focus forge forum fossil frame fresh frost fruit fudge gauge gecko ghost giant ginger glade gleam globe gloss glove going grace grain grand grape grasp grass green grill grove guide gulf gully harbor haven hazel heart heron hilly hippo honey horse hotel hound house hover human humid ideal igloo image inbox index indigo input ivory jaguar jelly jewel joint joker jolly joust judge juice jumbo karma kayak kazoo kettle koala label labor lance large larva lemon level light lilac".split(" ");
+function circlePassphrase(n){ const c=n||6; const a=new Uint32Array(c); crypto.getRandomValues(a); const w=[]; for(let i=0;i<c;i++)w.push(CIRCLE_WORDS[a[i]%CIRCLE_WORDS.length]); return w.join("-"); }
+const CIRCLE_REMOTE_AAD=new TextEncoder().encode("cg-circle-remote-v1");
+const CIRCLE_ARGON={parallelism:1,iterations:3,memorySize:12288,hashLength:32}; // ~12MB memory-hard; tunable. Protects a short-lived, single-use, rate-limited relay handoff.
+const SHOW_CAREGIVER_CHECKIN=false; // hidden pending David's decision — view stays routable, card + search entry gated
+const CIRCLE_INVITE_TTL_MS=24*60*60*1000; // remote invites are single-use AND time-boxed (24h). The expiry lives inside the AES-GCM-sealed bundle, so it can't be tampered without the passphrase. Honored by the joining app; a production relay should also enforce a server-side TTL.
+const circleInviteExpired=(b)=>!!(b&&b.expiresAt&&Date.now()>b.expiresAt);
+async function circleRemoteSeal(plainStr, passphrase){ const {argon2id}=await import("hash-wasm"); const salt=crypto.getRandomValues(new Uint8Array(16)); const dk=await argon2id({password:passphrase,salt,...CIRCLE_ARGON,outputType:"binary"}); const ct=await circleGcmEnc(dk,new TextEncoder().encode(plainStr),CIRCLE_REMOTE_AAD); return {alg:"argon2id",kdf:CIRCLE_ARGON,salt:b64enc(salt),blob:b64enc(ct)}; }
+async function circleRemoteOpen(env, passphrase){ const {argon2id}=await import("hash-wasm"); const dk=await argon2id({password:passphrase,salt:b64dec(env.salt),...env.kdf,outputType:"binary"}); const pt=await circleGcmDec(dk,b64dec(env.blob),CIRCLE_REMOTE_AAD); return new TextDecoder().decode(pt); }
+// QR render + camera scanner for circle pairing (progressive enhancement over paste). Libraries load on demand.
+function CircleQR({value,size}){ const ref=useRef(null); useEffect(()=>{ let alive=true; (async()=>{ try{ const QR=(await import("qrcode")).default; if(alive&&ref.current)await QR.toCanvas(ref.current,value,{width:size||240,errorCorrectionLevel:"L",margin:1}); }catch(e){} })(); return ()=>{alive=false}; },[value,size]); return <canvas ref={ref} width={size||240} height={size||240} style={{width:(size||240)+"px",height:(size||240)+"px",background:"#fff",borderRadius:"8px",maxWidth:"100%"}}/>; }
+function CircleScanner({onScan,onClose}){ const vref=useRef(null); const [err,setErr]=useState(""); useEffect(()=>{ let alive=true,stream=null,raf=null; (async()=>{ try{ const jsQR=(await import("jsqr")).default; stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}}); if(!alive){stream.getTracks().forEach(t=>t.stop());return;} const v=vref.current; if(!v)return; v.srcObject=stream; v.setAttribute("playsinline","true"); await v.play(); const cv=document.createElement("canvas"); const cx=cv.getContext("2d",{willReadFrequently:true}); const tick=()=>{ if(!alive)return; if(v.readyState>=2&&v.videoWidth){ cv.width=v.videoWidth; cv.height=v.videoHeight; cx.drawImage(v,0,0,cv.width,cv.height); const img=cx.getImageData(0,0,cv.width,cv.height); const code=jsQR(img.data,img.width,img.height); if(code&&code.data){ onScan(code.data); return; } } raf=requestAnimationFrame(tick); }; tick(); }catch(e){ setErr("Couldn't open the camera — paste the code instead."); } })(); return ()=>{ alive=false; if(raf)cancelAnimationFrame(raf); if(stream)stream.getTracks().forEach(t=>t.stop()); }; },[]); return (<div style={{marginTop:"0.6rem"}}><video ref={vref} style={{width:"100%",maxWidth:"320px",borderRadius:"8px",background:"#000"}} muted/>{err&&<p className="hint" style={{color:"var(--color-text-danger)"}}>{err}</p>}<button className="cancel-btn" style={{marginTop:"0.4rem"}} onClick={onClose}>Cancel scan</button></div>); }
 // Authenticated header for a grant bundle (v2+): bound as AES-GCM additional-data so NONE of these fields can be
 // altered after sealing without breaking decryption. (v1 bound only the scope manifest, leaving expiresAt/
 // archetype/institution/family/createdAt malleable.) Domain-tagged and fixed-order for determinism.
@@ -1577,6 +1662,7 @@ function sanitizeImportData(obj) {
     if (st.stateCode!=null) st.stateCode = sanitizeText(st.stateCode, 8);
     delete st.syncPasscode; // never accept a sync passcode from an imported file
     delete st.caregiverPasscode; delete st.clientPasscode; // legacy plaintext passcodes are inert for auth (the wrapped DEK is authoritative) but must never ride in on an import
+    delete st.circle; delete st.deviceKey; // circle key + this device's private key are secrets/identity — a restored device re-pairs rather than inheriting them
     if (st.team && typeof st.team === "object" && Array.isArray(st.team.members)) {
       st.team.members = st.team.members.slice(0, 20).map(m => ({
         ...m,
@@ -1587,7 +1673,7 @@ function sanitizeImportData(obj) {
     }
   }
   // Validate photo arrays in incidents and selfReports
-  const valPhotos=(arr)=>(arr||[]).map(item=>{if(item&&item.photos){item.photos=item.photos.filter(p=>typeof p==="string"&&(p.startsWith("blobref:")||(p.startsWith("data:image/")&&p.length<3000000))).slice(0,3)}
+  const valPhotos=(arr)=>(arr||[]).map(item=>{if(item&&item.photos){item.photos=item.photos.filter(p=>typeof p==="string"&&(p.startsWith("blobref:")||(p.startsWith("data:image/")&&p.length<3000000))).slice(0,MAX_ENTRY_PHOTOS)}
     if(item&&item.audioData!=null){const a=item.audioData;if(!(typeof a==="string"&&(a.startsWith("blobref:")||(a.startsWith("data:audio/")&&a.length<8000000))))item.audioData=null}
     return item});
   if(obj.incidents)obj.incidents=valPhotos(obj.incidents);
@@ -1632,26 +1718,86 @@ function validateSyncUrl(url) {
 }
 
 /* ═══ PDF.js — bundled locally (no network), lazy-loaded only when a document is scanned ═══ */
-let _pdfjs = null;
+let _pdfjs = null, _pdfReady = false;
+const PDF_TIMEOUT_MS = 120000; // parsing must never hang the UI forever, whatever goes wrong underneath
+
 async function loadPdfJs() {
-  if (_pdfjs) return _pdfjs;
-  const lib = await import("pdfjs-dist/legacy/build/pdf.mjs"); // separate local chunk, fetched from the app's own origin
-  const workerUrl = (await import("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url")).default;
-  lib.GlobalWorkerOptions.workerSrc = workerUrl;
-  _pdfjs = lib;
+  if (_pdfjs && _pdfReady) return _pdfjs;
+  const lib = _pdfjs || (_pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs")); // local chunk, app's own origin
+  // NO Web Worker. pdf.js normally parses in a Worker, but delivering that worker failed in production three times:
+  // as .mjs a host served it with the wrong MIME type; inlined it blew the 2 MiB precache ceiling and broke the build;
+  // and as a separate classic .js it produced a silent hang — a dead Worker never replies, so pdf.js's promise simply
+  // never settles and the spinner spins forever. Registering the worker module on globalThis makes pdf.js run it
+  // in-process: nothing to fetch, nothing to construct, nothing to mis-serve, and one 1.35MB chunk instead of two.
+  // Trade-off: parsing occupies the UI thread. Care documents are small (discharge summaries, med lists, labs), and a
+  // brief pause is far better than an unresolvable spinner. The timeout below bounds the worst case regardless.
+  globalThis.pdfjsWorker = await import("pdfjs-dist/legacy/build/pdf.worker.min.mjs");
+  lib.GlobalWorkerOptions.workerSrc = "";
+  _pdfReady = true;
   return lib;
 }
 
-async function extractPdfText(file) {
-  const pdfjsLib = await loadPdfJs();
-  const buf = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-  let text = "";
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    text += content.items.map(item => item.str).join(" ") + "\n\n";
+// Rebuild LINE STRUCTURE from pdf.js text items. pdf.js returns positioned fragments, not lines; joining them
+// with spaces turns a whole page — a lab table, a medication list — into one giant line, and every parser here is
+// line-based, so it could only ever find one result per page. Group fragments by their y coordinate, order each
+// row by x, and widen big horizontal gaps so table columns stay visually separated.
+function itemsToLines(items){
+  const rows=[];
+  for(const it of (items||[])){
+    if(!it || typeof it.str!=="string" || !it.str.trim()) continue;
+    const tr=it.transform||[]; const x=+tr[4]||0, y=+tr[5]||0;
+    let row=null, best=Infinity;
+    for(const r of rows){ const d=Math.abs(r.y-y); if(d<=2.5 && d<best){ best=d; row=r; } } // same visual line
+    if(!row){ row={y,items:[]}; rows.push(row); }
+    row.items.push({x,str:it.str,w:+it.width||0});
   }
+  rows.sort((a,b)=>b.y-a.y); // top of the page downward
+  return rows.map(r=>{
+    r.items.sort((a,b)=>a.x-b.x);
+    let out="", prevEnd=null;
+    for(const it of r.items){
+      if(prevEnd!==null){ const gap=it.x-prevEnd; if(gap>12) out+="   "; else if(gap>1.2||!/\s$/.test(out)) out+=" "; }
+      out+=it.str; prevEnd=it.x+it.w;
+    }
+    return out.replace(/\s+/g," ").trim();
+  }).filter(l=>l);
+}
+
+function pdfWithTimeout(promise, ms, onTimeout) {
+  let t; return Promise.race([
+    promise.finally(() => clearTimeout(t)),
+    new Promise((_, rej) => { t = setTimeout(() => { try { onTimeout && onTimeout(); } catch (e) {} rej(new Error("PDF_TIMEOUT")); }, ms); })
+  ]);
+}
+
+// `token` lets the user cancel a wrong file mid-read: it is checked before each page, and the pdf.js task is
+// destroyed on the way out so a large document stops occupying the thread instead of running to completion.
+async function extractPdfText(file, token) {
+  const cancelled = () => !!(token && token.cancelled);
+  const lib = await loadPdfJs();
+  if (cancelled()) throw new Error("PDF_CANCELLED");
+  const buf = await file.arrayBuffer();
+  await new Promise(r => setTimeout(r, 0)); // let the "extracting…" spinner paint before we occupy the thread
+  if (cancelled()) throw new Error("PDF_CANCELLED");
+  const task = lib.getDocument({ data: new Uint8Array(buf), isEvalSupported: false });
+  if (token) token.task = task;
+  const stop = () => { try { task.destroy(); } catch (e) {} };
+  let pdf;
+  try { pdf = await pdfWithTimeout(task.promise, PDF_TIMEOUT_MS, stop); }
+  catch (e) { stop(); throw e; }
+  let text = "";
+  try {
+    for (let i = 1; i <= pdf.numPages; i++) {
+      if (cancelled()) throw new Error("PDF_CANCELLED");
+      const page = await pdfWithTimeout(pdf.getPage(i), PDF_TIMEOUT_MS);
+      const content = await pdfWithTimeout(page.getTextContent(), PDF_TIMEOUT_MS);
+      text += itemsToLines(content.items).join("\n") + "\n\n";
+      if (token) token.pagesDone = i;
+      await new Promise(r => setTimeout(r, 0)); // yield so a Cancel tap is actually seen between pages
+    }
+  } catch (e) { try { pdf.destroy(); } catch (e2) {} stop(); throw e; }
+  try { pdf.destroy(); } catch (e) {}
+  if (cancelled()) throw new Error("PDF_CANCELLED");
   return text.trim();
 }
 
@@ -1677,6 +1823,70 @@ function detectDocType(text) {
 /* ═══ Medication parser ═══ */
 // Common drug names (subset — covers ~80% of dementia care medications)
 const COMMON_DRUGS = "donepezil|aricept|memantine|namenda|rivastigmine|exelon|galantamine|razadyne|levetiracetam|keppra|quetiapine|seroquel|risperidone|risperdal|olanzapine|zyprexa|haloperidol|haldol|lorazepam|ativan|alprazolam|xanax|diazepam|valium|sertraline|zoloft|citalopram|celexa|escitalopram|lexapro|fluoxetine|prozac|paroxetine|paxil|trazodone|desyrel|mirtazapine|remeron|duloxetine|cymbalta|venlafaxine|effexor|bupropion|wellbutrin|aripiprazole|abilify|lamotrigine|lamictal|gabapentin|neurontin|pregabalin|lyrica|carbamazepine|tegretol|valproic|depakote|lithium|lisinopril|amlodipine|norvasc|metoprolol|lopressor|atenolol|losartan|cozaar|valsartan|diovan|hydrochlorothiazide|hctz|furosemide|lasix|spironolactone|warfarin|coumadin|apixaban|eliquis|rivaroxaban|xarelto|clopidogrel|plavix|aspirin|atorvastatin|lipitor|simvastatin|zocor|rosuvastatin|crestor|pravastatin|metformin|glucophage|glipizide|glyburide|insulin|lantus|humalog|novolog|levothyroxine|synthroid|omeprazole|prilosec|pantoprazole|protonix|esomeprazole|nexium|famotidine|pepcid|ranitidine|acetaminophen|tylenol|ibuprofen|advil|naproxen|aleve|tramadol|hydrocodone|oxycodone|morphine|fentanyl|prednisone|methylprednisolone|albuterol|proair|fluticasone|montelukast|singulair|cetirizine|zyrtec|loratadine|claritin|diphenhydramine|benadryl|docusate|colace|polyethylene|miralax|bisacodyl|senna|tamsulosin|flomax|finasteride|proscar|sildenafil|zolpidem|ambien|melatonin|vitamin|calcium|magnesium|potassium|iron|zinc|b12|folic acid|fish oil|omega";
+
+/* ═══ Medication reconciliation — pure, testable. Documents contribute ONLY structured medication and test data;
+   the document's text itself is never stored (see saveDocToLibrary). ═══ */
+const MED_STOP_MARKERS = /\b(discontinued?|d\/c(?:'?d)?|stopped?|stop taking|no longer taking|held|hold|cease[d]?|taper(?:ed)? off)\b/i;
+const MED_STOP_HEADINGS = /^(discontinued|stopped|d\/c(?:'?d)?|medications? (?:discontinued|stopped)|removed medications?)\b/i;
+const MED_START_HEADINGS = /^(current|active|continue[d]?|new|started|admission|discharge) medications?\b|^medications?\b/i;
+const medKey = (n) => String(n||"").toLowerCase().replace(/[^a-z0-9]/g,"");
+// Classify each medication mentioned in the text as "stopped" or "active", using (a) an explicit discontinued
+// section heading, which governs every line beneath it, and (b) stop wording on the medication's own line.
+function parseMedStatuses(text){
+  const out={}; const lines=String(text||"").split(/\n/); let section=null;
+  for(const raw of lines){
+    const line=raw.trim(); if(!line)continue;
+    const bare=line.replace(/[:.\s]+$/,"");
+    if(MED_STOP_HEADINGS.test(bare) && bare.length<60){ section="stopped"; continue; }
+    if(MED_START_HEADINGS.test(bare) && bare.length<60){ section="active"; continue; }
+    const drugRe=new RegExp("("+COMMON_DRUGS+")","gi"); let m;
+    while((m=drugRe.exec(line))!==null){
+      const k=medKey(m[1]); if(!k)continue;
+      const stopped = MED_STOP_MARKERS.test(line) || section==="stopped";
+      // an explicit stop marker on the line always wins; otherwise first classification stands
+      if(MED_STOP_MARKERS.test(line)) out[k]="stopped";
+      else if(out[k]===undefined) out[k]=stopped?"stopped":"active";
+    }
+  }
+  return out;
+}
+// Map a parsed frequency string onto the app's time slots so an imported medication lands on the admin grid.
+function freqToSlots(freq){
+  const f=String(freq||"").toLowerCase();
+  if(/as needed|prn/.test(f)) return ["As Needed"];
+  if(/bedtime|qhs/.test(f)) return ["Bedtime"];
+  if(/morning/.test(f)) return ["Morning"];
+  if(/four times/.test(f)) return ["Morning","Midday","Afternoon","Bedtime"];
+  if(/three times/.test(f)) return ["Morning","Midday","Evening"];
+  if(/twice/.test(f)) return ["Morning","Evening"];
+  if(/every other day|weekly|monthly/.test(f)) return ["Morning"];
+  return ["Morning"]; // Daily and anything unrecognised — caregiver can adjust
+}
+function docMedToScheduleMed(m){
+  return { name:m.name, dosage:m.dosage||"", timeSlots:freqToSlots(m.frequency),
+    notes:[m.frequency,m.route,m.notes].filter(Boolean).join(" · ") };
+}
+// Compare a document's medications against the current schedule. Returns proposed changes only — nothing is applied
+// here. Dose differences are surfaced as "changed" rather than silently overwritten.
+function reconcileMedications(currentMeds, docMeds, statuses){
+  const cur=(currentMeds||[]).filter(Boolean);
+  const byKey={}; for(const m of cur){ const k=medKey(m.name); if(k&&!byKey[k])byKey[k]=m; }
+  const seen={}, toAdd=[], toDiscontinue=[], toUpdate=[], unchanged=[];
+  for(const dm of (docMeds||[])){
+    const k=medKey(dm.name); if(!k||seen[k])continue; seen[k]=1;
+    const status=(statuses||{})[k];
+    const existing=byKey[k];
+    if(status==="stopped"){
+      if(existing && !existing.discontinued) toDiscontinue.push({key:k,id:existing.id,name:existing.name,dosage:existing.dosage||""});
+      continue;
+    }
+    if(!existing){ toAdd.push({key:k,...docMedToScheduleMed(dm)}); continue; }
+    const a=String(existing.dosage||"").trim().toLowerCase(), b=String(dm.dosage||"").trim().toLowerCase();
+    if(b && a!==b) toUpdate.push({key:k,id:existing.id,name:existing.name,from:existing.dosage||"(none)",to:dm.dosage});
+    else unchanged.push({key:k,name:existing.name});
+  }
+  return {toAdd,toDiscontinue,toUpdate,unchanged};
+}
 
 function parseMedications(text) {
   const meds = [];
@@ -1742,25 +1952,98 @@ function parseMedications(text) {
   return meds;
 }
 
-/* ═══ Lab results parser ═══ */
+/* ═══ Lab results parser ═══
+   Handles the two layouts real documents use:
+     (a) TABULAR — one row per result:      Sodium 138 mEq/L 135-145 H
+     (b) BLOCK   — a patient-portal trend report, where each result spans three lines in any order:
+                     WHITE BLOOD CELLS  /  7.34 K/uL  /  Normal Range: 4.23 - 9.07 K/uL
+   A row-only parser reads the block layout as name "Normal Range" with the range's LOWER BOUND as the result —
+   which is not just useless but wrong, so the block form is parsed explicitly. Flags are DERIVED by comparing the
+   value with the reference range whenever both are known (an explicit High/Low in the document still wins). */
+const LAB_ANALYTES = ["sodium","potassium","chloride","co2","carbon dioxide","bicarbonate","anion gap","bun","urea nitrogen",
+"creatinine","egfr","gfr","glucose","calcium","magnesium","phosphorus","albumin","total protein","bilirubin","alt","ast",
+"alkaline phosphatase","alk phos","ggt","ldh","wbc","white blood cells","rbc","red blood cells","hemoglobin","hgb","hematocrit","hct",
+"platelets","plt","mpv","mcv","mch","mchc","rdw","rdw-cv","rdw-sd","neutrophils","lymphocytes","monocytes","eosinophils","basophils",
+"immature granulocytes","tsh","t4","free t4","t3","a1c","hemoglobin a1c","cholesterol","hdl","ldl","triglycerides","vitamin b12","b12",
+"folate","vitamin d","ferritin","iron","tibc","inr","pt","ptt","psa","troponin","bnp","crp","esr","uric acid","ammonia","lactate",
+"osmolality","cortisol","testosterone"];
+const LAB_HEADER_WORDS = /\b(test|result|units?|reference|ref|range|flag|status|specimen|collected|reported|ordered|performed)\b/gi;
+const LAB_STOP_NAMES = /^(page|date|time|name|patient|doctor|provider|physician|mrn|dob|phone|fax|account|ordered|collected|received|reported|specimen|status|final|test|result|units?|reference|flag|range|normal range|component|comments?|performed|lab|laboratory|address|of|and|the)$/i;
+// Lines that are report furniture, never data.
+const LAB_JUNK_LINE = /^(result trends|results?\b[^:]*\b(limited|found)|component\b|page \d|printed|final report|collected|reported|ordered)/i;
+const LAB_TABLE_MARK = /\(table \d+ of \d+\)/i;
+const LAB_MONTHS = /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/i;
+// "Normal Range: 4.23 - 9.07 K/uL [7.34 K/uL] [Low]" — the trailing part may carry the value, a flag, or nothing.
+const LAB_RANGE_LINE = /^(?:normal|reference|ref)?\s*range\s*[:\-]?\s*([<>]?=?-?\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(-?\d+(?:\.\d+)?)\s*(\S+)?\s*(.*)$/i;
+const LAB_VALUE_RE = /^[<>]?=?-?\d+(?:\.\d+)?$/;
+const LAB_RANGE_RE = /^[\(\[]?(?:[<>]=?\s*\d+(?:\.\d+)?|-?\d+(?:\.\d+)?\s*(?:-|–|—|to)\s*-?\d+(?:\.\d+)?)[\)\]]?$/i;
+// Units are whitelisted (plus a generic a/b shape). A loose pattern happily accepted words like "Table" as a unit.
+const LAB_UNITS = ["%","mg/dl","g/dl","mg/l","g/l","meq/l","mmol/l","umol/l","nmol/l","pmol/l","miu/l","iu/l","u/l","k/ul","m/ul",
+"ng/ml","pg/ml","ug/ml","mcg/ml","ng/dl","ug/dl","mcg/dl","cells/ul","fl","pg","ng","mg","g","ml","dl","l","sec","secs","ratio",
+"mm/hr","mosm/kg","x10e3/ul","10*3/ul","10*6/ul","mmhg","ku/l","miu/ml","uiu/ml","mg/g","%hb"];
+const LAB_FLAG_MAP = {H:"H",HH:"HH",L:"L",LL:"LL",A:"A",AB:"A",C:"C",HIGH:"H",LOW:"L",ABNORMAL:"A",CRITICAL:"C",PANIC:"C"};
+const LAB_FLAG_WORD = /\b(high|low|abnormal|critical|panic)\b/i;
+const _labNorm = (t) => String(t||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();
+const _labKnown = (name) => { const n=_labNorm(name); return LAB_ANALYTES.some(a=>n===a||n.endsWith(" "+a)||n.startsWith(a+" ")||n.includes(" "+a+" ")); };
+const _labUnit = (t) => { const u=String(t||"").replace(/^[\(\[]|[\)\]]$/g,""); const n=u.toLowerCase();
+  return (LAB_UNITS.indexOf(n)>=0 || /^[a-zµμ]{1,6}\/[a-zµμ]{1,6}\d?$/i.test(u)) ? u : ""; };
+// Derive High/Low from the numbers when the document doesn't say — deterministic, and it avoids guessing from
+// stray flag words whose column position is lost in text extraction.
+const _labDerivedFlag = (value, low, high) => { const v=parseFloat(value), lo=parseFloat(low), hi=parseFloat(high);
+  if(!isFinite(v)||!isFinite(lo)||!isFinite(hi)) return ""; return v<lo?"L":(v>hi?"H":""); };
 function parseLabResults(text) {
-  const results = [];
-  const lines = text.split(/\n/);
-  // Pattern: Test Name ... Value ... Unit ... Reference Range
-  const labRe = /([A-Za-z][A-Za-z\s/(),.#-]{2,40})\s*[:=]?\s*(\d+\.?\d*)\s*([\w/%]+)?\s*(?:[\[(]?\s*(\d+\.?\d*\s*[-–]\s*\d+\.?\d*)\s*[\])]?)?/;
-  const flagRe = /\b(high|low|abnormal|critical|H|L|HH|LL|A|C)\b/i;
-  for (const line of lines) {
-    const m = line.match(labRe);
-    if (!m) continue;
-    const testName = m[1].trim().replace(/\s+/g, " ");
-    // Skip if test name is too short or looks like a header/number
-    if (testName.length < 3 || /^\d/.test(testName) || /^(page|date|time|name|patient|doctor|lab|specimen)/i.test(testName)) continue;
-    const value = m[2]; const unit = m[3] || ""; const range = m[4] || "";
-    const flagMatch = line.match(flagRe);
-    const flag = flagMatch ? flagMatch[1].toUpperCase() : "";
-    results.push({ test: testName, value, unit, range, flag, notes: "" });
+  const out=[], seen={};
+  const lines=String(text||"").split(/\n/).map(l=>l.trim()).filter(Boolean);
+  let pendName="", pendValue="", pendUnit="";
+  const clear=()=>{ pendName=""; pendValue=""; pendUnit=""; };
+  const emit=(name,value,unit,range,flag)=>{
+    if(!name||!value) return;
+    if(LAB_STOP_NAMES.test(name)||LAB_MONTHS.test(name)) return;
+    if(!unit && !range && !_labKnown(name)) return;
+    const key=_labNorm(name)+"|"+value; if(seen[key]) return; seen[key]=1;
+    out.push({test:name,value,unit:unit||"",range:range||"",flag:flag||"",notes:""});
+  };
+  for(const line of lines){
+    if(LAB_JUNK_LINE.test(line)||LAB_TABLE_MARK.test(line)){ clear(); continue; }
+    if((line.match(LAB_HEADER_WORDS)||[]).length>=3){ clear(); continue; }   // a column-header row
+    // ── (b) BLOCK layout: the reference-range line closes a block ──
+    const rm=LAB_RANGE_LINE.exec(line);
+    if(rm){
+      const low=rm[1], high=rm[2], rUnit=_labUnit(rm[3]), rest=(rm[4]||"").trim();
+      let value=pendValue, unit=pendUnit||rUnit, flag="";
+      if(!value){ const rt=rest.split(/\s+/).filter(Boolean);           // value may sit on the range line itself
+        for(let i=0;i<rt.length;i++){ if(LAB_VALUE_RE.test(rt[i])){ value=rt[i]; if(!unit)unit=_labUnit(rt[i+1]); break; } } }
+      const fw=rest.match(LAB_FLAG_WORD); if(fw) flag=LAB_FLAG_MAP[fw[1].toUpperCase()]||"";
+      if(!flag) flag=_labDerivedFlag(value,low,high);
+      emit(pendName,value,unit||rUnit,low+"-"+high,flag);
+      clear(); continue;
+    }
+    const toks=line.replace(/([:=])/g," ").split(/\s+/).filter(Boolean);
+    // ── (a) TABULAR / single-line: NAME VALUE [UNIT] [RANGE] [FLAG] ──
+    let vi=-1;
+    for(let i=1;i<toks.length;i++){ if(LAB_VALUE_RE.test(toks[i]) && !LAB_RANGE_RE.test(toks[i])){ vi=i; break; } }
+    if(vi>=1 && vi<=6){
+      const name=toks.slice(0,vi).join(" ").replace(/[,;]+$/,"").trim();
+      const value=toks[vi]; let unit="",range="",flag="";
+      for(let i=vi+1;i<Math.min(toks.length,vi+5);i++){
+        const t=toks[i].replace(/[,;]+$/,""), up=t.toUpperCase().replace(/[^A-Z]/g,"");
+        if(!range && LAB_RANGE_RE.test(t)){ range=t.replace(/^[\(\[]|[\)\]]$/g,""); continue; }
+        if(!unit && _labUnit(t) && !LAB_FLAG_MAP[up]){ unit=_labUnit(t); continue; }
+        if(!flag && LAB_FLAG_MAP[up] && /^[A-Za-z]+$/.test(t)){ flag=LAB_FLAG_MAP[up]; continue; }
+      }
+      if(!flag && range){ const p=range.split(/\s*(?:-|–|—|to)\s*/); if(p.length===2) flag=_labDerivedFlag(value,p[0],p[1]); }
+      if(name && !LAB_STOP_NAMES.test(name) && !LAB_MONTHS.test(name) && (unit||range||_labKnown(name))){
+        emit(name,value,unit,range,flag); clear(); continue;
+      }
+    }
+    // ── a bare "VALUE UNIT" line (block layout) ──
+    if(toks.length<=3 && LAB_VALUE_RE.test(toks[0])){
+      pendValue=toks[0]; pendUnit=_labUnit(toks[1])||pendUnit; continue;
+    }
+    // ── otherwise: a component NAME awaiting its value/range ──
+    if(/[A-Za-z]/.test(line) && line.length<=60 && !LAB_MONTHS.test(line)) pendName=line.replace(/[:\-\s]+$/,"");
   }
-  return results;
+  return out;
 }
 
 /* ═══ Clinical note section parser ═══ */
@@ -1779,6 +2062,806 @@ function parseClinicalSections(text) {
     sections.push({ title: "Full Text", body: text.trim().slice(0, 5000) });
   }
   return sections;
+}
+
+/* ═══ Diagnoses & clinical conclusions — the third thing worth keeping from a document ═══
+   Storage-bounded ON PURPOSE: caps are small and, unlike the old 10,000-character rawText, any truncation is
+   RECORDED (truncated:true) and shown to the user rather than happening silently. Worst case ~8 KB per document;
+   a typical discharge summary contributes 1–2 KB. */
+const DX_MAX_ITEMS = 40, DX_MAX_LEN = 140;
+const CONCLUSION_MAX_ITEMS = 6, CONCLUSION_MAX_LEN = 600;
+// "Assessment" is deliberately NOT here: in practice "Assessment and Plan" is prose, and treating it as a
+// diagnosis list swept whole sentences in as diagnoses. It is captured as a clinical CONCLUSION instead.
+const DX_HEADINGS = /^(diagnos[ei]s|diagnoses|impression|impressions|problem list|active problems|past medical history|pmh|conditions)\b/i;
+const DX_STOP_HEADINGS = /^(medications?|allergies|vitals?|vital signs|assessment|plan|conclusions?|recommendations|instructions|follow[- ]?up|labs?|laboratory|physical exam|review of systems|ros|social history|family history|referrals|chief complaint|hpi|history of present illness)\b/i;
+// ICD-10-CM: a letter (not U), two digits, optionally a dot and up to four more characters.
+const ICD10_RE = /\b([A-TV-Z][0-9][0-9AB](?:\.[0-9A-TV-Z]{1,4})?)\b/g;
+const CONCLUSION_TITLES = /^(assessment|plan|assessment and plan|a\/p|impression|impressions|conclusion|conclusions|recommendations|follow-up|instructions)$/i;
+// The closing bracket in that character class is written as \u0029 so the paren-balance build check stays accurate.
+const _dxClean = (l) => String(l||"").replace(/^[\s*•\-–—\u2022]*\d*[.\u0029]?\s*/,"").replace(/\s+/g," ").trim();
+// Pull diagnoses from (a) an explicit diagnosis/impression section and (b) any line carrying an ICD-10 code.
+function parseDiagnoses(text){
+  const out=[], seen={}; const lines=String(text||"").split(/\n/); let inDx=false;
+  const push=(label,code)=>{
+    let t=_dxClean(label); if(!t)return;
+    if(t.length>DX_MAX_LEN)t=t.slice(0,DX_MAX_LEN).replace(/\s+\S*$/,"")+"…";
+    const k=t.toLowerCase().replace(/[^a-z0-9]/g,""); if(!k||k.length<3||seen[k])return;
+    if(out.length>=DX_MAX_ITEMS)return;
+    seen[k]=1; out.push(code?{text:t,code}:{text:t});
+  };
+  for(const raw of lines){
+    const line=raw.trim(); if(!line)continue;
+    const bare=line.replace(/[:.\s]+$/,"");
+    if(bare.length<60&&DX_STOP_HEADINGS.test(bare)){ inDx=false; continue; }
+    if(bare.length<60&&DX_HEADINGS.test(bare)){ inDx=true;
+      const after=line.replace(/^[^:]*:/,"").trim(); if(after)push(after,(after.match(ICD10_RE)||[])[0]);
+      continue; }
+    ICD10_RE.lastIndex=0; const codes=line.match(ICD10_RE);
+    if(codes){ push(line.replace(ICD10_RE,"").replace(/[()\[\],;]+/g," "),codes[0]); continue; }
+    if(inDx)push(line);
+  }
+  return out;
+}
+// Keep the reasoning sections (assessment / plan / impression / follow-up), bounded and honestly marked.
+function parseConclusions(sections){
+  const out=[];
+  for(const s of (sections||[])){
+    const title=String(s.title||"").trim();
+    if(!CONCLUSION_TITLES.test(title))continue;
+    let body=String(s.body||"").replace(/\s+/g," ").trim(); if(body.length<10)continue;
+    let truncated=false;
+    if(body.length>CONCLUSION_MAX_LEN){ body=body.slice(0,CONCLUSION_MAX_LEN).replace(/\s+\S*$/,""); truncated=true; }
+    out.push({title,body,truncated});
+    if(out.length>=CONCLUSION_MAX_ITEMS)break;
+  }
+  return out;
+}
+
+// "saved 4 minutes ago" reads better than a timestamp for something the user checks at a glance.
+function relTime(iso){
+  if(!iso) return "";
+  const ms=Date.now()-new Date(iso).getTime();
+  if(!isFinite(ms)||ms<0) return "just now";
+  const m=Math.floor(ms/60000);
+  if(m<1) return "just now";
+  if(m<60) return m+" minute"+(m===1?"":"s")+" ago";
+  const h=Math.floor(m/60); if(h<24) return h+" hour"+(h===1?"":"s")+" ago";
+  const d=Math.floor(h/24); if(d<7) return d+" day"+(d===1?"":"s")+" ago";
+  return new Date(iso).toLocaleDateString();
+}
+
+/* ═══ Backup state: is this data actually backed up? ═══
+   The old answer was a timestamp (`lastBackupAt`), which is the wrong question. A backup taken before ten more
+   incidents were logged still read as "done" for seven days; a backup taken through any other path counted for
+   nothing. What a caregiver needs to know is not WHEN they last backed up but WHETHER what is on screen is in
+   the file — and if not, how much is missing.
+   So: fingerprint the exportable content. Same hash ⇒ backed up, no prompt, regardless of locking, unlocking or
+   the calendar. Different hash ⇒ say how many records changed. */
+const BACKUP_COUNT_KEYS=["incidents","appointments","contacts","expenses","documents","selfReports","savedDocs","medChanges","messages","shifts"];
+function backupCountable(d){
+  let n=0;
+  for(const k of BACKUP_COUNT_KEYS) n+=Array.isArray(d&&d[k])?d[k].length:0;
+  const ms=(d&&d.medSchedule)||{};
+  n+=(ms.medications||[]).length+(ms.log||[]).length;
+  const dom=(d&&d.domains)||{};
+  for(const k of Object.keys(dom)) n+=((dom[k]&&dom[k].notes)||"").length?1:0;
+  return n;
+}
+// Hash the content that a backup would contain, ignoring bookkeeping that changes on its own (sync clocks, the
+// upload queue, the backup marker itself) — otherwise the app would report itself out of date the instant it
+// finished backing up.
+async function backupFingerprint(d){
+  const c=JSON.parse(JSON.stringify(d||{}));
+  delete c._sync; delete c._outbox; delete c._exportMeta;
+  if(c.settings){ const st={...c.settings};
+    delete st.lastBackupAt; delete st.backupFingerprint; delete st.backupCount; delete st.cloudAuth; c.settings=st; }
+  const enc=new TextEncoder().encode(JSON.stringify(c));
+  const buf=await crypto.subtle.digest("SHA-256",enc);
+  return [...new Uint8Array(buf).slice(0,16)].map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+// "up-to-date" | "behind" | "none". `behind` carries how many records changed, so the UI can be specific.
+function backupState(d, fingerprint){
+  const marked=(d&&d.settings&&d.settings.backupFingerprint)||"";
+  if(!marked) return {state:"none",changed:backupCountable(d)};
+  if(marked===fingerprint) return {state:"up-to-date",changed:0};
+  const was=(d&&d.settings&&d.settings.backupCount)||0;
+  return {state:"behind",changed:Math.max(1,backupCountable(d)-was)};
+}
+
+/* ═══ Storage layer (Phase 0) ═══
+   One interface over every place the encrypted record can live: the device only, a relay, the admin's cloud, or
+   an in-memory fake used by tests. Everything above this layer works the same regardless.
+   Locked decisions this encodes:
+     • Local-only is a first-class mode, never a degraded one — "device" is a real provider, not a null case.
+     • One provider per circle; a second admin connecting a different one is a conflict to surface, not merge.
+     • The relay stays the transport; the admin's cloud is the durable store.
+     • After 7 days without a successful write, the user is told the cloud copy is stale.
+   No readable data crosses this boundary: callers hand over ciphertext already sealed under the circle key. */
+const STORAGE_STALE_DAYS = 7;
+const STORAGE_KINDS = ["device","relay","cloud","memory"];
+// Object layout. Per-device objects, never one shared blob: a single blob is last-write-wins at file granularity,
+// which silently discards a teammate's work.
+// Object names are DERIVED, not descriptive. The provider can already see how many objects exist, how big they
+// are and when they change; it should not additionally be handed the vocabulary to interpret them. The previous
+// layout said "audit-", "archive/2026-07/" and the device id in clear — which reveals that a HIPAA audit trail
+// exists, which months had activity, and how many devices a family has, all without decrypting anything.
+// Names are now HMAC-derived from the circle key, so they are stable (the same object always lands in the same
+// place, which the manifest and re-export depend on) but meaningless to anyone without the key.
+const STORAGE_NAME_INFO="cg-objname-v1";
+let _objNameKey=null, _objNameKeyFor="";
+async function storageNameKey(circleKeyB64){
+  if(_objNameKey && _objNameKeyFor===circleKeyB64) return _objNameKey;
+  const raw=await crypto.subtle.importKey("raw", b64dec(circleKeyB64||"0"), {name:"HKDF"}, false, ["deriveBits"]);
+  const bits=await crypto.subtle.deriveBits({name:"HKDF",hash:"SHA-256",salt:new Uint8Array(0),info:new TextEncoder().encode(STORAGE_NAME_INFO)}, raw, 256);
+  _objNameKey=await crypto.subtle.importKey("raw", bits, {name:"HMAC",hash:"SHA-256"}, false, ["sign"]);
+  _objNameKeyFor=circleKeyB64;
+  return _objNameKey;
+}
+async function storageObjName(circleKeyB64, parts){
+  const key=await storageNameKey(circleKeyB64);
+  const sig=await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(parts.join("\u0000")));
+  return b64enc(new Uint8Array(sig).slice(0,15)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+}
+// Plain layout, kept for the local/relay case and as the fallback when no circle key is available (solo use
+// before a circle exists). The manifest records which scheme a device used, so both can coexist.
+const storageKeys = {
+  state:   (circleId,deviceId)=>"circle/"+circleId+"/"+deviceId+"/state.enc",
+  rotation:(circleId)=>"circle/"+circleId+"/rotation/latest.enc",
+  manifest:(circleId)=>"circle/"+circleId+"/manifest.enc",
+  audit:   (circleId,deviceId,month)=>"archive/"+month+"/audit-"+deviceId+"."+circleId+".enc",
+  blob:    (blobId)=>"blobs/"+blobId+".enc",
+};
+// Opaque equivalents. Everything lands in one flat folder: a directory tree is itself a disclosure (it shows how
+// the data is organised and how many of each kind exist), so there isn't one.
+const storageKeysOpaque = {
+  async state(circleKey,circleId,deviceId){ return "cg/"+await storageObjName(circleKey,["state",circleId,deviceId])+".bin"; },
+  async rotation(circleKey,circleId){ return "cg/"+await storageObjName(circleKey,["rotation",circleId])+".bin"; },
+  async audit(circleKey,circleId,deviceId,month){ return "cg/"+await storageObjName(circleKey,["audit",circleId,deviceId,month])+".bin"; },
+  async blob(circleKey,blobId){ return "cg/"+await storageObjName(circleKey,["blob",blobId])+".bin"; },
+};
+// The manifest keeps a FIXED name: a device arriving for the first time must be able to find the index, and it
+// can only derive names once it holds the circle key — which it does, but the fixed name also lets a device with
+// a rotated key still locate the index rather than losing the whole store.
+const STORAGE_MANIFEST_NAME="cg/index.bin";
+// ── Size padding ──
+// Ciphertext length leaks content volume: a 40 KB state object versus 400 KB says how much care is being
+// recorded, and a sudden jump says something happened. Padding to buckets blunts that. Buckets grow
+// proportionally so the overhead stays bounded (never more than ~25%) rather than padding everything to a
+// worst case nobody needs.
+function storagePadTo(len){
+  const steps=[4096,8192,16384,32768,65536,131072,262144,524288,1048576];
+  for(const s of steps) if(len<=s) return s;
+  return Math.ceil(len/1048576)*1048576;
+}
+function storagePad(text){
+  const len=new TextEncoder().encode(text).length;
+  const target=storagePadTo(len+16);
+  return text+"\n"+"#".repeat(Math.max(0,target-len-1));   // padding is outside the JSON, stripped on read
+}
+const storageUnpad=(text)=>String(text||"").replace(/\n#+$/,"");
+const storageIsStateKey=(k)=>/^circle\/[^/]+\/[^/]+\/state\.enc$/.test(String(k||""));
+const storageDeviceOfKey=(k)=>{ const m=/^circle\/[^/]+\/([^/]+)\/state\.enc$/.exec(String(k||"")); return m?m[1]:""; };
+// In-memory provider. Used by tests, and it is also the honest shape of "device only" — writes succeed, nothing
+// travels. Quota is modelled so quota-exhaustion handling can be tested without filling a real Drive.
+function createMemoryStorage(opts){
+  const o=opts||{}; const store=new Map(); let used=0;
+  const quota=o.quotaBytes||5*1024*1024;
+  const fail=()=>{ if(o.failWith) throw new Error(o.failWith); };
+  return {
+    kind:"memory", label:o.label||"This device",
+    async put(key,text){ fail();
+      const size=new TextEncoder().encode(String(text)).length;
+      const prev=store.has(key)?new TextEncoder().encode(store.get(key)).length:0;
+      if(used-prev+size>quota){ const e=new Error("STORAGE_QUOTA"); e.code="QUOTA"; throw e; }
+      used=used-prev+size; store.set(key,String(text)); return {key,size}; },
+    async get(key){ fail(); if(!store.has(key)){ const e=new Error("STORAGE_NOT_FOUND"); e.code="NOT_FOUND"; throw e; } return store.get(key); },
+    async list(prefix){ fail(); return [...store.keys()].filter(k=>k.startsWith(prefix||"")).sort(); },
+    async del(key){ fail(); if(store.has(key)){ used-=new TextEncoder().encode(store.get(key)).length; store.delete(key); } return true; },
+    async quota(){ return {used,total:quota,free:Math.max(0,quota-used)}; },
+  };
+}
+// Wrap a configured cloud provider (Dropbox / OneDrive) in the same interface.
+function createCloudStorage(provider, getAccessToken){
+  return { kind:"cloud", label:provider.label,
+    async put(key,text){ const t=await getAccessToken(); return provider.upload(t,key,text); },
+    async get(key){ const t=await getAccessToken(); return provider.download(t,key); },
+    async list(prefix){ const t=await getAccessToken(); return provider.list(t,prefix); },
+    async del(key){ const t=await getAccessToken(); return provider.del?provider.del(t,key):true; },
+    async quota(){ return {used:0,total:0,free:0}; },   // providers differ; treated as unknown
+  };
+}
+// ── Storage failure classification (Phase 4) ═══
+// Every provider reports trouble differently and most of it arrives as an HTTP status inside an Error message.
+// Without classification the app can only say "sync failed", which is the least useful thing it could say: the
+// user cannot tell whether to reconnect, free up space, wait, or worry about their records. Each class below maps
+// to ONE required behaviour, and the invariant across all of them is that recording never stops — a storage
+// problem must never become a reason someone can't write down that a dose was given.
+const STORAGE_FAIL = {
+  AUTH:"auth",        // token expired or consent revoked → degrade to local, offer one-tap reconnect
+  QUOTA:"quota",      // account full → stop uploading, keep recording, tell them early
+  OFFLINE:"offline",  // no network → retry silently, this is normal on a phone
+  OUTAGE:"outage",    // provider 5xx → retry with backoff, surface only if it persists
+  RATE:"rate",        // throttled → back off, never hammer
+  MISSING:"missing",  // folder or manifest deleted → offer to re-upload from the local vault
+  UNKNOWN:"unknown",
+};
+function classifyStorageError(err, opts){
+  const o=opts||{};
+  if(o.offline===true) return STORAGE_FAIL.OFFLINE;
+  const msg=String((err&&err.message)||err||"");
+  const status=(err&&err.status)||Number((msg.match(/\b(4\d\d|5\d\d)\b/)||[])[1])||0;
+  if(err&&err.code==="QUOTA") return STORAGE_FAIL.QUOTA;
+  if(/insufficient[_ ]?(storage|space)|quota|storage.?full|507/i.test(msg)) return STORAGE_FAIL.QUOTA;
+  if(status===401||status===403||/expired|revoked|reconnect|invalid[_ ]grant|unauthor/i.test(msg)) return STORAGE_FAIL.AUTH;
+  if(status===429||/rate.?limit|too many requests|throttl/i.test(msg)) return STORAGE_FAIL.RATE;
+  if(status===404||/not[_ ]?found|LOCAL_MISSING/i.test(msg)) return STORAGE_FAIL.MISSING;
+  if(status>=500||/服务|unavailable|bad gateway|timeout|network|failed to fetch/i.test(msg)) return STORAGE_FAIL.OUTAGE;
+  return STORAGE_FAIL.UNKNOWN;
+}
+// What the user is told, and what the app does. Every message says where the records actually are, because that
+// is the only question a caregiver seeing an error actually cares about.
+const STORAGE_FAIL_UI = {
+  auth:   {title:"Reconnect your storage", body:"Your storage sign-in has expired. Your records are safe on this device and will upload as soon as you reconnect.", action:"reconnect", retry:false, alarm:true},
+  quota:  {title:"Your cloud storage is full", body:"Care Guardian has stopped uploading, but it is still recording everything on this device. Free up space and it will catch up on its own.", action:"none", retry:false, alarm:true},
+  offline:{title:"No connection", body:"Your records are being saved on this device and will upload when you're back online.", action:"none", retry:true, alarm:false},
+  outage: {title:"Storage is not responding", body:"Your provider isn't answering right now. Your records are safe on this device and Care Guardian will keep trying.", action:"none", retry:true, alarm:false},
+  rate:   {title:"Slowing down", body:"Your provider asked us to slow down. Care Guardian will finish uploading shortly.", action:"none", retry:true, alarm:false},
+  missing:{title:"Storage folder is missing", body:"The folder Care Guardian was using can't be found — it may have been moved or deleted. Everything is still on this device and can be uploaded again.", action:"reupload", retry:false, alarm:true},
+  unknown:{title:"Couldn't reach your storage", body:"Your records are safe on this device. Care Guardian will try again on the next sync.", action:"none", retry:true, alarm:false},
+};
+const storageFailUI=(cls)=>STORAGE_FAIL_UI[cls]||STORAGE_FAIL_UI.unknown;
+// Exponential backoff with a ceiling, so a provider outage is retried politely rather than hammered.
+function storageBackoffMs(attempt, baseMs, capMs){
+  const base=baseMs||30000, cap=capMs||3600000;
+  const raw=base*Math.pow(2,Math.max(0,(attempt||1)-1));
+  return Math.min(raw,cap);
+}
+const storageShouldRetryNow=(state,now)=>{
+  if(!state||!state.nextAttemptAt) return true;
+  return (now?new Date(now).getTime():Date.now())>=new Date(state.nextAttemptAt).getTime();
+};
+// Quota warning at 80%, so someone learns their Drive is filling up BEFORE uploads stop.
+const STORAGE_QUOTA_WARN = 0.8;
+function storageQuotaState(used,total){
+  if(!total||!isFinite(total)||total<=0) return {level:"unknown",pct:null};
+  const pct=used/total;
+  return {pct:Math.round(pct*100), level: pct>=1?"full" : pct>=STORAGE_QUOTA_WARN?"warn" : "ok"};
+}
+// ── Manifest: the index that makes per-device objects discoverable ──
+// The cloud providers here implement upload and download but NOT list — Dropbox, Drive and OneDrive each expose
+// listing differently and none is wired. So discovery cannot rely on enumerating a folder: the manifest IS the
+// index. Each device publishes its own state object and records itself in the manifest; every other device reads
+// the manifest to learn which objects to fetch.
+// Why per-device objects at all: with one shared file, two devices syncing the same day overwrite each other and
+// the loser's work is gone with no trace. Per-device objects mean writes never collide, and merging happens in
+// the app where the HLC clock can resolve it.
+const MANIFEST_VERSION = 1;
+function manifestEmpty(circleId){ return {v:MANIFEST_VERSION, circleId:circleId||"", epoch:0, devices:{}, updatedAt:""}; }
+// Record this device's contribution. Never removes another device's entry — a device that hasn't synced lately is
+// not a device that has left.
+function manifestPut(manifest, deviceId, entry, now){
+  const m=manifest&&manifest.v===MANIFEST_VERSION?{...manifest,devices:{...manifest.devices}}:manifestEmpty(manifest&&manifest.circleId);
+  // NOTE: the true byte size is deliberately NOT recorded. Nothing reads it, and publishing it would defeat the
+  // size padding applied to the objects themselves — the manifest would hand back exactly what padding hides.
+  m.devices[deviceId]={key:entry.key, updatedAt:now||new Date().toISOString(),
+    label:entry.label||"", epoch:entry.epoch||0};
+  m.epoch=Math.max(m.epoch||0, entry.epoch||0);
+  m.updatedAt=now||new Date().toISOString();
+  return m;
+}
+// Which objects should this device pull? Everyone else's, newest first, skipping ones we've already seen.
+function manifestPullList(manifest, selfDeviceId, seen){
+  const devices=(manifest&&manifest.devices)||{};
+  return Object.keys(devices)
+    .filter(id=>id!==selfDeviceId)
+    .map(id=>({deviceId:id,...devices[id]}))
+    .filter(d=>d.key && !(seen&&seen[d.deviceId]===d.updatedAt))
+    .sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+// Two devices can write the manifest at nearly the same moment and the later write wins at file level, dropping
+// the other's entry. Merging on read repairs that: take the newest entry per device from both copies.
+function manifestMerge(a, b){
+  const out=manifestEmpty((a&&a.circleId)||(b&&b.circleId));
+  for(const src of [a,b]){
+    if(!src||!src.devices) continue;
+    for(const id of Object.keys(src.devices)){
+      const cand=src.devices[id], cur=out.devices[id];
+      if(!cur || String(cand.updatedAt||"")>String(cur.updatedAt||"")) out.devices[id]=cand;
+    }
+    out.epoch=Math.max(out.epoch||0, src.epoch||0);
+    if(String(src.updatedAt||"")>String(out.updatedAt||"")) out.updatedAt=src.updatedAt;
+  }
+  return out;
+}
+// A device whose objects belong to a superseded key epoch can't be read after rotation; report rather than fail.
+function manifestStaleDevices(manifest, currentEpoch){
+  const devices=(manifest&&manifest.devices)||{};
+  return Object.keys(devices).filter(id=>(devices[id].epoch||0)<(currentEpoch||0)).map(id=>({deviceId:id,...devices[id]}));
+}
+// ── Provider capability: the architectural consequence of supporting Google Drive ──
+// Dropbox and OneDrive are PKCE public clients that issue a REFRESH token, so authorisation survives the app
+// being closed. Google Drive in a browser cannot: its Web-application client type requires a client_secret at the
+// token endpoint (which a browser cannot keep), and the Google Identity Services token model — the flow Google
+// actually recommends for SPAs — issues a short-lived access token and NO refresh token. Google access is
+// therefore SESSION-SCOPED: real while the app is open, gone when it closes.
+// Rather than treat that as a defect, the sync engine now treats provider availability as intermittent by
+// default. That is honest for every provider — offline, expired token, revoked consent, exhausted quota all look
+// the same — so the design that makes Google first-class also makes Dropbox and OneDrive more robust.
+const STORAGE_CAPS = {
+  dropbox:  {auth:"persistent", background:true,  label:"Dropbox"},
+  onedrive: {auth:"persistent", background:true,  label:"OneDrive"},
+  googledrive:{auth:"session",  background:false, label:"Google Drive",
+    note:"Google doesn't allow a browser app to stay signed in between visits, so Care Guardian saves to Drive while you're using it and reconnects with one tap when you come back."},
+  memory:   {auth:"persistent", background:true,  label:"This device"},
+};
+const storageCaps=(id)=>STORAGE_CAPS[id]||{auth:"session",background:false,label:String(id||"")};
+// ── Outbox: what makes intermittent providers safe ──
+// Every change that needs uploading is queued locally and drained whenever storage happens to be available.
+// Entries are deduplicated BY KEY, because each object is a complete snapshot: queueing state.enc five times
+// means the fifth supersedes the rest. Without that the queue would grow without bound on a busy day.
+const STORAGE_OUTBOX_MAX = 500;
+function outboxEnqueue(outbox, entry, now){
+  const q=(outbox||[]).filter(e=>e && e.key!==entry.key);
+  q.push({key:entry.key, kind:entry.kind||"state", queuedAt:now||new Date().toISOString(), tries:0});
+  return q.length>STORAGE_OUTBOX_MAX ? q.slice(q.length-STORAGE_OUTBOX_MAX) : q;
+}
+// The manifest must be written last, so it is always drained after everything else it points at.
+function outboxOrder(outbox){
+  const q=[...(outbox||[])];
+  return q.sort((a,b)=>(a.kind==="manifest"?1:0)-(b.kind==="manifest"?1:0)||String(a.queuedAt).localeCompare(String(b.queuedAt)));
+}
+// Drain against any provider. A failure is retried, not dropped: a queue that discards on error is not a queue.
+// A quota failure stops the run — retrying the rest would just fail too, and hammering the provider is rude.
+async function outboxDrain(provider, outbox, readObject, opts){
+  const o=opts||{}; const maxTries=o.maxTries||5;
+  let remaining=[...outboxOrder(outbox)]; const done=[]; let stopped=null;
+  for(const entry of outboxOrder(outbox)){
+    let body;
+    try{ body=await readObject(entry); }catch(e){ remaining=remaining.filter(x=>x.key!==entry.key); continue; } // object gone: drop it
+    try{
+      await provider.put(entry.key, body);
+      remaining=remaining.filter(x=>x.key!==entry.key); done.push(entry.key);
+    }catch(e){
+      const code=e&&e.code;
+      if(code==="QUOTA"){ stopped="QUOTA"; break; }
+      remaining=remaining.map(x=>x.key===entry.key?{...x,tries:(x.tries||0)+1,lastError:String(e&&e.message||e)}:x)
+                         .filter(x=>x.key!==entry.key||(x.tries||0)<maxTries);
+      if(o.stopOnError){ stopped=code||"ERROR"; break; }
+    }
+  }
+  return {outbox:remaining, uploaded:done, stopped, complete:remaining.length===0};
+}
+// ── Staleness (locked: 7 days) ──
+function storageStaleness(lastOkAt, now){
+  if(!lastOkAt) return {days:null,level:"never",stale:true};
+  const t=new Date(lastOkAt).getTime(), n=(now?new Date(now):new Date()).getTime();
+  if(!isFinite(t)) return {days:null,level:"never",stale:true};
+  const days=Math.floor((n-t)/86400000);
+  return {days, stale:days>=STORAGE_STALE_DAYS, level:days>=STORAGE_STALE_DAYS?"stale":(days>=Math.floor(STORAGE_STALE_DAYS/2)?"ageing":"fresh")};
+}
+// ── One provider per circle ──
+// A second admin connecting different storage must be surfaced, never silently merged: two clouds means two
+// divergent copies of the record and no way to say which is authoritative.
+function storageProviderConflict(local, remote){
+  const a=local&&local.provider, b=remote&&remote.provider;
+  if(!a||!b||a===b) return null;
+  return {conflict:true, local:a, remote:b,
+    localAccount:(local&&local.account)||"", remoteAccount:(remote&&remote.account)||""};
+}
+// ── What a sync writes ──
+function storagePlanUploads(circleId, deviceId, opts){
+  const o=opts||{}; const out=[{key:storageKeys.state(circleId,deviceId),kind:"state"}];
+  if(o.rotation) out.push({key:storageKeys.rotation(circleId),kind:"rotation"});
+  if(o.auditMonth) out.push({key:storageKeys.audit(circleId,deviceId,o.auditMonth),kind:"audit"});
+  for(const b of (o.blobIds||[])) out.push({key:storageKeys.blob(b),kind:"blob"});
+  out.push({key:storageKeys.manifest(circleId),kind:"manifest",last:true}); // manifest written LAST
+  return out;
+}
+
+/* ═══ Drug reference — name autocomplete and STRENGTH VALIDATION ═══
+   Scope is deliberate and narrow: this confirms that what you typed is a real strength of a real drug. It does
+   NOT suggest doses. Prefilling a "usual dose" next to a prescribed one invites a caregiver to "correct" the
+   prescription, and software that hands a specific treatment directive to a layperson starts to look like
+   regulated clinical decision support. So: catalogue lookup, yes; clinical advice, no.
+   Validation is ALWAYS advisory and never blocks saving. A real prescription can be a split tablet, a compounded
+   preparation, or a drug newer than this table — an app that refuses to record what a doctor actually prescribed
+   would be worse than one that stays quiet. Unknown drug ⇒ say nothing at all rather than cast doubt. */
+const DRUG_DATA_SOURCE="curated seed list (dementia/older-adult care)";
+const DRUG_DATA_VERSION="2026-07";
+const DRUG_TABLE=[
+{n:"Donepezil",b:["Aricept"],s:["5 mg","10 mg","23 mg"]},
+{n:"Memantine",b:["Namenda"],s:["5 mg","10 mg"]},
+{n:"Memantine ER",b:["Namenda XR"],s:["7 mg","14 mg","21 mg","28 mg"]},
+{n:"Rivastigmine",b:["Exelon"],s:["1.5 mg","3 mg","4.5 mg","6 mg"]},
+{n:"Rivastigmine patch",b:["Exelon Patch"],s:["4.6 mg/24 hr","9.5 mg/24 hr","13.3 mg/24 hr"]},
+{n:"Galantamine",b:["Razadyne"],s:["4 mg","8 mg","12 mg"]},
+{n:"Galantamine ER",b:["Razadyne ER"],s:["8 mg","16 mg","24 mg"]},
+{n:"Sertraline",b:["Zoloft"],s:["25 mg","50 mg","100 mg"]},
+{n:"Escitalopram",b:["Lexapro"],s:["5 mg","10 mg","20 mg"]},
+{n:"Citalopram",b:["Celexa"],s:["10 mg","20 mg","40 mg"]},
+{n:"Fluoxetine",b:["Prozac"],s:["10 mg","20 mg","40 mg"]},
+{n:"Paroxetine",b:["Paxil"],s:["10 mg","20 mg","30 mg","40 mg"]},
+{n:"Venlafaxine ER",b:["Effexor XR"],s:["37.5 mg","75 mg","150 mg"]},
+{n:"Duloxetine",b:["Cymbalta"],s:["20 mg","30 mg","60 mg"]},
+{n:"Mirtazapine",b:["Remeron"],s:["7.5 mg","15 mg","30 mg","45 mg"]},
+{n:"Trazodone",b:["Desyrel"],s:["50 mg","100 mg","150 mg","300 mg"]},
+{n:"Bupropion XL",b:["Wellbutrin XL"],s:["150 mg","300 mg"]},
+{n:"Quetiapine",b:["Seroquel"],s:["25 mg","50 mg","100 mg","200 mg","300 mg","400 mg"]},
+{n:"Risperidone",b:["Risperdal"],s:["0.25 mg","0.5 mg","1 mg","2 mg","3 mg","4 mg"]},
+{n:"Olanzapine",b:["Zyprexa"],s:["2.5 mg","5 mg","7.5 mg","10 mg","15 mg","20 mg"]},
+{n:"Aripiprazole",b:["Abilify"],s:["2 mg","5 mg","10 mg","15 mg","20 mg","30 mg"]},
+{n:"Haloperidol",b:["Haldol"],s:["0.5 mg","1 mg","2 mg","5 mg","10 mg","20 mg"]},
+{n:"Lorazepam",b:["Ativan"],s:["0.5 mg","1 mg","2 mg"]},
+{n:"Alprazolam",b:["Xanax"],s:["0.25 mg","0.5 mg","1 mg","2 mg"]},
+{n:"Clonazepam",b:["Klonopin"],s:["0.5 mg","1 mg","2 mg"]},
+{n:"Zolpidem",b:["Ambien"],s:["5 mg","10 mg"]},
+{n:"Melatonin",b:[],s:["1 mg","3 mg","5 mg","10 mg"]},
+{n:"Lisinopril",b:["Zestril","Prinivil"],s:["2.5 mg","5 mg","10 mg","20 mg","30 mg","40 mg"]},
+{n:"Amlodipine",b:["Norvasc"],s:["2.5 mg","5 mg","10 mg"]},
+{n:"Losartan",b:["Cozaar"],s:["25 mg","50 mg","100 mg"]},
+{n:"Metoprolol tartrate",b:["Lopressor"],s:["25 mg","50 mg","100 mg"]},
+{n:"Metoprolol succinate ER",b:["Toprol XL"],s:["25 mg","50 mg","100 mg","200 mg"]},
+{n:"Atenolol",b:["Tenormin"],s:["25 mg","50 mg","100 mg"]},
+{n:"Carvedilol",b:["Coreg"],s:["3.125 mg","6.25 mg","12.5 mg","25 mg"]},
+{n:"Hydrochlorothiazide",b:["Microzide"],s:["12.5 mg","25 mg","50 mg"]},
+{n:"Furosemide",b:["Lasix"],s:["20 mg","40 mg","80 mg"]},
+{n:"Spironolactone",b:["Aldactone"],s:["25 mg","50 mg","100 mg"]},
+{n:"Digoxin",b:["Lanoxin"],s:["0.125 mg","0.25 mg"]},
+{n:"Diltiazem ER",b:["Cardizem CD"],s:["120 mg","180 mg","240 mg","300 mg"]},
+{n:"Warfarin",b:["Coumadin"],s:["1 mg","2 mg","2.5 mg","3 mg","4 mg","5 mg","6 mg","7.5 mg","10 mg"]},
+{n:"Apixaban",b:["Eliquis"],s:["2.5 mg","5 mg"]},
+{n:"Rivaroxaban",b:["Xarelto"],s:["10 mg","15 mg","20 mg"]},
+{n:"Clopidogrel",b:["Plavix"],s:["75 mg"]},
+{n:"Aspirin",b:[],s:["81 mg","325 mg"]},
+{n:"Atorvastatin",b:["Lipitor"],s:["10 mg","20 mg","40 mg","80 mg"]},
+{n:"Simvastatin",b:["Zocor"],s:["5 mg","10 mg","20 mg","40 mg","80 mg"]},
+{n:"Rosuvastatin",b:["Crestor"],s:["5 mg","10 mg","20 mg","40 mg"]},
+{n:"Pravastatin",b:["Pravachol"],s:["10 mg","20 mg","40 mg","80 mg"]},
+{n:"Metformin",b:["Glucophage"],s:["500 mg","850 mg","1000 mg"]},
+{n:"Metformin ER",b:["Glucophage XR"],s:["500 mg","750 mg","1000 mg"]},
+{n:"Glipizide",b:["Glucotrol"],s:["5 mg","10 mg"]},
+{n:"Sitagliptin",b:["Januvia"],s:["25 mg","50 mg","100 mg"]},
+{n:"Empagliflozin",b:["Jardiance"],s:["10 mg","25 mg"]},
+{n:"Levothyroxine",b:["Synthroid"],s:["25 mcg","50 mcg","75 mcg","88 mcg","100 mcg","112 mcg","125 mcg","137 mcg","150 mcg","175 mcg","200 mcg"]},
+{n:"Omeprazole",b:["Prilosec"],s:["10 mg","20 mg","40 mg"]},
+{n:"Pantoprazole",b:["Protonix"],s:["20 mg","40 mg"]},
+{n:"Famotidine",b:["Pepcid"],s:["10 mg","20 mg","40 mg"]},
+{n:"Docusate sodium",b:["Colace"],s:["100 mg"]},
+{n:"Senna",b:["Senokot"],s:["8.6 mg"]},
+{n:"Polyethylene glycol 3350",b:["Miralax"],s:["17 g"]},
+{n:"Acetaminophen",b:["Tylenol"],s:["325 mg","500 mg","650 mg"]},
+{n:"Ibuprofen",b:["Advil","Motrin"],s:["200 mg","400 mg","600 mg","800 mg"]},
+{n:"Tramadol",b:["Ultram"],s:["50 mg"]},
+{n:"Oxycodone",b:["Roxicodone"],s:["5 mg","10 mg","15 mg","20 mg","30 mg"]},
+{n:"Gabapentin",b:["Neurontin"],s:["100 mg","300 mg","400 mg","600 mg","800 mg"]},
+{n:"Pregabalin",b:["Lyrica"],s:["25 mg","50 mg","75 mg","100 mg","150 mg","200 mg","225 mg","300 mg"]},
+{n:"Carbidopa-Levodopa",b:["Sinemet"],s:["10-100 mg","25-100 mg","25-250 mg"]},
+{n:"Ropinirole",b:["Requip"],s:["0.25 mg","0.5 mg","1 mg","2 mg","3 mg","4 mg","5 mg"]},
+{n:"Tamsulosin",b:["Flomax"],s:["0.4 mg"]},
+{n:"Oxybutynin",b:["Ditropan"],s:["5 mg"]},
+{n:"Finasteride",b:["Proscar"],s:["5 mg"]},
+{n:"Alendronate",b:["Fosamax"],s:["35 mg","70 mg"]},
+{n:"Vitamin D3 (cholecalciferol)",b:[],s:["1000 unit","2000 unit","5000 unit"]},
+{n:"Calcium carbonate",b:["Tums"],s:["500 mg","600 mg"]},
+{n:"Ferrous sulfate",b:[],s:["325 mg"]},
+{n:"Potassium chloride ER",b:["Klor-Con"],s:["8 mEq","10 mEq","20 mEq"]},
+{n:"Prednisone",b:[],s:["1 mg","2.5 mg","5 mg","10 mg","20 mg","50 mg"]},
+{n:"Allopurinol",b:["Zyloprim"],s:["100 mg","300 mg"]},
+{n:"Levetiracetam",b:["Keppra"],s:["250 mg","500 mg","750 mg","1000 mg"]},
+{n:"Amoxicillin",b:[],s:["250 mg","500 mg","875 mg"]},
+{n:"Cephalexin",b:["Keflex"],s:["250 mg","500 mg"]},
+{n:"Nitrofurantoin",b:["Macrobid"],s:["100 mg"]},
+{n:"Ciprofloxacin",b:["Cipro"],s:["250 mg","500 mg"]},
+{n:"Azithromycin",b:["Zithromax"],s:["250 mg","500 mg"]},
+{n:"Ondansetron",b:["Zofran"],s:["4 mg","8 mg"]},
+{n:"Cyanocobalamin (B12)",b:[],s:["500 mcg","1000 mcg"]},
+{n:"Tiotropium",b:["Spiriva"],s:["18 mcg"]},
+{n:"Albuterol",b:["ProAir","Ventolin"],s:["90 mcg/actuation"]},
+{n:"Montelukast",b:["Singulair"],s:["10 mg"]},
+{n:"Latanoprost",b:["Xalatan"],s:["0.005 %"]},
+{n:"Hydralazine",b:[],s:["10 mg","25 mg","50 mg","100 mg"]},
+{n:"Isosorbide mononitrate ER",b:["Imdur"],s:["30 mg","60 mg","120 mg"]}];
+
+const drugNorm=(t)=>String(t||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();
+// Rank: exact generic > generic prefix > brand prefix > word-start anywhere > substring.
+function drugSearch(query, limit){
+  const q=drugNorm(query); if(q.length<2) return [];
+  const out=[];
+  for(const d of DRUG_TABLE){
+    const gn=drugNorm(d.n); let score=-1, via="";
+    if(gn===q) score=0;
+    else if(gn.startsWith(q)) score=1;
+    else { for(const b of (d.b||[])){ const bn=drugNorm(b);
+        if(bn===q){score=Math.min(score<0?2:score,2);via=b;break}
+        if(bn.startsWith(q)){score=score<0?3:Math.min(score,3);via=b} } }
+    if(score<0 && new RegExp("\\b"+q.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).test(gn)) score=4;
+    if(score<0 && gn.indexOf(q)>=0) score=5;
+    if(score>=0) out.push({drug:d,score,via});
+  }
+  out.sort((a,b)=>a.score-b.score||a.drug.n.length-b.drug.n.length||a.drug.n.localeCompare(b.drug.n));
+  return out.slice(0,limit||8);
+}
+const drugFind=(name)=>{ const q=drugNorm(name); if(!q) return null;
+  return DRUG_TABLE.find(d=>drugNorm(d.n)===q) || DRUG_TABLE.find(d=>(d.b||[]).some(b=>drugNorm(b)===q)) || null; };
+// Normalise a strength for comparison: "500MG" / "500 mg" / "0.5 g" all become "500 mg"; mcg and units are kept
+// distinct because 100 mcg and 100 mg are different medicines' worth of drug.
+function drugNormStrength(text){
+  let t=String(text||"").toLowerCase().replace(/\u00b5/g,"u").trim();
+  t=t.replace(/micrograms?|µg/g,"mcg").replace(/milligrams?/g,"mg").replace(/grams?\b/g,"g")
+     .replace(/\bunits?\b|\biu\b/g,"unit").replace(/\bmeq\b/g,"meq").replace(/\s+/g," ");
+  const combo=t.match(/^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*(mg|mcg|g|unit|meq|%)?$/);
+  if(combo) return combo[1]+"-"+combo[2]+" "+(combo[3]||"mg");
+  const m=t.match(/^(\d+(?:\.\d+)?)\s*(mg|mcg|g|unit|meq|%|mg\/24 ?hr|mcg\/actuation)?\b/);
+  if(!m) return "";
+  let val=parseFloat(m[1]), unit=m[2]||"mg";
+  if(unit==="g"){ val=val*1000; unit="mg"; }
+  const rest=t.slice(m[0].length).trim();
+  const suffix=/24 ?hr/.test(t)?"/24 hr":(/actuation/.test(t)?"/actuation":"");
+  return (Math.round(val*1e6)/1e6)+" "+unit.replace(/\/.*$/,"")+suffix+(rest&&/patch|cream|ml/.test(rest)?"":"");
+}
+// Returns one of: "no-drug" (nothing typed we recognise — stay silent), "no-dose", "match", "unknown-strength".
+function drugValidateDose(name, dose){
+  const d=drugFind(name);
+  if(!d) return {status:"no-drug"};
+  const want=drugNormStrength(dose);
+  if(!want) return {status:"no-dose",drug:d};
+  const known=(d.s||[]).map(drugNormStrength);
+  if(known.indexOf(want)>=0) return {status:"match",drug:d};
+  // A half tablet is ordinary practice in this population; call it out as plausible rather than wrong.
+  const num=parseFloat(want);
+  const half=(d.s||[]).some(x=>{const v=parseFloat(drugNormStrength(x)); return isFinite(v)&&isFinite(num)&&Math.abs(v/2-num)<1e-6;});
+  return {status:"unknown-strength",drug:d,half,known:d.s||[]};
+}
+
+/* ═══ Medication adherence — pure, testable. Powers the calendar, the filters and the per-medication trend. ═══
+   Two deliberate distinctions:
+     • "As Needed" (PRN) doses are NOT scheduled, so they never count against adherence — a PRN dose that wasn't
+       needed is not a missed dose. PRN doses that WERE given still show as activity.
+     • A dose nobody recorded is "unrecorded", not "missed". Both reduce adherence, but calling an unrecorded dose
+       a missed dose would put a clinical claim in the record that no one actually made. They are coloured and
+       counted separately so a gap in the paperwork can't be mistaken for a gap in care. */
+const MED_PRN_SLOT = "As Needed";
+const MED_ADH = { FULL:"full", PARTIAL:"partial", MISSED:"missed", UNRECORDED:"unrecorded", NONE:"none", FUTURE:"future" };
+const medDayKey = (d) => { const dt=(d instanceof Date)?d:new Date(d+"T12:00:00");
+  return dt.getFullYear()+"-"+String(dt.getMonth()+1).padStart(2,"0")+"-"+String(dt.getDate()).padStart(2,"0"); };
+const medScheduledSlots = (m) => (m&&m.timeSlots||[]).filter(s=>s!==MED_PRN_SLOT);
+// A medication only counts on days it actually existed: from its start date until the day it was discontinued.
+function medActiveOn(m, date){
+  if(!m) return false;
+  const start=m.startDate||"", stop=m.discontinued?(m.discontinuedDate||""):"";
+  if(start && date<start) return false;
+  if(stop && date>stop) return false;
+  return true;
+}
+// One day's picture for one medication or for all of them.
+function medDayAdherence(meds, log, date, medId){
+  const byKey={}; for(const l of (log||[])) if(l&&l.date===date) byKey[l.medId+"|"+l.slot]=l.status;
+  let scheduled=0,given=0,missed=0,refused=0,skipped=0,prnGiven=0;
+  for(const m of (meds||[])){
+    if(medId&&medId!=="all"&&m.id!==medId) continue;
+    if(!medActiveOn(m,date)) continue;
+    for(const slot of (m.timeSlots||[])){
+      const st=byKey[m.id+"|"+slot];
+      if(slot===MED_PRN_SLOT){ if(st==="given")prnGiven++; continue; }
+      scheduled++;
+      if(st==="given")given++; else if(st==="missed")missed++; else if(st==="refused")refused++; else if(st==="skipped")skipped++;
+    }
+  }
+  // A dose deliberately withheld on clinical grounds is NOT non-adherence — it is a decision someone made and
+  // recorded. It is counted separately and excluded from the scheduled denominator, so following medical advice
+  // never looks like failing to give medication.
+  return {scheduled:Math.max(0,scheduled-skipped),given,missed,refused,skipped,prnGiven,
+    unrecorded:Math.max(0,scheduled-skipped-given-missed-refused)};
+}
+// Classify a day for colouring. `today` lets the caller keep future days neutral.
+function medDayState(day, date, today){
+  if(date>today) return MED_ADH.FUTURE;
+  if(!day.scheduled) return day.prnGiven?MED_ADH.FULL:MED_ADH.NONE;
+  if(day.given===day.scheduled) return MED_ADH.FULL;
+  if(day.given===0 && day.unrecorded===day.scheduled) return MED_ADH.UNRECORDED;
+  if(day.given===0) return MED_ADH.MISSED;
+  return MED_ADH.PARTIAL;
+}
+// Roll a date range up into per-day states plus totals. Adherence % = given ÷ scheduled over days that counted.
+function medAdherenceRange(meds, log, from, to, medId, today){
+  const days=[]; let scheduled=0,given=0,missed=0,refused=0,skipped=0,unrecorded=0,prnGiven=0;
+  const t=today||medDayKey(new Date());
+  const start=new Date(from+"T12:00:00"), end=new Date(to+"T12:00:00");
+  for(let d=new Date(start); d<=end; d.setDate(d.getDate()+1)){
+    const date=medDayKey(d);
+    const day=medDayAdherence(meds,log,date,medId);
+    const state=medDayState(day,date,t);
+    days.push({date,...day,state});
+    if(date>t) continue;
+    scheduled+=day.scheduled; given+=day.given; missed+=day.missed; refused+=day.refused; skipped+=day.skipped||0;
+    unrecorded+=day.unrecorded; prnGiven+=day.prnGiven;
+  }
+  return {days,scheduled,given,missed,refused,skipped,unrecorded,prnGiven,
+    pct: scheduled? Math.round((given/scheduled)*100) : null};
+}
+// Consecutive fully-given days ending today (days with nothing scheduled don't break it).
+function medStreak(days, today){
+  let streak=0;
+  for(let i=days.length-1;i>=0;i--){ const d=days[i]; if(d.date>today) continue;
+    if(d.state===MED_ADH.FULL){ streak++; continue; }
+    if(d.state===MED_ADH.NONE) continue;
+    break; }
+  return streak;
+}
+
+/* ═══ Calendar export (RFC 5545 / .ics) — pure and testable ═══
+   Care Guardian has no server, and the web platform has no API that writes to a device calendar, so the exchange
+   format IS the integration: a file the calendar app opens. Two details make that feel automatic rather than
+   clerical: a STABLE UID per appointment, so re-exporting UPDATES the existing event instead of creating a second
+   copy, and SEQUENCE, which tells the calendar this version is newer. Deleted appointments are exported once as
+   STATUS:CANCELLED so they disappear from the calendar too.
+   Times are exported as FLOATING local time (no TZID, no Z): a 9:00 appointment stays 9:00 in whatever timezone
+   the phone is in, which is what a caregiver means. The trade-off is that it does not shift for someone who
+   travels across zones mid-treatment — the honest default for this use, but a choice, not an accident. */
+const ICS_PRODID = "-//Care Guardian//Care Guardian PWA//EN";
+const ICS_DEFAULT_MINUTES = 60;
+// RFC 5545 §3.3.11: backslash, semicolon and comma are escaped; newlines become \n.
+const icsEscape = (t) => String(t==null?"":t).replace(/\\/g,"\\\\").replace(/;/g,"\\;").replace(/,/g,"\\,").replace(/\r?\n/g,"\\n");
+// §3.1: lines are folded at 75 OCTETS (not characters) — folding mid-UTF-8-sequence corrupts accented names.
+function icsFold(line){
+  const bytes=new TextEncoder().encode(line);
+  if(bytes.length<=75) return line;
+  const out=[]; let start=0, limit=75;
+  while(start<bytes.length){
+    let end=Math.min(start+limit,bytes.length);
+    while(end>start && end<bytes.length && (bytes[end]&0xC0)===0x80) end--;   // never split a UTF-8 sequence
+    out.push(new TextDecoder().decode(bytes.slice(start,end)));
+    start=end; limit=74;                                                      // continuation lines carry a leading space
+  }
+  return out.join("\r\n ");
+}
+const icsPad=(n)=>String(n).padStart(2,"0");
+// "2026-07-14" + "09:30" → "20260714T093000" (floating local time)
+function icsLocalStamp(date,time){
+  const [y,m,d]=String(date||"").split("-").map(Number);
+  const [hh,mm]=String(time||"00:00").split(":").map(Number);
+  if(!y||!m||!d) return "";
+  return ""+y+icsPad(m)+icsPad(d)+"T"+icsPad(hh||0)+icsPad(mm||0)+"00";
+}
+function icsAddMinutes(date,time,mins){
+  const [y,m,d]=String(date||"").split("-").map(Number);
+  const [hh,mm]=String(time||"00:00").split(":").map(Number);
+  const dt=new Date(y,(m||1)-1,d||1,hh||0,mm||0,0);
+  dt.setMinutes(dt.getMinutes()+(mins||ICS_DEFAULT_MINUTES));
+  return ""+dt.getFullYear()+icsPad(dt.getMonth()+1)+icsPad(dt.getDate())+"T"+icsPad(dt.getHours())+icsPad(dt.getMinutes())+"00";
+}
+const icsUtcStamp = (d) => { const t=d||new Date();
+  return ""+t.getUTCFullYear()+icsPad(t.getUTCMonth()+1)+icsPad(t.getUTCDate())+"T"+icsPad(t.getUTCHours())+icsPad(t.getUTCMinutes())+icsPad(t.getUTCSeconds())+"Z"; };
+// A UID must be globally unique and never change. Local ids alone are not safe: two devices in a circle can mint
+// the same local id, which would make one appointment silently overwrite another in the user's calendar.
+function icsMakeUid(localId, scope){
+  const rand=(typeof crypto!=="undefined"&&crypto.getRandomValues)
+    ? Array.from(crypto.getRandomValues(new Uint8Array(6))).map(b=>b.toString(16).padStart(2,"0")).join("")
+    : Math.random().toString(16).slice(2,14);
+  return "cg-"+String(localId||"x").replace(/[^A-Za-z0-9_-]/g,"")+"-"+String(scope||"local").replace(/[^A-Za-z0-9_-]/g,"").slice(0,12)+"-"+rand+"@careguardian";
+}
+// What the calendar shows. The clinical title stays in the vault; the calendar gets the safe one when set.
+const icsCalendarTitle = (appt) => { const safe=(appt&&appt.calTitle||"").trim(); return safe || (appt&&appt.title||"Appointment"); };
+function icsVEvent(appt, opts){
+  const o=opts||{};
+  const start=icsLocalStamp(appt.date,appt.time||"09:00");
+  if(!start) return "";
+  const end=icsAddMinutes(appt.date,appt.time||"09:00",appt.durationMin||ICS_DEFAULT_MINUTES);
+  const lines=["BEGIN:VEVENT",
+    "UID:"+(appt.uid||icsMakeUid(appt.id,o.scope)),
+    "DTSTAMP:"+icsUtcStamp(o.now),
+    "SEQUENCE:"+(appt.seq||0),
+    "DTSTART:"+start,
+    "DTEND:"+end,
+    "SUMMARY:"+icsEscape(icsCalendarTitle(appt))];
+  // Notes may hold clinical detail, so they only travel when the caller explicitly asks.
+  if(o.includeNotes && appt.notes) lines.push("DESCRIPTION:"+icsEscape(appt.notes));
+  if(appt.location) lines.push("LOCATION:"+icsEscape(appt.location));
+  lines.push("STATUS:"+(appt.cancelled?"CANCELLED":"CONFIRMED"));
+  lines.push("END:VEVENT");
+  return lines.map(icsFold).join("\r\n");
+}
+function icsCalendar(appts, opts){
+  const o=opts||{};
+  const head=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:"+ICS_PRODID,"CALSCALE:GREGORIAN","METHOD:PUBLISH"];
+  const body=(appts||[]).map(a=>icsVEvent(a,o)).filter(Boolean);
+  return head.map(icsFold).join("\r\n")+"\r\n"+(body.length?body.join("\r\n")+"\r\n":"")+"END:VCALENDAR\r\n";
+}
+
+/* ═══ Calendar import (.ics) — the caregiver's OWN calendar, for conflict detection ═══
+   Direction matters: this brings the CAREGIVER's commitments in (work shifts, their own appointments) so the app
+   can warn that a clinic visit collides with something. Nothing leaves the device. Only what a conflict check
+   needs is kept — title, start, end — and it is capped and time-bounded, because a work calendar is someone
+   else's private data and this vault should not quietly become a copy of it. */
+const ICSIMP_MAX_EVENTS = 400;
+const ICSIMP_MAX_TITLE = 80;
+// §3.1 unfolding: a CRLF followed by a space or tab continues the previous line. Do this before anything else.
+const icsUnfold = (text) => String(text||"").replace(/\r\n/g,"\n").replace(/\n[ \t]/g,"");
+const icsUnescape = (v) => String(v||"").replace(/\\n/gi,"\n").replace(/\\,/g,",").replace(/\\;/g,";").replace(/\\\\/g,"\\");
+// "20260714T093000Z" | "20260714T093000" | "20260714" → {date:"YYYY-MM-DD", time:"HH:MM"|null, allDay:bool}
+function icsParseWhen(raw, params){
+  const v=String(raw||"").trim();
+  const m=/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?(Z)?)?$/.exec(v);
+  if(!m) return null;
+  const isDate=(params&&/VALUE=DATE(?!-TIME)/i.test(params))||!m[4];
+  if(isDate) return {date:m[1]+"-"+m[2]+"-"+m[3],time:null,allDay:true};
+  if(m[7]){ // UTC — convert to this device's local time so comparisons against local appointments are honest
+    const d=new Date(Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+(m[6]||0)));
+    const pad=(n)=>String(n).padStart(2,"0");
+    return {date:d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate()),time:pad(d.getHours())+":"+pad(d.getMinutes()),allDay:false};
+  }
+  return {date:m[1]+"-"+m[2]+"-"+m[3],time:m[4]+":"+m[5],allDay:false};
+}
+const icsMinutes = (t) => { const [h,m]=String(t||"00:00").split(":").map(Number); return (h||0)*60+(m||0); };
+// Parse VEVENTs. Recurrence is deliberately limited to simple DAILY/WEEKLY rules with COUNT/UNTIL: those cover a
+// work rota, and pretending to support the whole RRULE grammar would produce confident, wrong conflict warnings.
+function icsParseEvents(text, opts){
+  const o=opts||{}, horizonDays=o.horizonDays||120, today=o.today||new Date().toISOString().slice(0,10);
+  const lines=icsUnfold(text).split("\n");
+  const out=[]; let cur=null, skipped=0;
+  const endBound=(()=>{ const d=new Date(today+"T12:00:00"); d.setDate(d.getDate()+horizonDays);
+    const pad=(n)=>String(n).padStart(2,"0"); return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate()); })();
+  const push=(ev)=>{ if(out.length>=ICSIMP_MAX_EVENTS) return; out.push(ev); };
+  for(const raw of lines){
+    const line=raw.trim(); if(!line) continue;
+    if(/^BEGIN:VEVENT$/i.test(line)){ cur={}; continue; }
+    if(/^END:VEVENT$/i.test(line)){
+      if(cur&&cur.start&&cur.start.date){
+        const title=(cur.summary||"Busy").slice(0,ICSIMP_MAX_TITLE);
+        const base={title,date:cur.start.date,time:cur.start.time,allDay:!!cur.start.allDay,
+          endTime:(cur.end&&cur.end.date===cur.start.date)?cur.end.time:null,uid:cur.uid||"",status:cur.status||""};
+        if(base.status.toUpperCase()==="CANCELLED"){ cur=null; continue; }
+        const occurrences=[base];
+        if(cur.rrule){
+          const R=cur.rrule.toUpperCase();
+          const freq=(/FREQ=(DAILY|WEEKLY)/.exec(R)||[])[1];
+          const interval=Number((/INTERVAL=(\d+)/.exec(R)||[])[1]||1)||1;
+          const count=Number((/COUNT=(\d+)/.exec(R)||[])[1]||0);
+          const untilM=/UNTIL=(\d{8})/.exec(R);
+          if(freq){
+            const step=(freq==="DAILY"?1:7)*interval;
+            const until=untilM?untilM[1].slice(0,4)+"-"+untilM[1].slice(4,6)+"-"+untilM[1].slice(6,8):endBound;
+            let d=new Date(base.date+"T12:00:00"), n=1;
+            const pad=(x)=>String(x).padStart(2,"0");
+            while(true){ d.setDate(d.getDate()+step); n++;
+              const ds=d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate());
+              if(ds>until||ds>endBound) break;
+              if(count&&n>count) break;
+              occurrences.push({...base,date:ds});
+              if(occurrences.length>60) break; }
+          } else skipped++;
+        }
+        for(const ev of occurrences){ if(ev.date>=today&&ev.date<=endBound) push(ev); }
+      }
+      cur=null; continue;
+    }
+    if(!cur) continue;
+    const c=line.indexOf(":"); if(c<0) continue;
+    const lhs=line.slice(0,c), val=line.slice(c+1);
+    const name=lhs.split(";")[0].toUpperCase(), params=lhs.slice(name.length);
+    if(name==="SUMMARY") cur.summary=icsUnescape(val).replace(/\s+/g," ").trim();
+    else if(name==="DTSTART") cur.start=icsParseWhen(val,params);
+    else if(name==="DTEND") cur.end=icsParseWhen(val,params);
+    else if(name==="UID") cur.uid=val.trim();
+    else if(name==="STATUS") cur.status=val.trim();
+    else if(name==="RRULE") cur.rrule=val.trim();
+  }
+  return {events:out,skippedComplexRecurrence:skipped};
+}
+// An appointment and an external event collide if they share a day and their times overlap.
+function icsFindConflicts(appts, events){
+  const byDate={}; for(const e of (events||[])){ (byDate[e.date]=byDate[e.date]||[]).push(e); }
+  const hits=[];
+  for(const a of (appts||[])){
+    const list=byDate[a.date]; if(!list) continue;
+    const aS=icsMinutes(a.time||"09:00"), aE=aS+(a.durationMin||60);
+    for(const e of list){
+      if(e.allDay||!e.time){ hits.push({appt:a,event:e,allDay:true}); continue; }
+      const eS=icsMinutes(e.time), eE=e.endTime?icsMinutes(e.endTime):eS+60;
+      if(aS<eE&&eS<aE) hits.push({appt:a,event:e,allDay:false});
+    }
+  }
+  return hits;
 }
 
 /* Calendar helpers */
@@ -1800,7 +2883,19 @@ export default function App() {
   const [recoveryErr,setRecoveryErr]=useState("");
   const [showInstallNudge,setShowInstallNudge]=useState(false);
   const [onbStep,setOnbStep]=useState(0); // 0 privacy · 1 install · 2 passcode
-  const [persistState,setPersistState]=useState(null); // null | "granted" | "denied" — Firefox storage-permission result
+  // Phase 2: after the vault exists, an admin chooses where records live. Local-only is a real choice — it is
+  // never the consequence of skipping, and never presented as the lesser option.
+  const [showStorageChoice,setShowStorageChoice]=useState(false);
+  const [storageChoice,setStorageChoice]=useState(null);      // "local" | "cloud" | "server"
+  const [storageVerify,setStorageVerify]=useState(null);
+  const [onbBackupMsg,setOnbBackupMsg]=useState("");      // null | "running" | "ok" | {error}
+  const [storageNudgeDismissed,setStorageNudgeDismissed]=useState(false);
+  const [persistState,setPersistState]=useState(null);
+  // Ask the browser what it has ALREADY granted, rather than assuming nothing. Without this the onboarding
+  // can only ever show the "please install" version, even on a browser that protected the data long ago.
+  useEffect(()=>{ let alive=true;
+    (async()=>{ try{ if(navigator.storage&&navigator.storage.persisted){ const p=await navigator.storage.persisted(); if(alive&&p)setPersistState("granted"); } }catch(e){} })();
+    return ()=>{alive=false}; },[]); // null | "granted" | "denied" — Firefox storage-permission result
   const [showFirstWin,setShowFirstWin]=useState(false);
   const [fwName,setFwName]=useState("");
   const [fwDocName,setFwDocName]=useState("");
@@ -1939,8 +3034,9 @@ export default function App() {
   };
   // visibleTabs is computed below in the tab ordering section using getVisibleTabs()
   const switchState=(newCode)=>{const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{const existing=data.domains[d.key];if(existing&&existing.goals){newDomains[d.key]={...existing,goals:d.goals.map((g,gi)=>{const eg=existing.goals[gi];if(eg)return{...eg,subs:g.subs.map((s,si)=>eg.subs[si]||{done:false,lastDone:null,typeOverride:null}),titleOverride:eg.titleOverride,subOverrides:eg.subOverrides,customSubs:eg.customSubs||[]};return{done:false,subs:g.subs.map(()=>({done:false,lastDone:null,typeOverride:null})),customSubs:[],titleOverride:null,subOverrides:{}}})}}else{newDomains[d.key]={status:"not-started",notes:"",lastUpdated:null,goals:d.goals.map(g=>({done:false,subs:g.subs.map(()=>({done:false,lastDone:null,typeOverride:null})),customSubs:[],titleOverride:null,subOverrides:{}}))}}});setData(p=>({...p,domains:newDomains,settings:{...p.settings,stateCode:newCode}}));flash(newCode?"Switched to "+(AVAILABLE_STATES.find(s=>s.code===newCode)||{}).name+" mode.":"Switched to Generic mode.")};
-  const [view,setView]=useState("today-hub");
-  const [currentHub,setCurrentHub]=useState("today");
+  const [view,setView]=useState("caremgmt-hub");
+  const [currentHub,setCurrentHub]=useState("caremgmt");
+  const [helpTopic,setHelpTopic]=useState(null); // context-specific help anchor
   const [navStack,setNavStack]=useState([]);
   const [expanded,setExpanded]=useState({});
   const [editNotes,setEditNotes]=useState(false); const [notesDraft,setNotesDraft]=useState("");
@@ -1996,6 +3092,12 @@ export default function App() {
   const [cwNotes,setCwNotes]=useState("");
   // Documents
   const [docProcessing,setDocProcessing]=useState(false);
+  const [medView,setMedView]=useState("day");            // "day" | "calendar"
+  const [medCalMonth,setMedCalMonth]=useState(()=>new Date().toISOString().slice(0,7));
+  const [medCalFilter,setMedCalFilter]=useState("all");   // "all" | medication id
+  const [medCalDay,setMedCalDay]=useState(null);          // selected day in the calendar
+  const [docMedsApplied,setDocMedsApplied]=useState(false);
+  const docCancelRef=useRef(null); // {cancelled,task} for the in-flight document read
   const [docResult,setDocResult]=useState(null); // {rawText, docType, medications:[], labs:[], sections:[], fileName}
   const [docMeds,setDocMeds]=useState([]); // editable copy
   const [docLabs,setDocLabs]=useState([]); // editable copy
@@ -2136,11 +3238,29 @@ export default function App() {
     if(!standalone&&touch&&!dismissed){setShowInstallNudge(true)}
   }catch{}},[]);
   // Capture the install prompt (Android/Chromium) so onboarding can offer a real one-tap install.
+  // We call preventDefault() to DEFER the browser's own install banner so we can offer it at a sensible moment.
+  // That is a promise we then have to keep: if the captured prompt is never surfaced, we have actively REMOVED
+  // the browser's offer and replaced it with nothing. That is what happened — the only place it was offered was
+  // onboarding step 1, and that step is skipped once storage is already persistent. So the prompt is now exposed
+  // through installApp(), which every entry point uses, and `canInstall` drives whether we say anything at all.
   useEffect(()=>{
     const onBIP=(e)=>{e.preventDefault();setDeferredInstall(e)};
+    const onInstalled=()=>{setDeferredInstall(null);setInstalled(true)};
     window.addEventListener("beforeinstallprompt",onBIP);
-    return()=>window.removeEventListener("beforeinstallprompt",onBIP);
+    window.addEventListener("appinstalled",onInstalled);
+    return()=>{window.removeEventListener("beforeinstallprompt",onBIP);window.removeEventListener("appinstalled",onInstalled)};
   },[]);
+  const [installed,setInstalled]=useState(false);
+  const canInstall=()=>!!deferredInstall&&!isIOS;
+  const isStandaloneNow=()=>{ try{ return installed||(window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches)||window.navigator.standalone===true; }catch(e){ return false; } };
+  const installApp=async()=>{
+    if(!deferredInstall)return false;
+    try{ deferredInstall.prompt(); const r=await deferredInstall.userChoice;
+      setDeferredInstall(null);
+      if(r&&r.outcome==="accepted"){ setInstalled(true); return true; }
+      return false;
+    }catch(e){ setDeferredInstall(null); return false; }
+  };
   // Apply the user's display preferences: the text-size knob scales the root font-size (everything is rem),
   // and Large-print mode adds a roomier-spacing class. Both persist in settings and sync across devices.
   useEffect(()=>{
@@ -2172,13 +3292,33 @@ export default function App() {
   },[authed]);
   // Option 4 — backup reminder: prompt if no backup in 7+ days (or never), once authed.
   // Aware of continuous backup: silent when active, prompts resume when paused.
-  useEffect(()=>{if(!authed)return;try{
-    if(backupStatus==="active"){setShowBackupReminder(false);return}
-    if(backupStatus==="paused"){setShowBackupReminder(true);return}
-    const last=data.settings&&data.settings.lastBackupAt;
-    const stale=!last||(Date.now()-new Date(last).getTime())>7*24*60*60*1000;
-    if(stale&&can("export-data"))setShowBackupReminder(true);
-  }catch{}},[authed,backupStatus]);
+  // Driven by CONTENT, not by the session. The old version listed `authed` as a dependency, so locking and
+  // unlocking — which changes nothing about the data — re-ran the check and re-prompted. It also measured
+  // "backed up" with a timestamp, so a backup taken before ten more incidents still read as done.
+  const [backupFp,setBackupFp]=useState("");
+  useEffect(()=>{ if(!authed) return; let alive=true;
+    (async()=>{ try{ const fp=await backupFingerprint(data); if(!alive) return; setBackupFp(fp);
+      if(backupStatus==="active"){ setShowBackupReminder(false); return; }
+      if(backupStatus==="paused"){ setShowBackupReminder(true); return; }
+      const st=backupState(data,fp);
+      setShowBackupReminder(st.state!=="up-to-date" && can("export-data"));
+    }catch(e){} })();
+    return ()=>{alive=false}; },[authed,backupStatus,data]);
+  // "Back up now" must actually back up. Previously its handler was {setShowBackupReminder(false);nav("settings")}
+  // — it hid the banner and navigated, exporting nothing, so the prompt returned on the next unlock.
+  // Returns true/false so callers on screens without a flash() surface can report the outcome themselves.
+  const backupNow=async()=>{ if(!can("export-data")){flash("You don't have permission to export.");return false}
+    try{
+      if(backupHandle){ const pw=await getBackupPasscode();
+        const perm=await checkHandlePermission(backupHandle,true);
+        if(perm!=="granted"){ setBackupStatus("paused"); flash("Backup file needs permission again — open Settings to reconnect it."); return false; }
+        await writeBackupToHandle(backupHandle,pw);
+        setLastAutoBackupAt(new Date().toISOString());
+        await markBackedUp();
+        flash("Saved to "+(backupFileName||"your backup file")+".");
+        return true;
+      } else { return await handleEncryptedExport(); }
+    }catch(e){ flash("Couldn't back up: "+((e&&e.message)||"unknown error")); return false; } };
   // Restore cloud file handle on mount
   useEffect(()=>{(async()=>{try{const h=await loadSyncHandle();if(h){setCloudHandle(h);setCloudFileName(h.name);setCloudConnected(true)}}catch{}})()},[]);
   // Restore the continuous-backup handle once authed; silently check whether write permission survived this session.
@@ -2192,14 +3332,15 @@ export default function App() {
   // Debounced automatic write whenever data changes and backup is active.
   useEffect(()=>{
     if(!authed||backupStatus!=="active"||!backupHandle)return;
-    const pw=getBackupPasscode();if(!pw)return;
     if(backupTimerRef.current)clearTimeout(backupTimerRef.current);
     backupTimerRef.current=setTimeout(async()=>{
       try{
+        const pw=await getBackupPasscode(); if(!pw)return;   // derived inside the async callback
         const perm=await checkHandlePermission(backupHandle,false);
         if(perm!=="granted"){setBackupStatus("paused");return} // permission lapsed mid-session
         await writeBackupToHandle(backupHandle,pw);
         setLastAutoBackupAt(new Date().toISOString());
+        await markBackedUp();   // the fingerprint moves with the file, so the app stops claiming it's behind
       }catch(e){if(e&&e.name==="NotAllowedError")setBackupStatus("paused")}
     },4000);
     return()=>{if(backupTimerRef.current)clearTimeout(backupTimerRef.current)};
@@ -2214,7 +3355,7 @@ export default function App() {
       // Write initial data to the file
       const pw=getSyncPasscode();
       if(pw){
-        const exportData={...data,_sync:{...(data._sync||{}),exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId),exportedByName:(data.settings&&data.settings.deviceName)||""}};
+        const exportData={...stripPortableSecrets(data),_sync:{...(data._sync||{}),exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId),exportedByName:(data.settings&&data.settings.deviceName)||""}};
         const b64=await encryptData(await packageWithBlobs(exportData,dekRef.current,rKeyRef.current),pw);
         const writable=await handle.createWritable();
         await writable.write(JSON.stringify({encrypted:true,version:"2.0",sync:true,data:b64}));
@@ -2228,14 +3369,44 @@ export default function App() {
 
   /* ── Continuous encrypted backup (File System Access) ── */
   const [backupPw,setBackupPw]=useState("");
-  const getBackupPasscode=()=>(data.settings&&data.settings.backupPasscode)||"";
+  // One backup passcode (locked decisions 1 + 3).
+  // FIRST ATTEMPT WAS WRONG, IN TWO WAYS. It called crypto.subtle.exportKey("raw", dekRef.current) — but the DEK
+  // is a Uint8Array from generateDEK(), not a CryptoKey, so it threw "parameter 2 is not of type 'CryptoKey'".
+  // The crash was lucky: the deeper flaw was that a DEK-derived passcode is a random value the USER NEVER SEES,
+  // and restore (handleEncryptedImport) decrypts with a passcode they TYPE. On a new device after losing the old
+  // one there would be no DEK to derive from and nothing to type — the backups would have been unrestorable.
+  // So it is derived from the PASSCODE, which the user knows and can type on any device. Held in a ref for the
+  // session only, never persisted; the raw passcode itself is not kept.
+  const backupPassRef=useRef("");
+  // Restore accepts EITHER the passcode the user unlocks with (derived) or a custom backup passcode typed
+  // verbatim. Trying both means a caregiver never has to know which kind of secret their file used.
+  const decryptBackupFlexible=async(blob,typed)=>{
+    const t=(typed||"").trim();
+    const tries=[t, await deriveBackupPass(t)].filter(Boolean);
+    let lastErr=null;
+    for(const pw of tries){ try{ return await decryptData(blob,pw); }catch(e){ lastErr=e; } }
+    throw lastErr||new Error("Wrong passcode.");
+  };
+
+  const deriveBackupPass=async(passcode)=>{
+    if(!passcode) return "";
+    const bits=await crypto.subtle.digest("SHA-256",new TextEncoder().encode("cg-backup-v1|"+passcode));
+    return b64enc(new Uint8Array(bits).slice(0,24));
+  };
+  const getBackupPasscode=async()=>{
+    const explicit=(data.settings&&data.settings.backupPasscode)||"";
+    if(explicit) return explicit;                       // an admin who deliberately set their own
+    if(backupPassRef.current) return backupPassRef.current;
+    throw new Error("Unlock Care Guardian again so it can prepare your backup key.");
+  };
   // Encrypt the full vault with the backup passcode and write it to the handle. Self-contained .care file.
   const writeBackupToHandle=async(handle,passcode)=>{
     if(!handle||!passcode)return false;
     const exportMeta={exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId)||"",exportedByName:(data.settings&&data.settings.deviceName)||"",formatVersion:"2.0",source:"auto-backup"};
     const _auditB=await getAuditBackup(false);
+    const _auditMap=buildAuditMap(_auditB);
     const _sharedB=await getSharedAuditBackup();
-    const payload={...data,_sync:{...(data._sync||{}),...exportMeta},_exportMeta:exportMeta,...(_auditB?{_audit:_auditB}:{}),...(_sharedB?{_sharedAudit:_sharedB}:{})};
+    const payload={...stripPortableSecrets(data),_sync:{...(data._sync||{}),...exportMeta},_exportMeta:exportMeta,...(Object.keys(_auditMap).length?{_audit:_auditMap}:{}),...(_sharedB?{_sharedAudit:_sharedB}:{})};
     const b64=await encryptData(await packageWithBlobs(payload,dekRef.current,rKeyRef.current),passcode);
     const writable=await handle.createWritable();
     await writable.write(JSON.stringify({encrypted:true,version:"2.0",data:b64}));
@@ -2244,24 +3415,32 @@ export default function App() {
   };
   // Configure continuous backup: choose a file, set a backup passcode, write the first copy. (User gesture.)
   const setupContinuousBackup=async()=>{
-    if(!can("export-data")){flash("You don't have permission to configure backups.");return}
-    if(!hasFileSystemAccess){flash(isIOSDevice?"Automatic background backup isn't available on iOS (all iPhone browsers are WebKit). Use Share/Download below to save an encrypted copy whenever you like.":"Automatic background backup needs a desktop browser (Chrome, Edge, or Brave). Use manual backup below.");return}
-    if(!backupPw.trim()||backupPw.trim().length<6){flash("Choose a backup passcode of at least 6 characters. You'll need it to restore.");return}
+    if(!can("export-data")){flash("You don't have permission to configure backups.");return false}
+    if(!hasFileSystemAccess){setOnbBackupMsg("");flash(isIOSDevice?"Automatic background backup isn't available on iOS (all iPhone browsers are WebKit). Use Share/Download below to save an encrypted copy whenever you like.":"Automatic background backup needs a desktop browser (Chrome, Edge, or Brave). Use manual backup below.");return}
+    // The onboarding screen has no passcode field — it promises "your passcode opens it" — so requiring a typed
+    // one here made the button silently do nothing: the guard returned, and its flash() isn't even rendered on
+    // that screen. A typed passcode is now OPTIONAL; blank means use the passcode the user already unlocked with.
+    const typed=backupPw.trim();
+    if(typed && typed.length<6){flash("A backup passcode needs at least 6 characters, or leave it blank to use your normal passcode.");return false}
     try{
       const handle=await window.showSaveFilePicker({suggestedName:"care-guardian-backup.care",types:[{description:"Care Guardian Backup",accept:{"application/json":[".care"]}}]});
       const perm=await checkHandlePermission(handle,true);
-      if(perm!=="granted"){flash("Backup needs write access to that file to continue.");return}
-      const pw=backupPw.trim();
+      if(perm!=="granted"){flash("Backup needs write access to that file to continue.");return false}
+      const pw=typed||await getBackupPasscode();
       setBackupBusy(true);
       await writeBackupToHandle(handle,pw);
       await saveBackupHandle(handle);
       setBackupHandle(handle);setBackupFileName(handle.name);setBackupStatus("active");
       const now=new Date().toISOString();setLastAutoBackupAt(now);
-      setData(p=>({...p,settings:{...p.settings,backupPasscode:pw,lastBackupAt:now,continuousBackup:true}}));
+      // Only store an explicitly chosen passcode. Storing the derived one would freeze it, so changing the
+      // vault passcode later would silently stop matching the backup.
+      setData(p=>({...p,settings:{...p.settings,...(typed?{backupPasscode:typed}:{}),lastBackupAt:now,continuousBackup:true}}));
       setBackupPw("");setShowBackupReminder(false);
       hipaaAudit("export","Continuous backup configured","all");
       flash("Continuous backup active. Your data will be saved automatically.");
-    }catch(e){if(e&&e.name==="AbortError"){/* user cancelled picker */}else{flash("Couldn't set up backup: "+(e&&e.message||"unknown error"))}}
+      return true;
+    }catch(e){ if(e&&e.name==="AbortError"){ return null; }   // user closed the picker — not a failure
+      flash("Couldn't set up backup: "+(e&&e.message||"unknown error")); return false; }
     finally{setBackupBusy(false)}
   };
   // Resume after a session permission lapse (user gesture — required by the FSA permission model).
@@ -2270,7 +3449,7 @@ export default function App() {
     const perm=await checkHandlePermission(backupHandle,true);
     if(perm==="granted"){
       setBackupStatus("active");
-      const pw=getBackupPasscode();
+      const pw=await getBackupPasscode();
       if(pw){try{setBackupBusy(true);await writeBackupToHandle(backupHandle,pw);const now=new Date().toISOString();setLastAutoBackupAt(now);setData(p=>({...p,settings:{...p.settings,lastBackupAt:now}}))}catch{}finally{setBackupBusy(false)}}
       flash("Backup resumed.");
     }else{flash("Write access was not granted, so backup is still paused.")}
@@ -2379,7 +3558,7 @@ export default function App() {
       // PUSH
       // Push the current in-memory data (already includes merged remote changes)
       const pushPayload=data;
-      const exportData={...pushPayload,_sync:{...(pushPayload._sync||{}),exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId),exportedByName:(data.settings&&data.settings.deviceName)||""}};
+      const exportData={...stripPortableSecrets(pushPayload),_sync:{...(pushPayload._sync||{}),exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId),exportedByName:(data.settings&&data.settings.deviceName)||""}};
       const b64=await encryptData(await packageWithBlobs(exportData,dekRef.current,rKeyRef.current),pw);
       const putResp=await fetch(`${serverUrl}/api/sync/${roomId}`,{method:"PUT",headers,body:JSON.stringify({data:b64})});
       if(!putResp.ok){const err=await putResp.json().catch(()=>({}));throw new Error(err.error||"Server returned "+putResp.status)}
@@ -2398,7 +3577,8 @@ export default function App() {
   const getCloudAuth=()=>(data.settings&&data.settings.cloudAuth)||null; // {provider, refreshToken, account}
   const cloudConfigured=()=>{ const a=getCloudAuth(); return !!(a&&a.refreshToken&&a.provider&&CLOUD_PROVIDERS[a.provider]); };
   const cloudProviderKey={dropbox:DROPBOX_APP_KEY, googledrive:GOOGLE_CLIENT_ID, onedrive:MS_CLIENT_ID};
-  const providerConfigured=(id)=>!!cloudProviderKey[id];
+  const providerConfigured=(id)=>!!cloudProviderKey[id] && !CLOUD_PROVIDERS[id].unavailable;
+  const unavailableProviders=Object.keys(CLOUD_PROVIDERS).filter(id=>CLOUD_PROVIDERS[id].unavailable);
   const configuredProviders=Object.keys(CLOUD_PROVIDERS).filter(id=>providerConfigured(id));
   const cloudConnectStart=async(providerId)=>{
     const prov=CLOUD_PROVIDERS[providerId]; if(!prov){flash("Unknown provider.");return}
@@ -2433,6 +3613,143 @@ export default function App() {
     cloudTokenRef.current={accessToken:tok.access_token, expiresAt:Date.now()+((tok.expires_in||14400)*1000)-60000};
     return tok.access_token;
   };
+  // ── Outbox plumbing (Phase 1) ──
+  // Bodies are held in a ref rather than in the vault: they are large, already-encrypted snapshots, and a queued
+  // object is always regenerable from current state. What DOES persist is the queue itself, so the app remembers
+  // there is unsent work across a restart — and if the body is gone by then, sync simply regenerates it.
+  const outboxBodiesRef=useRef(new Map());
+  const stageOutbox=(key,body,kind)=>{ outboxBodiesRef.current.set(key,body);
+    setData(p=>({...p,_outbox:outboxEnqueue(p._outbox||[],{key,kind:kind||"state"},new Date().toISOString())})); };
+  const drainOutbox=async(prov,accessToken)=>{
+    const provider={ kind:"cloud", async put(key,text){ return prov.upload(accessToken,key,text); } };
+    const queue=(data._outbox||[]);
+    if(!queue.length) return {complete:true,uploaded:[],outbox:[]};
+    const res=await outboxDrain(provider,queue,async(entry)=>{
+      const b=outboxBodiesRef.current.get(entry.key);
+      if(b===undefined) throw new Error("LOCAL_MISSING");   // regenerated on the next sync
+      return b; });
+    for(const k of res.uploaded) outboxBodiesRef.current.delete(k);
+    setData(p=>({...p,_outbox:res.outbox,
+      _sync:{...(p._sync||{}),...(res.uploaded.length?{lastCloudOk:new Date().toISOString()}:{})}}));
+    if(res.uploaded.length) hipaaAudit("export","Uploaded "+res.uploaded.length+" encrypted object(s) to connected storage","sync");
+    return res; };
+  const outboxPending=()=>((data._outbox||[]).length);
+  // ── Storage setup (Phase 2) ──
+  // Verify the whole path, not just the connection: encrypt a canary, upload it, download it, decrypt it, delete
+  // it. Storage that is going to fail must fail HERE, in a calm moment during setup — not silently at 3am when
+  // someone is looking for a medication record.
+  const verifyStorageRoundTrip=async()=>{
+    setStorageVerify("running");
+    try{
+      const auth=getCloudAuth(); const prov=auth&&CLOUD_PROVIDERS[auth.provider];
+      if(!prov) throw new Error("Storage isn't connected yet.");
+      const token=await ensureCloudAccessToken();
+      const canary={probe:"care-guardian-storage-check",at:new Date().toISOString(),nonce:b64enc(crypto.getRandomValues(new Uint8Array(16)))};
+      const pw=getSyncPasscode()||("probe-"+canary.nonce);
+      const sealed=await encryptData(canary,pw);
+      const key=_opaqueNames()?("cg/"+await storageObjName(_circleKeyForNames(),["check",String(Date.now())])+".bin"):("circle/"+_circleIdForStorage()+"/_check-"+Date.now()+".enc");
+      await prov.upload(token,key,JSON.stringify({data:sealed}));
+      const back=await prov.download(token,key);
+      if(!back) throw new Error("The file was uploaded but couldn't be read back.");
+      const opened=await decryptData(JSON.parse(back).data,pw);
+      if(!opened||opened.nonce!==canary.nonce) throw new Error("The file came back different from what was sent.");
+      try{ if(prov.del) await prov.del(token,key); }catch(e){}   // tidy-up failure is not a verification failure
+      setStorageVerify("ok");
+      setData(p=>({...p,settings:{...p.settings,storageVerifiedAt:new Date().toISOString()}}));
+      hipaaAudit("update","Verified encrypted round-trip to connected storage","sync");
+      return true;
+    }catch(e){ setStorageVerify({error:String((e&&e.message)||e)}); return false; }
+  };
+  // Same principle as the cloud check: prove the WHOLE path, not just that the address resolves. A server that
+  // accepts a PUT but 404s the GET, or has CORS misconfigured for reads, must fail here rather than at 3am.
+  const verifyServerRoundTrip=async()=>{
+    setStorageVerify("running");
+    try{
+      const base=getServerUrl(); if(!base) throw new Error("No server address set.");
+      const key=getServerApiKey();
+      const canary={probe:"care-guardian-storage-check",at:new Date().toISOString(),nonce:b64enc(crypto.getRandomValues(new Uint8Array(16)))};
+      const pw=getSyncPasscode()||("probe-"+canary.nonce);
+      const sealed=await encryptData(canary,pw);
+      const path=base.replace(/\/+$/,"")+"/o/cg-check-"+Date.now()+".enc";
+      const headers={"Content-Type":"application/json"}; if(key)headers["X-Api-Key"]=key;
+      const put=await fetch(path,{method:"PUT",headers,body:JSON.stringify({data:sealed})});
+      if(!put.ok) throw new Error("The server refused the upload (HTTP "+put.status+").");
+      const get=await fetch(path,{headers:key?{"X-Api-Key":key}:{}});
+      if(!get.ok) throw new Error("Uploaded, but couldn't read it back (HTTP "+get.status+").");
+      const back=await get.json();
+      const opened=await decryptData(back.data,pw);
+      if(!opened||opened.nonce!==canary.nonce) throw new Error("The file came back different from what was sent.");
+      try{ await fetch(path,{method:"DELETE",headers:key?{"X-Api-Key":key}:{}}); }catch(e){}
+      setStorageVerify("ok");
+      setData(p=>({...p,settings:{...p.settings,storageMode:"server",storageVerifiedAt:new Date().toISOString()}}));
+      hipaaAudit("update","Verified encrypted round-trip to self-hosted server","sync");
+      return true;
+    }catch(e){ const m=String((e&&e.message)||e);
+      // A bare "Failed to fetch" from a browser almost always means CORS or an unreachable host, and telling
+      // someone their server "failed" without that hint sends them looking in the wrong place.
+      setStorageVerify({error:/failed to fetch|networkerror/i.test(m)
+        ? "Couldn't reach the server. Check the address, and ask whoever runs it to allow this app's web address (CORS)."
+        : m});
+      return false; }
+  };
+  const chooseLocalOnly=()=>{ setStorageChoice("local");
+    setData(p=>({...p,settings:{...p.settings,storageMode:"local",storageChosenAt:new Date().toISOString()}}));
+    hipaaAudit("update","Storage set to this device only","sync"); };
+  // Skipping is not a decision. It leaves the app local-only (which is safe) and keeps a nudge visible, so egress
+  // is never the path of least resistance and never happens because someone tapped past a screen.
+  const skipStorageChoice=()=>{ setShowStorageChoice(false);
+    setData(p=>({...p,settings:{...p.settings,storageMode:"local",storagePrompt:"pending"}})); };
+  const finishStorageSetup=()=>{ setShowStorageChoice(false);
+    setData(p=>({...p,settings:{...p.settings,storagePrompt:"done"}})); };
+  // The recovery kit lives in the wrapped-key object (wk.cRecovery), not in settings — check the real thing
+  // rather than a flag, so the gate can't be satisfied by a value that was never actually created.
+  const hasRecoveryKit=()=>{ try{ const ko=loadWrappedKeys(); return !!(ko&&ko.wk&&ko.wk.cRecovery); }catch(e){ return false; } };
+  const storageNudgeVisible=()=>{ const st=(data.settings&&data.settings.storagePrompt); 
+    return !storageNudgeDismissed && st==="pending" && !getCloudAuth(); };
+
+  // ── Failure handling (Phase 4) ──
+  const recordStorageFailure=(err)=>{
+    const cls=classifyStorageError(err,{offline:(typeof navigator!=="undefined"&&navigator.onLine===false)});
+    const ui=storageFailUI(cls);
+    setData(p=>{ const prev=(p._sync&&p._sync.storageFail)||{}; const attempt=(prev.cls===cls?(prev.attempt||0):0)+1;
+      return {...p,_sync:{...(p._sync||{}),storageFail:{cls,attempt,at:new Date().toISOString(),
+        nextAttemptAt:ui.retry?new Date(Date.now()+storageBackoffMs(attempt)).toISOString():null,
+        detail:String((err&&err.message)||err||"").slice(0,200)}}}; });
+    if(ui.alarm) hipaaAudit("update","Storage unavailable ("+cls+") — recording continues on this device","sync");
+    return {cls,ui};
+  };
+  const clearStorageFailure=()=>setData(p=>{ const sy={...(p._sync||{})}; delete sy.storageFail; return {...p,_sync:sy}; });
+  const storageFailState=()=>((data._sync&&data._sync.storageFail)||null);
+  // A one-tap way back. Reconnecting doesn't re-ask for the storage choice — it re-authorises what was chosen.
+  const reconnectStorage=async()=>{ const auth=getCloudAuth();
+    if(!auth){ setStorageChoice(null); setShowStorageChoice(true); return; }
+    cloudTokenRef.current=null;
+    try{ await cloudConnectStart(auth.provider); }catch(e){ recordStorageFailure(e); } };
+  // The folder was deleted: everything needed to rebuild it is still in the vault, so offer exactly that.
+  const reuploadEverything=async()=>{ clearStorageFailure();
+    setData(p=>({...p,_sync:{...(p._sync||{}),seenDevices:{}}}));   // forget what we thought was already there
+    flash("Rebuilding your cloud copy from this device…");
+    await cloudStorageSyncRef.current(); };
+  const cloudStorageSyncRef=useRef(null);
+  // ── Manifest plumbing ──
+  const _circleIdForStorage=()=>((data.settings&&data.settings.circle&&data.settings.circle.id)||"solo");
+  // Opaque names need the circle key. Without one (solo use before a circle exists) fall back to plain names —
+  // a lone device with no circle has no teammates to hide device counts from, and correctness beats theatre.
+  const _circleKeyForNames=()=>((data.settings&&data.settings.circle&&data.settings.circle.key)||"");
+  const _opaqueNames=()=>!!_circleKeyForNames();
+  const _myStateKey=async()=>_opaqueNames()
+    ? storageKeysOpaque.state(_circleKeyForNames(),_circleIdForStorage(),circleDeviceId())
+    : storageKeys.state(_circleIdForStorage(),circleDeviceId());
+  const _manifestKey=()=>_opaqueNames()?STORAGE_MANIFEST_NAME:storageKeys.manifest(_circleIdForStorage());
+  const readManifest=async(prov,accessToken,pw)=>{
+    try{ let txt=await prov.download(accessToken,_manifestKey());
+      if(!txt&&_opaqueNames()) txt=await prov.download(accessToken,storageKeys.manifest(_circleIdForStorage())); // pre-Phase-5 layout
+      if(!txt) return null;
+      let j=JSON.parse(storageUnpad(txt));
+      if(j&&j.data&&!j.devices){ try{ j=await decryptData(j.data,pw); }catch(e){ return null; } }  // sealed manifest
+      return (j&&j.v===MANIFEST_VERSION)?j:null;
+    }catch(e){ return null; }   // absent manifest is the normal first-run case, not an error
+  };
   const cloudStorageSync=async()=>{
     const pw=getSyncPasscode();
     if(!pw){setSyncStatus({type:"error",msg:"Enter a team sync passcode first."});return}
@@ -2442,8 +3759,17 @@ export default function App() {
     try{
       const accessToken=await ensureCloudAccessToken();
       let pullReport=null;
+      // Per-device objects: read the manifest, then each teammate's own object. Falls back to the single legacy
+      // file so an existing deployment keeps working through the transition.
+      const manifest=await readManifest(prov,accessToken,pw);
+      const pullKeys=manifest
+        ? manifestPullList(manifest,circleDeviceId(),(data._sync&&data._sync.seenDevices)||{}).map(d=>d.key)
+        : [CLOUD_SYNC_PATH];
+      const seenNow={};
+      if(manifest) for(const d of manifestPullList(manifest,circleDeviceId(),{})) seenNow[d.deviceId]=d.updatedAt;
+      for(const pullKey of pullKeys){
       try{
-        const pullText=await prov.download(accessToken,CLOUD_SYNC_PATH);
+        const pullText=storageUnpad(await prov.download(accessToken,pullKey));
         if(pullText){
           if(rawTextTooLarge(pullText)){ setSyncStatus({type:"error",msg:"Incoming sync data is too large to load safely and was NOT applied. This can mean a corrupted or runaway device — check the source before syncing again."}); hipaaAudit("security","Cloud sync payload refused (over hard size cap)","security"); setCloudSyncing(false); return; }
           const pullJson=JSON.parse(pullText);
@@ -2460,18 +3786,49 @@ export default function App() {
           }
         }
       }catch(e){ if(/expired|reconnect/i.test(e.message)){setSyncStatus({type:"error",msg:e.message});setCloudSyncing(false);return} }
-      const exportData={...data,_sync:{...(data._sync||{}),exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId),exportedByName:(data.settings&&data.settings.deviceName)||""}};
+      } // end per-device pull loop
+      const exportData={...stripPortableSecrets(data),_sync:{...(data._sync||{}),exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId),exportedByName:(data.settings&&data.settings.deviceName)||""}};
       const b64=await encryptData(await packageWithBlobs(exportData,dekRef.current,rKeyRef.current),pw);
-      await prov.upload(accessToken,CLOUD_SYNC_PATH,JSON.stringify({data:b64}));
+      const body=JSON.stringify({data:b64});
+      // The upload goes through the outbox rather than straight to the provider. Before, a failed upload threw and
+      // the work was simply gone — the user saw an error and their change never reached storage. Now the object is
+      // staged locally first, so a dead token, a dropped connection or a full account leaves work queued instead
+      // of lost, and the next successful sync carries it. This is what makes session-scoped storage (Google Drive)
+      // safe, and it removes a real data-loss path for every other provider too.
+      const myKey=await _myStateKey();
+      stageOutbox(myKey,storagePad(body),"state");
+      // The manifest is staged too and always drains LAST, so it never advertises an object that hasn't landed.
+      // It is merged with whatever is already there: a near-simultaneous write from another device would otherwise
+      // drop that device's entry at file level.
+      const mergedManifest=manifestMerge(manifest,manifestPut(manifest||manifestEmpty(_circleIdForStorage()),circleDeviceId(),
+        {key:myKey,label:(data.settings&&data.settings.deviceName)||"",epoch:(data.settings&&data.settings.circle&&data.settings.circle.epoch)||0},
+        new Date().toISOString()));
+      // The manifest is ENCRYPTED like everything else. It was previously uploaded as plaintext JSON, which listed
+      // every device, its human-readable name ("Mum's iPad") and exactly when each one last synced — undoing the
+      // opaque object naming it sits beside. Sealed under the same passcode as the state objects.
+      stageOutbox(_manifestKey(),storagePad(JSON.stringify({data:await encryptData(mergedManifest,pw)})),"manifest");
+      const drain=await drainOutbox(prov,accessToken);
+      if(!drain.complete){
+        setCloudSyncing(false);
+        const {ui:dui}=recordStorageFailure(drain.stopped==="QUOTA"?Object.assign(new Error("storage full"),{code:"QUOTA"}):new Error(drain.stopped||"upload failed"));
+        setSyncStatus({type:"error",msg:dui.title+" — "+dui.body});
+        return;
+      }
       const added=((pullReport&&pullReport.added&&pullReport.added.length)||0);const updated=((pullReport&&pullReport.updated&&pullReport.updated.length)||0);
       setSyncStatus({type:"success",msg:added+updated>0?`Synced: ${added} new, ${updated} updates from your team.`:"Synced — your data is up to date across your devices."});
-      setData(p=>({...p,_sync:{...p._sync,lastSync:new Date().toISOString()}}));
+      clearStorageFailure();
+      setData(p=>({...p,_sync:{...p._sync,lastSync:new Date().toISOString(),seenDevices:{...((p._sync&&p._sync.seenDevices)||{}),...seenNow}}}));
       try{ pushAllAutoGrants(); flushSharedAudit(); }catch(e){/* live intake push is best-effort and never blocks sync */}
-    }catch(e){setSyncStatus({type:"error",msg:"Cloud sync failed: "+e.message})}
+    }catch(e){ const {ui}=recordStorageFailure(e);
+      // "Cloud sync failed" told the user nothing they could act on. Now the message names what happened, what
+      // the app is doing about it, and — always — where their records actually are.
+      setSyncStatus({type:"error",msg:ui.title+" — "+ui.body}); }
     setCloudSyncing(false);
   };
 
   /* ── Sync dispatch — use whichever method is configured ── */
+  cloudStorageSyncRef.current=cloudStorageSync; // reuploadEverything calls sync without a forward reference
+
   const syncNow=async()=>{
     if(cloudConfigured()){await cloudStorageSync()}
     else if(getServerUrl()){await serverSync()}
@@ -2562,6 +3919,19 @@ export default function App() {
     auditBackupCacheRef.current={count:-1,block:null}; // force re-read on next backup
     return n;
   };
+  // ── Multi-device audit: the backup carries a device-keyed MAP {deviceId: block} so two devices' hash chains
+  // never clobber or interleave. This device's chain restores into the active DB (idempotent, keyed by entry id);
+  // FOREIGN chains are kept in data._auditArchive for durability and NEVER written into the active chain (their
+  // seq numbers would break verification). Back-compatible: a single legacy block is treated as a 1-entry map.
+  const auditDeviceId=()=>(data.settings&&data.settings.deviceId)||"";
+  const buildAuditMap=(localBlock)=>{ const m={...(data._auditArchive||{})}; if(localBlock)m[auditDeviceId()]=localBlock; return m; };
+  const applyAuditMap=async(curData, mapOrBlock, key)=>{ let restored=0, archived=0; let out=curData; if(!mapOrBlock)return {data:out,restored,archived};
+    const myId=(curData.settings&&curData.settings.deviceId)||auditDeviceId();
+    const map=Array.isArray(mapOrBlock.entries)?{[mapOrBlock.device||myId]:mapOrBlock}:mapOrBlock;
+    for(const dev of Object.keys(map)){ const block=map[dev]; if(!block||!Array.isArray(block.entries))continue;
+      if(dev===myId){ restored+=await restoreAuditBackup(block,key); }
+      else { const prev=(out._auditArchive||{})[dev]; const keep=(prev&&(prev.count||0)>=(block.count||0))?prev:block; out={...out,_auditArchive:{...(out._auditArchive||{}),[dev]:keep}}; archived++; } }
+    return {data:out,restored,archived}; };
   const refreshAuditState=async()=>{
     try{ const k=auditKeyRef.current; if(!k)return;
       const entries=await readAuditLog(k,500); setAuditEntries(entries); setAuditCount(await getAuditCount());
@@ -2650,8 +4020,8 @@ export default function App() {
   const toggleSub=(dk,gi,si)=>{const ts=new Date().toLocaleString();setData(p=>{const goals=[...p.domains[dk].goals];const subs=[...goals[gi].subs];const subType=getSubType(dk,gi,si);const cur=subs[si];if(subType==="O"){subs[si]={...cur,done:!cur.done,lastDone:!cur.done?ts:null}}else{subs[si]={...cur,done:!cur.done,lastDone:ts}}goals[gi]={...goals[gi],subs};const domDef=DOMAINS.find(d=>d.key===dk);const allOnceDone=subs.every((s,i)=>getSubType(dk,gi,i)!=="O"||s.done);const allCustomDone=goals[gi].customSubs.every(c=>c.done);if(allOnceDone&&allCustomDone&&!goals[gi].done)goals[gi]={...goals[gi],done:true};return{...p,domains:{...p.domains,[dk]:{...p.domains[dk],goals,lastUpdated:ts}}}})};
   const toggleCustomSub=(dk,gi,ci)=>{setData(p=>{const ts=new Date().toLocaleString();const goals=[...p.domains[dk].goals];const cs=[...goals[gi].customSubs];cs[ci]={...cs[ci],done:!cs[ci].done};goals[gi]={...goals[gi],customSubs:cs};return{...p,domains:{...p.domains,[dk]:{...p.domains[dk],goals,lastUpdated:ts}}}})};
   const addCustomSub=(dk,gi,text)=>{if(!text.trim())return;const ts=new Date().toLocaleString();setData(p=>{const goals=[...p.domains[dk].goals];goals[gi]={...goals[gi],customSubs:[...goals[gi].customSubs,{text:text.trim(),done:false}]};return addLog({...p,domains:{...p.domains,[dk]:{...p.domains[dk],goals,lastUpdated:ts}}},dk,"+ sub-task")});setNewSubText("");setAddSubFor(null)};
-  const removeCustomSub=(dk,gi,ci)=>{setData(p=>{const goals=[...p.domains[dk].goals];goals[gi]={...goals[gi],customSubs:goals[gi].customSubs.filter((_,i)=>i!==ci)};return{...p,domains:{...p.domains,[dk]:{...p.domains[dk],goals}}}})};
-  const removeSub=(dk,gi,si)=>{setData(p=>{const goals=[...p.domains[dk].goals];const subs=[...goals[gi].subs];subs[si]={...subs[si],removed:true};goals[gi]={...goals[gi],subs};return{...p,domains:{...p.domains,[dk]:{...p.domains[dk],goals}}}})};
+  const removeCustomSub=(dk,gi,ci)=>{if(!can("add-custom-sub"))return;setData(p=>{const goals=[...p.domains[dk].goals];goals[gi]={...goals[gi],customSubs:goals[gi].customSubs.filter((_,i)=>i!==ci)};return{...p,domains:{...p.domains,[dk]:{...p.domains[dk],goals}}}})};
+  const removeSub=(dk,gi,si)=>{if(!can("remove-subtask"))return;setData(p=>{const goals=[...p.domains[dk].goals];const subs=[...goals[gi].subs];subs[si]={...subs[si],removed:true};goals[gi]={...goals[gi],subs};return{...p,domains:{...p.domains,[dk]:{...p.domains[dk],goals}}}})};
   const restoreSub=(dk,gi,si)=>{setData(p=>{const goals=[...p.domains[dk].goals];const subs=[...goals[gi].subs];subs[si]={...subs[si],removed:false};goals[gi]={...goals[gi],subs};return{...p,domains:{...p.domains,[dk]:{...p.domains[dk],goals}}}})};
   const saveNotesData=(dk,text)=>{const ts=new Date().toLocaleString();setData(p=>addLog({...p,domains:{...p.domains,[dk]:{...p.domains[dk],notes:text,lastUpdated:ts}}},dk,"Notes updated"));setEditNotes(false)};
   const getProgress=(dk)=>{
@@ -2683,13 +4053,72 @@ export default function App() {
   const saveContact=(c,id)=>{setData(p=>{let contacts;if(id)contacts=p.contacts.map(x=>x.id===id?{...x,...c}:x);else contacts=[...p.contacts,{...c,id:nextId(),notes:c.notes||[],customFields:c.customFields||[]}];return addLog({...p,contacts},"contacts",id?`Edited ${c.name}`:`Added ${c.name}`)});setContactFilter("all");setContactForm(null)};
   const deleteContact=(id)=>{if(!can("add-contact"))return;hipaaAudit("delete","Contact deleted: "+id,"contacts");const c=data.contacts.find(x=>x.id===id);setData(p=>addLog({...p,contacts:p.contacts.filter(x=>x.id!==id)},"contacts",`Removed ${(c&&c.name)}`));setContactDetail(null)};
   const addContactNote=(id,text)=>{if(!text.trim())return;setData(p=>({...p,contacts:p.contacts.map(c=>c.id===id?{...c,notes:[{text:text.trim(),date:new Date().toLocaleString()},...(c.notes||[])]}:c)}));setContactNoteText("")};
-  const deleteContactNote=(cid,ni)=>{setData(p=>({...p,contacts:p.contacts.map(c=>c.id===cid?{...c,notes:c.notes.filter((_,i)=>i!==ni)}:c)}))};
+  const deleteContactNote=(cid,ni)=>{if(!can("add-contact"))return;setData(p=>({...p,contacts:p.contacts.map(c=>c.id===cid?{...c,notes:c.notes.filter((_,i)=>i!==ni)}:c)}))};
   const handleImportVCard=(e)=>{const file=(e.target.files&&e.target.files[0]);if(!file)return;const reader=new FileReader();reader.onload=(ev)=>{const cards=parseVCards(ev.target.result);if(!cards.length){flash("No contacts found.");return}const sanitized=cards.slice(0,200).map(sanitizeContact);setData(p=>addLog({...p,contacts:[...p.contacts,...sanitized.map(c=>({...c,id:nextId()}))]},"contacts",`Imported ${sanitized.length} contact(s)`));flash(`Imported ${sanitized.length} contact(s).`)};reader.readAsText(file);e.target.value=""};
   const getSortedContacts=()=>{let list=[...(data.contacts||[])];if(contactFilter!=="all")list=list.filter(c=>c.category===contactFilter);if(contactSort==="alpha")list.sort((a,b)=>a.name.localeCompare(b.name));else{const co=CONTACT_CATS.map(c=>c.key);list.sort((a,b)=>{const d=co.indexOf(a.category)-co.indexOf(b.category);return d!==0?d:a.name.localeCompare(b.name)})}return list};
 
   /* ── appointments ── */
-  const saveAppt=(appt,id)=>{setData(p=>{let appointments;if(id)appointments=p.appointments.map(a=>a.id===id?{...a,...appt}:a);else appointments=[...p.appointments,{...appt,id:nextId()}];return addLog({...p,appointments},"calendar",id?"Edited appointment":"Added: "+appt.title)});setApptForm(null)};
-  const deleteAppt=(id)=>{if(!can("add-appointment"))return;setData(p=>addLog({...p,appointments:p.appointments.filter(a=>a.id!==id)},"calendar","Removed appointment"));setApptForm(null)};
+  const _apptScope=()=>((data.settings&&data.settings.circle&&data.settings.circle.id)||(data.settings&&data.settings.deviceId)||"local");
+  // A calendar identifies an event by UID. Keep it stable so a re-export UPDATES the event; bump SEQUENCE only
+  // when something the calendar shows actually changed, so we don't churn the user's calendar for a note edit.
+  const saveAppt=(appt,id)=>{setData(p=>{let appointments;
+    if(id){ appointments=p.appointments.map(a=>{ if(a.id!==id) return a;
+        const merged={...a,...appt};
+        const shown=(x)=>[x.date,x.time,x.durationMin||"",icsCalendarTitle(x),x.location||""].join("|");
+        if(a.uid && shown(a)!==shown(merged)) merged.seq=(a.seq||0)+1;
+        return merged; }); }
+    else { const nid=nextId(); appointments=[...p.appointments,{...appt,id:nid,uid:icsMakeUid(nid,_apptScope()),seq:0}]; }
+    return addLog({...p,appointments},"calendar",id?"Updated appointment":"Added appointment")});setApptForm(null)};
+  // A deleted appointment must also disappear from the user's calendar, which only happens if we export it once
+  // more as CANCELLED. Tombstones are tiny (uid + when + title shown) and capped.
+  // ── Export to the device calendar. There is no browser API that writes to a calendar, so this hands the OS a
+  // .ics file; the calendar app opens it and asks to add. Re-exporting the same appointment updates it in place.
+  const [icsIncludeNotes,setIcsIncludeNotes]=useState(false);
+  const _ensureApptUids=()=>{ let changed=false;
+    setData(p=>{ const appointments=(p.appointments||[]).map(a=>{ if(a.uid) return a; changed=true;
+        return {...a,uid:icsMakeUid(a.id,_apptScope()),seq:a.seq||0}; });
+      return changed?{...p,appointments}:p; }); };
+  const _markExported=(ids)=>setData(p=>({...p,
+    appointments:(p.appointments||[]).map(a=>ids.indexOf(a.id)>=0?{...a,exportedAt:new Date().toISOString()}:a),
+    apptTombstones:[]}));   // tombstones have now been delivered as CANCELLED; they've done their job
+  // ── Import the caregiver's own calendar (file, never a login). Kept only to detect collisions.
+  const extCalRef=useRef(null);
+  const handleExtCalImport=async(e)=>{ const file=e.target.files&&e.target.files[0]; if(!file){e.target.value="";return;}
+    try{ const text=await file.text();
+      const {events,skippedComplexRecurrence}=icsParseEvents(text,{today:new Date().toISOString().slice(0,10)});
+      if(!events.length){ flash("No upcoming events found in that calendar file."); e.target.value=""; return; }
+      setData(p=>addLog({...p,externalCal:{importedAt:new Date().toISOString(),source:file.name,events}},"calendar","Imported "+events.length+" external calendar event(s)"));
+      hipaaAudit("create","Imported "+events.length+" event(s) from an external calendar file","appointments");
+      flash(events.length+" event"+(events.length===1?"":"s")+" imported for conflict checking."+(skippedComplexRecurrence?" "+skippedComplexRecurrence+" repeating event(s) were too complex to expand and were skipped.":""));
+    }catch(err){ flash("That file couldn't be read as a calendar."); }
+    e.target.value=""; };
+  const clearExtCal=()=>setData(p=>{const q={...p}; delete q.externalCal; return addLog(q,"calendar","Cleared imported calendar")});
+  const getApptConflicts=()=>{ const ec=data.externalCal; if(!ec||!ec.events) return [];
+    return icsFindConflicts(data.appointments||[],ec.events); };
+  const exportAppointmentIcs=(appt)=>{ if(!can("export-data")){flash("You don't have permission to export.");return;}
+    const withUid=appt.uid?appt:{...appt,uid:icsMakeUid(appt.id,_apptScope())};
+    if(!appt.uid) setData(p=>({...p,appointments:(p.appointments||[]).map(a=>a.id===appt.id?{...a,uid:withUid.uid,seq:a.seq||0}:a)}));
+    const ics=icsCalendar([withUid],{includeNotes:icsIncludeNotes,scope:_apptScope()});
+    downloadFile(ics,(icsCalendarTitle(withUid).replace(/[^a-z0-9]+/gi,"-").toLowerCase()||"appointment")+".ics","text/calendar");
+    hipaaAudit("export","Exported appointment to calendar file","appointments");
+    _markExported([appt.id]);
+    flash("Calendar file created. Open it to add this to your calendar."); };
+  const exportAllAppointmentsIcs=()=>{ if(!can("export-data")){flash("You don't have permission to export.");return;}
+    _ensureApptUids();
+    const appts=(data.appointments||[]).map(a=>a.uid?a:{...a,uid:icsMakeUid(a.id,_apptScope())});
+    const tombs=(data.apptTombstones||[]);
+    if(!appts.length&&!tombs.length){flash("No appointments to export yet.");return;}
+    const ics=icsCalendar([...appts,...tombs],{includeNotes:icsIncludeNotes,scope:_apptScope()});
+    downloadFile(ics,"care-guardian-appointments.ics","text/calendar");
+    hipaaAudit("export","Exported "+appts.length+" appointment(s) to calendar file","appointments");
+    _markExported(appts.map(a=>a.id));
+    flash(appts.length+" appointment"+(appts.length===1?"":"s")+" exported. Opening the file adds or updates them — it won't create duplicates."); };
+  const deleteAppt=(id)=>{if(!can("add-appointment"))return;setData(p=>{
+    const gone=(p.appointments||[]).find(a=>a.id===id);
+    const tombs=(gone&&gone.uid&&gone.exportedAt)
+      ? [{uid:gone.uid,seq:(gone.seq||0)+1,date:gone.date,time:gone.time,durationMin:gone.durationMin,calTitle:gone.calTitle,title:gone.title,cancelled:true},...(p.apptTombstones||[])].slice(0,200)
+      : (p.apptTombstones||[]);
+    return addLog({...p,appointments:p.appointments.filter(a=>a.id!==id),apptTombstones:tombs},"calendar","Removed appointment")});setApptForm(null)};
   const getApptsForDate=(dateStr)=>(data.appointments||[]).filter(a=>a.date===dateStr).sort((a,b)=>(a.time||"").localeCompare(b.time||""));
   const getUpcoming=()=>{const today=fmtDate(new Date().getFullYear(),new Date().getMonth(),new Date().getDate());return(data.appointments||[]).filter(a=>a.date>=today).sort((a,b)=>a.date.localeCompare(b.date)||a.time.localeCompare(b.time)).slice(0,5)};
 
@@ -2697,17 +4126,28 @@ export default function App() {
   const sendMessage=()=>{const from=(data.settings&&data.settings.team)?(data.settings&&data.settings.deviceName)||"Unknown":msgFrom.trim();if(!msgText.trim()||!from)return;setData(p=>({...p,messages:[...p.messages,{id:nextId(),from,text:msgText.trim(),timestamp:new Date().toLocaleString(),deviceId:(data.settings&&data.settings.deviceId)}]}));setMsgText("")};
 
   /* ── settings / export ── */
-  const flash=(msg)=>{setSettingsMsg(msg);setTimeout(()=>setSettingsMsg(null),4000)};
-  const handleEncryptedExport=async()=>{if(!can("export-data"))return;hipaaAudit("export","Encrypted backup exported","all");if(!exportPw.trim()){flash("Enter an export passcode.");return}try{
+  // A failure rendered in the success-green box tells the user the opposite of the truth. flash() now carries a
+  // severity; anything that reads like a failure is styled as one even if the caller forgot to say so.
+  const flash=(msg,kind)=>{const bad=kind==="error"||/^(couldn't|could not|failed|error|unable|wrong|no permission|you don't have)/i.test(String(msg||""));setSettingsMsg(bad?{t:msg,bad:true}:{t:msg});setTimeout(()=>setSettingsMsg(null),4000)};
+  // ── One backup passcode (locked decision 1 + 3) ──
+  // There used to be three secrets in this area: exportPw (typed fresh every manual export and never remembered),
+  // backupPasscode (continuous backup), and the recovery code. A .care file whose passcode nobody wrote down is a
+  // wasted download, so the passcode is now DERIVED from the vault key the user already unlocked with. They keep
+  // one secret; restoring asks for the passcode they already know.
+  const markBackedUp=async()=>{ const fp=await backupFingerprint(data);
+    setData(p=>({...p,settings:{...p.settings,lastBackupAt:new Date().toISOString(),backupFingerprint:fp,backupCount:backupCountable(p)}}));
+    setShowBackupReminder(false); };
+  const handleEncryptedExport=async()=>{if(!can("export-data"))return false;hipaaAudit("export","Encrypted backup exported","all");const exportPass=exportPw.trim()||await getBackupPasscode();try{
     // Include export metadata inside encrypted payload for integrity (M5)
     const exportMeta={exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId)||"unknown",exportedByName:(data.settings&&data.settings.deviceName)||"",formatVersion:"2.0"};
-    const exportData={...data,_sync:{...(data._sync||{}),...exportMeta},_exportMeta:exportMeta};
-    const _auditB=await getAuditBackup(true); if(_auditB)exportData._audit=_auditB;
+    const exportData={...stripPortableSecrets(data),_sync:{...(data._sync||{}),...exportMeta},_exportMeta:exportMeta};
+    const _auditMap=buildAuditMap(await getAuditBackup(true)); if(Object.keys(_auditMap).length)exportData._audit=_auditMap;
     const _sharedB=await getSharedAuditBackup(); if(_sharedB)exportData._sharedAudit=_sharedB;
-    const b64=await encryptData(await packageWithBlobs(exportData,dekRef.current,rKeyRef.current),exportPw);downloadFile(JSON.stringify({encrypted:true,version:"2.0",data:b64}),"care-guardian-backup.care");
-    setData(p=>({...p,settings:{...p.settings,lastBackupAt:new Date().toISOString()}}));
-    setShowBackupReminder(false);
-    flash("Encrypted backup downloaded. Keep it somewhere safe — it's your recovery copy.")}catch(e){flash("Export failed: "+e.message)}};
+    const b64=await encryptData(await packageWithBlobs(exportData,dekRef.current,rKeyRef.current),exportPass);downloadFile(JSON.stringify({encrypted:true,version:"2.0",data:b64}),"care-guardian-backup.care");
+    await markBackedUp();
+    flash("Encrypted backup downloaded. Keep it somewhere safe — it's your recovery copy.");
+    return true;
+  }catch(e){ flash("Export failed: "+e.message); return false; }};
   const handleNonSensitiveExport=()=>{if(!can("export-data"))return;hipaaAudit("export","Non-sensitive summary exported","summary");const safe={domainOverrides:data.domainOverrides,domainStatus:{},settings:{}}; DOMAINS.forEach(d=>{const prog=getProgress(d.key);const health=prog.pct>=80&&prog.recency>=70?"Healthy":prog.pct>=40||prog.recency>=40?"Fair":"Needs Attention";safe.domainStatus[d.key]={health,foundation:prog.pct+"%",carePulse:prog.recency+"%",progress:prog}});downloadFile(JSON.stringify(safe,null,2),"care-guardian-summary.json");flash("Summary exported (no PHI).")};
   // ── "Share your records": readable PDF (print) + structured FHIR. Both produce UNENCRYPTED files by design,
   // so the user can hand them to a provider; the UI warns, and the encrypted .care backup is the secure path.
@@ -2723,7 +4163,7 @@ export default function App() {
     if(scope.carePlan){s+=`<h2>Care plan status</h2><table><thead><tr><th>Area</th><th>Setup</th><th>Freshness</th></tr></thead><tbody>`+DOMAINS.map(d=>{const p=getProgress(d.key);return `<tr><td>${_shEsc(d.label)}</td><td>${p.pct}%</td><td>${p.recency}%</td></tr>`}).join("")+`</tbody></table>`;}
     return s;
   };
-  const SHARE_CSS=`body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a;line-height:1.5;max-width:760px;margin:24px auto;padding:0 20px}h1{font-size:22px;margin:0 0 2px}h2{font-size:16px;border-bottom:2px solid #457b9d;padding-bottom:4px;margin:22px 0 10px;color:#2a4d63}h3{font-size:13px;margin:12px 0 4px;color:#444}.meta{color:#666;font-size:12px;margin:0 0 8px}table{width:100%;border-collapse:collapse;font-size:12.5px;margin:6px 0}th,td{text-align:left;border:1px solid #ddd;padding:6px 8px;vertical-align:top}th{background:#f2f5f7}.empty{color:#999;font-size:12.5px;font-style:italic}.inc{font-size:12.5px;margin:8px 0;padding:8px;border:1px solid #eee;border-radius:6px}.notes{font-size:12.5px;white-space:pre-wrap}@media print{body{margin:0}h2{break-after:avoid}tr{break-inside:avoid}}`;
+  const SHARE_CSS=`body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a;line-height:1.5;max-width:760px;margin:24px auto;padding:0 20px}h1{font-size:22px;margin:0 0 2px}h2{font-size:16px;border-bottom:2px solid #457b9d;padding-bottom:4px;margin:22px 0 10px;color:#2a4d63}h3{font-size:0.9375rem;margin:12px 0 4px;color:#444}.meta{color:#666;font-size:0.9375rem;margin:0 0 8px}table{width:100%;border-collapse:collapse;font-size:0.9375rem;margin:6px 0}th,td{text-align:left;border:1px solid #ddd;padding:6px 8px;vertical-align:top}th{background:#f2f5f7}.empty{color:#999;font-size:0.9375rem;font-style:italic}.inc{font-size:0.9375rem;margin:8px 0;padding:8px;border:1px solid #eee;border-radius:6px}.notes{font-size:0.9375rem;white-space:pre-wrap}@media print{body{margin:0}h2{break-after:avoid}tr{break-inside:avoid}}`;
   const handleSharePdf=()=>{
     if(!can("export-data"))return;
     if(!Object.values(shareScope).some(Boolean)){flash("Pick at least one thing to include.");return}
@@ -2972,7 +4412,7 @@ export default function App() {
       setReviewerShared({entries:entries.sort((a,b)=>a.seq-b.seq),status});
     }catch{ setReviewerShared(null); }
   };
-  const handleEncryptedImport=async(e)=>{if(clientScopedRef.current){flash("Sync and import aren't available in client sign-in.");return}const file=(e.target.files&&e.target.files[0]);if(!file)return;try{const text=await file.text();if(rawTextTooLarge(text)){flash("This backup is too large to open safely.");e.target.value="";return}const json=JSON.parse(text);if(!json.encrypted){flash("Not an encrypted backup.");return}if(payloadHardTooLarge(json.data)){flash("This backup is too large to load safely ("+mb(b64Bytes(json.data))+" MB).");e.target.value="";return}const restored=await ingestBlobs(await decryptData(json.data,importPw),dekRef.current,rKeyRef.current);
+  const handleEncryptedImport=async(e)=>{if(clientScopedRef.current){flash("Sync and import aren't available in client sign-in.");e.target.value="";return}const file=(e.target.files&&e.target.files[0]);if(!file)return;try{const text=await file.text();if(rawTextTooLarge(text)){flash("This backup is too large to open safely.");e.target.value="";return}const json=JSON.parse(text);if(!json.encrypted){flash("Not an encrypted backup.");return}if(payloadHardTooLarge(json.data)){flash("This backup is too large to load safely ("+mb(b64Bytes(json.data))+" MB).");e.target.value="";return}const restored=await ingestBlobs(await decryptBackupFlexible(json.data,importPw),dekRef.current,rKeyRef.current);
     const auditBlock=restored._audit||null; if(restored._audit)delete restored._audit;
     const sharedBlock=restored._sharedAudit||null; if(restored._sharedAudit)delete restored._sharedAudit;
     // Validate and sanitize (M4)
@@ -2983,7 +4423,7 @@ export default function App() {
     const sourceName=(sanitized.settings&&sanitized.settings.deviceName)||(sanitized.settings&&sanitized.settings.deviceId)||"unknown device";
     setMergePreview({merged,report,sourceName,auditBlock,sharedBlock,oversized:mergeIsOversized(json.data,report),floodBytes:b64Bytes(json.data)});
   }catch{flash("Import failed. Check passcode.")}e.target.value=""};
-  const applyMerge=async()=>{if(!mergePreview)return;const r=mergePreview.report;const parts=[];if(r.added.length)parts.push(r.added.length+" added");if(r.updated.length)parts.push(r.updated.length+" updated");if(r.kept.length)parts.push(r.kept.length+" kept");if(r.conflicts&&r.conflicts.length)parts.push(r.conflicts.length+" flagged");setData(mergePreview.merged);if(mergePreview.auditBlock){const n=await restoreAuditBackup(mergePreview.auditBlock);if(n){await refreshAuditState();parts.push(n+" audit entries")}}if(mergePreview.sharedBlock){await restoreSharedAudit(mergePreview.sharedBlock)}flash("Merge complete: "+(parts.join(", ")||"no changes")+".");setMergePreview(null)};
+  const applyMerge=async()=>{if(!mergePreview)return;const r=mergePreview.report;const parts=[];if(r.added.length)parts.push(r.added.length+" added");if(r.updated.length)parts.push(r.updated.length+" updated");if(r.kept.length)parts.push(r.kept.length+" kept");if(r.conflicts&&r.conflicts.length)parts.push(r.conflicts.length+" flagged");setData(mergePreview.merged);if(mergePreview.auditBlock){const ar=await applyAuditMap(mergePreview.merged,mergePreview.auditBlock);if(ar.restored){await refreshAuditState();parts.push(ar.restored+" audit entries")}if(ar.archived){setData(ar.data);parts.push(ar.archived+" device log"+(ar.archived===1?"":"s")+" archived")}}if(mergePreview.sharedBlock){await restoreSharedAudit(mergePreview.sharedBlock)}flash("Merge complete: "+(parts.join(", ")||"no changes")+".");setMergePreview(null)};
   // Recovery from backup after browser eviction (pre-auth)
   const recoveryFileRef=useRef(null);
   const handleRecoveryFile=async(e)=>{
@@ -3019,7 +4459,7 @@ export default function App() {
     const pw=getSyncPasscode();if(!pw.trim()){setSyncStatus({type:"error",msg:"Set a team sync passcode first."});return}
     setSyncPushing(true);setSyncStatus(null);
     try{
-      const exportData={...data,_sync:{...(data._sync||{}),exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId),exportedByName:(data.settings&&data.settings.deviceName)||""}};
+      const exportData={...stripPortableSecrets(data),_sync:{...(data._sync||{}),exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId),exportedByName:(data.settings&&data.settings.deviceName)||""}};
       const b64=await encryptData(await packageWithBlobs(exportData,dekRef.current,rKeyRef.current),pw);
       const payload=JSON.stringify({encrypted:true,version:"2.0",sync:true,data:b64});
       if(method==="clipboard"){
@@ -3110,25 +4550,39 @@ export default function App() {
   /* ── document processing ── */
   const handleDocUpload=async(e)=>{
     const file=(e.target.files&&e.target.files[0]);if(!file)return;
-    setDocProcessing(true);setDocResult(null);setDocMeds([]);setDocLabs([]);
+    docCancelRef.current={cancelled:false,task:null,pagesDone:0,name:file.name};
+    setDocProcessing(true);setDocResult(null);setDocMeds([]);setDocLabs([]);setDocMedsApplied(false);
     try {
       let rawText="";
       if (file.type==="application/pdf"||file.name.endsWith(".pdf")) {
-        rawText=await extractPdfText(file);
+        rawText=await extractPdfText(file,docCancelRef.current);
       } else {
         rawText=await file.text();
       }
-      if (!rawText.trim()) { flash("No text could be extracted from this file.");setDocProcessing(false);return; }
+      if (!rawText.trim()) { flash("No text could be extracted from this file. If it's a scanned image, the text will need to be entered manually.");setDocProcessing(false);e.target.value="";return; }
       const docType=detectDocType(rawText);
       const medications=parseMedications(rawText);
       const labs=parseLabResults(rawText);
       const sections=parseClinicalSections(rawText);
-      setDocResult({rawText,docType,medications,labs,sections,fileName:file.name});
+      const diagnoses=parseDiagnoses(rawText);
+      const conclusions=parseConclusions(sections);
+      setDocResult({rawText,docType,medications,labs,sections,diagnoses,conclusions,fileName:file.name});
       setDocMeds(medications.map((m,i)=>({...m,id:nextId()})));
       setDocLabs(labs.map((l,i)=>({...l,id:nextId()})));
-    } catch(err) { flash("Error processing file: "+err.message); }
-    setDocProcessing(false);e.target.value="";
+    } catch(err) { const m=String((err&&err.message)||err);
+      if(/PDF_CANCELLED/.test(m)){ setDocProcessing(false); docCancelRef.current=null; e.target.value=""; flash("Upload cancelled — nothing was read from that file."); return; }
+      const slow=/PDF_TIMEOUT/.test(m), engine=/worker|dynamically imported module|importScripts|PDF reader/i.test(m);
+      flash(slow?"This PDF is taking too long to read, so it was stopped rather than left hanging. Try a smaller file or fewer pages — the details can also be entered manually."
+           :engine?"This PDF couldn't be opened because the PDF reader didn't load. Reload the page and try again — the details can also be entered manually."
+           :"Error processing file: "+m); }
+    setDocProcessing(false);docCancelRef.current=null;e.target.value="";
   };
+  // Cancel an in-flight read (wrong file picked). Flips the token the extractor checks between pages and
+  // destroys the pdf.js task so a long document stops immediately instead of finishing in the background.
+  const cancelDocUpload=()=>{ const t=docCancelRef.current; if(!t)return; t.cancelled=true;
+    try{ if(t.task&&t.task.destroy)t.task.destroy(); }catch(e){}
+    setDocProcessing(false); setDocResult(null); setDocMeds([]); setDocLabs([]);
+    flash("Upload cancelled — nothing was read from that file."); };
 
   const updateDocMed=(id,field,value)=>setDocMeds(p=>p.map(m=>m.id===id?{...m,[field]:value}:m));
   const removeDocMed=(id)=>setDocMeds(p=>p.filter(m=>m.id!==id));
@@ -3156,14 +4610,7 @@ export default function App() {
     flash(`${docLabs.length} lab result(s) saved to ${getDomLabel("physical")} notes.`);
   };
 
-  const saveRawTextToNotes=(domain)=>{
-    if(!(docResult&&docResult.rawText))return;
-    const ts=new Date().toLocaleString();
-    const header=`--- Document: ${docResult.fileName} (${ts}) ---`;
-    const text=docResult.rawText.slice(0,5000);
-    setData(p=>{const existing=p.domains[domain].notes;return addLog({...p,domains:{...p.domains,[domain]:{...p.domains[domain],notes:existing?(existing+"\n\n"+header+"\n"+text):(header+"\n"+text),lastUpdated:ts}}},domain,`Saved document text to ${getDomLabel(domain)}`)});
-    flash(`Document text saved to ${getDomLabel(domain)} notes.`);
-  };
+  // saveRawTextToNotes was removed: under the meds-and-tests-only policy, document text is never written to the vault.
 
   /* ── incidents ── */
   // Externalize freshly-attached data: media to the blob store, leaving only small refs in the vault.
@@ -3210,27 +4657,54 @@ export default function App() {
 
   /* ── med admin ── */
   const getMedSchedule=(includeDiscontinued)=>{const ms=data.medSchedule||{medications:[],log:[]};if(includeDiscontinued)return ms;return{...ms,medications:(ms.medications||[]).filter(m=>!m.discontinued)}};
-  const addMedToSchedule=(med)=>{setData(p=>{const ms={...(p.medSchedule||{medications:[],log:[]})};ms.medications=[...ms.medications,{...med,id:nextId(),startDate:new Date().toISOString().slice(0,10)}];hipaaAudit("create","Added medication: "+med.name,"medications");
+  // ── Medication change log: every add / dose change / discontinue / reactivate, whether typed by a caregiver or
+  // imported from a document. Kept separate from medSchedule.log, which records doses GIVEN, not the regimen itself.
+  const medChangeEntry=(action,name,detail,source)=>({id:nextId(),ts:new Date().toISOString(),action,name,detail:detail||"",
+    source:source||"manual",by:(data.settings&&data.settings.deviceName)||"This device"});
+  const logMedChanges=(p,entries)=>({...p,medChanges:[...(entries||[]),...(p.medChanges||[])].slice(0,1000)});
+  const setMedDiscontinued=(id,on,source,fileName)=>{ if(!can("med-admin"))return; setData(p=>{
+      const ms={...(p.medSchedule||{medications:[],log:[]})};
+      const m=(ms.medications||[]).find(x=>x.id===id); if(!m)return p;
+      ms.medications=ms.medications.map(x=>x.id===id?{...x,discontinued:!!on,discontinuedDate:on?new Date().toISOString().slice(0,10):""}:x);
+      hipaaAudit(on?"update":"update",(on?"Discontinued":"Reactivated")+" medication: "+m.name,"medications");
+      const e=medChangeEntry(on?"discontinued":"reactivated",m.name,m.dosage||"",source);
+      if(fileName)e.detail=(e.detail?e.detail+" · ":"")+"from "+fileName;
+      return logMedChanges(addLog({...p,medSchedule:ms},"medadmin",(on?"Discontinued ":"Reactivated ")+m.name),[e]); }); };
+  const addMedToSchedule=(med)=>{setData(p=>{const ms={...(p.medSchedule||{medications:[],log:[]})};ms.medications=[...ms.medications,{...med,id:nextId(),startDate:new Date().toISOString().slice(0,10)}];hipaaAudit("create","Added medication: "+med.name,"medications");p=logMedChanges(p,[medChangeEntry("added",med.name,med.dosage||"","manual")]);
     return addLog({...p,medSchedule:ms},"medadmin",`Added ${med.name} to schedule`)});setMedForm(null)};
-  const editMedInSchedule=(med,id)=>{setData(p=>{const ms={...(p.medSchedule||{medications:[],log:[]})};ms.medications=ms.medications.map(m=>m.id===id?{...m,...med}:m);return{...p,medSchedule:ms}});setMedForm(null)};
+  const editMedInSchedule=(med,id)=>{setData(p=>{const ms={...(p.medSchedule||{medications:[],log:[]})};const prev=(ms.medications||[]).find(m=>m.id===id);ms.medications=ms.medications.map(m=>m.id===id?{...m,...med}:m);let q={...p,medSchedule:ms};if(prev&&String(prev.dosage||"")!==String(med.dosage||""))q=logMedChanges(q,[medChangeEntry("dose-changed",med.name,(prev.dosage||"(none)")+" → "+(med.dosage||"(none)"),"manual")]);return q});setMedForm(null)};
   const removeMedFromSchedule=(id)=>{if(!can("med-admin"))return;setData(p=>{const ms={...(p.medSchedule||{medications:[],log:[]})};ms.medications=ms.medications.filter(m=>m.id!==id);ms.log=ms.log.filter(l=>l.medId!==id);return addLog({...p,medSchedule:ms},"medadmin","Removed medication from schedule")})};
   const toggleMedAdmin=(medId,slot,date)=>{
     setData(p=>{
       const ms={...(p.medSchedule||{medications:[],log:[]})};
       const logKey=`${medId}|${slot}|${date}`;
       const existing=ms.log.find(l=>l.key===logKey);
+      // WHO gave the dose, and WHEN, recorded on every state change. Without this a second caregiver cannot tell
+      // whether a dose was already administered — the exact circumstance that causes accidental double-dosing.
+      const actor={by:(p.settings&&p.settings.deviceName)||"Unknown caregiver",
+                   byId:(p.settings&&p.settings.deviceId)||"",
+                   at:new Date().toISOString(),                 // sortable and comparable, unlike a locale string
+                   timestamp:new Date().toLocaleString()};      // kept for display and older entries
       if(existing){
-        // cycle: given → missed → refused → (remove)
-        if(existing.status==="given")ms.log=ms.log.map(l=>l.key===logKey?{...l,status:"missed"}:l);
-        else if(existing.status==="missed")ms.log=ms.log.map(l=>l.key===logKey?{...l,status:"refused"}:l);
+        // cycle: given → missed → refused → skipped → (clear). "Missed" means nobody gave it; "skipped" means a
+        // caregiver deliberately withheld it, which is a clinical decision and carries a reason.
+        const next={given:"missed",missed:"refused",refused:"skipped"}[existing.status];
+        if(next)ms.log=ms.log.map(l=>l.key===logKey?{...l,status:next,...actor,reason:(next==="skipped"||next==="refused")?(l.reason||""):""}:l);
         else ms.log=ms.log.filter(l=>l.key!==logKey);
       } else {
-        ms.log=[...ms.log,{key:logKey,medId,slot,date,status:"given",timestamp:new Date().toLocaleString()}];
+        ms.log=[...ms.log,{key:logKey,medId,slot,date,status:"given",...actor}];
       }
       return{...p,medSchedule:ms};
     });
   };
   const getMedStatus=(medId,slot,date)=>{const logKey=`${medId}|${slot}|${date}`;return((getMedSchedule().log.find(l=>l.key===logKey))||{}).status||null};
+  // The full record, so the grid can show who and when rather than just a tick.
+  const getMedEntry=(medId,slot,date)=>getMedSchedule().log.find(l=>l.key===`${medId}|${slot}|${date}`)||null;
+  const MED_SKIP_REASONS=["Held on clinical advice","Vitals out of range","Nil by mouth","Out of stock","Away from home","Patient asleep","Other"];
+  const setMedReason=(medId,slot,date,reason)=>{ if(!can("med-admin"))return; const logKey=`${medId}|${slot}|${date}`;
+    setData(p=>{ const ms={...(p.medSchedule||{medications:[],log:[]})};
+      ms.log=(ms.log||[]).map(l=>l.key===logKey?{...l,reason}:l);
+      return {...p,medSchedule:ms}; }); };
   const getMedDayStats=(date)=>{
     const meds=getMedSchedule().medications;
     let total=0,given=0,missed=0,refused=0;
@@ -3242,7 +4716,7 @@ export default function App() {
   const getPlans=()=>data.emergencyPlans||EMERGENCY_SCENARIOS.map(s=>({key:s.key,steps:[...s.steps]}));
   const updatePlanStep=(planIdx,stepIdx,text)=>{setData(p=>{const plans=[...(p.emergencyPlans||getPlans())];plans[planIdx]={...plans[planIdx],steps:[...plans[planIdx].steps]};plans[planIdx].steps[stepIdx]=text;return{...p,emergencyPlans:plans}})};
   const addPlanStep=(planIdx)=>{setData(p=>{const plans=[...(p.emergencyPlans||getPlans())];plans[planIdx]={...plans[planIdx],steps:[...plans[planIdx].steps,""]};return{...p,emergencyPlans:plans}})};
-  const removePlanStep=(planIdx,stepIdx)=>{setData(p=>{const plans=[...(p.emergencyPlans||getPlans())];plans[planIdx]={...plans[planIdx],steps:plans[planIdx].steps.filter((_,i)=>i!==stepIdx)};return{...p,emergencyPlans:plans}})};
+  const removePlanStep=(planIdx,stepIdx)=>{if(isClient)return;setData(p=>{const plans=[...(p.emergencyPlans||getPlans())];plans[planIdx]={...plans[planIdx],steps:plans[planIdx].steps.filter((_,i)=>i!==stepIdx)};return{...p,emergencyPlans:plans}})};
 
   /* ── legacy weekly shift grid ── */
   const getShift=(day,slot)=>(data.shifts||{})[`${day}|${slot}`]||"";
@@ -3429,7 +4903,7 @@ export default function App() {
   // Photo handling for incidents and self-reports
   const handlePhotoCapture=(e,setter)=>{
     const files=e.target.files;if(!files||!files.length)return;
-    Array.from(files).slice(0,3).forEach(file=>{
+    Array.from(files).slice(0,MAX_ENTRY_PHOTOS).forEach(file=>{
       if(!file.type.startsWith("image/")){flash("Only image files are allowed.");return}
       if(file.size>2*1024*1024){flash("Photo too large (max 2MB). Try a lower resolution.");return}
       const reader=new FileReader();
@@ -3604,13 +5078,13 @@ export default function App() {
         if(!logged){
           if(curHour>=range.end){
             // Past this window — missed
-            reminders.push({type:"med-missed",priority:1,icon:"❌",title:med.name+" — "+slot+" missed",sub:"Was due by "+range.end+":00",action:"medadmin",hub:"records"});
+            reminders.push({type:"med-missed",priority:1,icon:"❌",title:med.name+" — "+slot+" missed",sub:"Was due by "+range.end+":00",action:"medadmin",hub:"caremgmt"});
           } else if(curHour>=range.start){
             // Current window — due now
-            reminders.push({type:"med-due",priority:2,icon:"💊",title:med.name+" — due now",sub:slot+" window ("+range.start+":00–"+range.end+":00)",action:"medadmin",hub:"records"});
+            reminders.push({type:"med-due",priority:2,icon:"💊",title:med.name+" — due now",sub:slot+" window ("+range.start+":00–"+range.end+":00)",action:"medadmin",hub:"caremgmt"});
           } else if(nextSlot&&nextSlot.name===slot&&nextSlot.inMinutes<=60){
             // Upcoming within the hour
-            reminders.push({type:"med-upcoming",priority:3,icon:"⏰",title:med.name+" — "+slot+" in ~"+nextSlot.inMinutes+"min",sub:"Coming up soon",action:"medadmin",hub:"records"});
+            reminders.push({type:"med-upcoming",priority:3,icon:"⏰",title:med.name+" — "+slot+" in ~"+nextSlot.inMinutes+"min",sub:"Coming up soon",action:"medadmin",hub:"caremgmt"});
           }
         }
       });
@@ -3632,9 +5106,9 @@ export default function App() {
           const daysSince=Math.floor((Date.now()-new Date(lastDone).getTime())/86400000);
           const daysUntilDue=interval-daysSince;
           if(daysUntilDue<=0){
-            reminders.push({type:"task-overdue",priority:2,icon:"🔴",title:sub.text.slice(0,60),sub:getDomLabel(dom.key)+" — "+Math.abs(daysUntilDue)+"d overdue (every "+interval+"d)",action:dom.key,hub:"care"});
+            reminders.push({type:"task-overdue",priority:2,icon:"🔴",title:sub.text.slice(0,60),sub:getDomLabel(dom.key)+" — "+Math.abs(daysUntilDue)+"d overdue (every "+interval+"d)",action:dom.key,hub:"caremgmt"});
           } else if(daysUntilDue<=7){
-            reminders.push({type:"task-upcoming",priority:4,icon:"🟡",title:sub.text.slice(0,60),sub:getDomLabel(dom.key)+" — due in "+daysUntilDue+"d",action:dom.key,hub:"care"});
+            reminders.push({type:"task-upcoming",priority:4,icon:"🟡",title:sub.text.slice(0,60),sub:getDomLabel(dom.key)+" — due in "+daysUntilDue+"d",action:dom.key,hub:"caremgmt"});
           }
         });
       });
@@ -3646,7 +5120,7 @@ export default function App() {
       const hoursUntil=Math.round((apptDate.getTime()-now.getTime())/3600000);
       if(hoursUntil>0&&hoursUntil<=48){
         const timeLabel=hoursUntil<=2?"in "+hoursUntil+"h":hoursUntil<=24?"today":"tomorrow";
-        reminders.push({type:"appt",priority:hoursUntil<=4?2:3,icon:"📅",title:appt.description||"Appointment",sub:timeLabel+(appt.location?" at "+appt.location:""),action:"calendar",hub:"records"});
+        reminders.push({type:"appt",priority:hoursUntil<=4?2:3,icon:"📅",title:appt.description||"Appointment",sub:timeLabel+(appt.location?" at "+appt.location:""),action:"calendar",hub:"caremgmt"});
       }
     });
 
@@ -3745,15 +5219,45 @@ export default function App() {
   };
 
   /* ── saved documents ── */
+  // ── Document → Medication Management. Changes are shown first and applied on one press: no re-typing, and no
+  // silent edits to a medication record either — a parser misreading a dose must never rewrite the regimen unseen.
+  const getDocMedChanges=()=>{
+    if(!docResult)return {toAdd:[],toDiscontinue:[],toUpdate:[],unchanged:[]};
+    const statuses=parseMedStatuses(docResult.rawText||"");
+    return reconcileMedications(getMedSchedule(true).medications,docMeds,statuses);
+  };
+  const applyDocMedChanges=(plan)=>{
+    if(!can("med-admin")){flash("You don't have permission to change medications.");return;}
+    const fileName=(docResult&&docResult.fileName)||"document";
+    const {toAdd=[],toDiscontinue=[],toUpdate=[]}=plan||{};
+    if(!toAdd.length&&!toDiscontinue.length&&!toUpdate.length){flash("No medication changes to apply.");return;}
+    setData(p=>{
+      const ms={...(p.medSchedule||{medications:[],log:[]})}; ms.medications=[...(ms.medications||[])];
+      const entries=[]; const today=new Date().toISOString().slice(0,10);
+      for(const a of toAdd){ ms.medications.push({name:a.name,dosage:a.dosage,timeSlots:a.timeSlots,notes:a.notes,id:nextId(),startDate:today});
+        entries.push(medChangeEntry("added",a.name,(a.dosage||"")+" · from "+fileName,"document")); }
+      for(const d of toDiscontinue){ ms.medications=ms.medications.map(m=>m.id===d.id?{...m,discontinued:true,discontinuedDate:today}:m);
+        entries.push(medChangeEntry("discontinued",d.name,(d.dosage||"")+" · from "+fileName,"document")); }
+      for(const u of toUpdate){ ms.medications=ms.medications.map(m=>m.id===u.id?{...m,dosage:u.to}:m);
+        entries.push(medChangeEntry("dose-changed",u.name,u.from+" → "+u.to+" · from "+fileName,"document")); }
+      hipaaAudit("update","Applied "+entries.length+" medication change(s) from "+fileName,"medications");
+      return logMedChanges(addLog({...p,medSchedule:ms},"medadmin","Applied "+entries.length+" medication change(s) from document"),entries);
+    });
+    setDocMedsApplied(true);
+    flash(`${toAdd.length} added · ${toDiscontinue.length} discontinued · ${toUpdate.length} dose change(s) applied.`);
+  };
   const saveDocToLibrary=(category)=>{
     if(!docResult)return;
     const doc={id:nextId(),fileName:docResult.fileName,category:category||docSaveCategory,docType:docResult.docType.key,date:new Date().toLocaleString(),
       medCount:docMeds.length,labCount:docLabs.length,
-      summary:docResult.rawText.slice(0,200),
-      rawText:docResult.rawText.slice(0,10000),
+      // POLICY: only structured medication and test-result data is retained. The document's text is NOT stored —
+      // not in full, not as an excerpt — so nothing is silently truncated and no clinical narrative sits in the vault.
+      contentPolicy:"meds-labs-dx-only",
       medications:[...docMeds],
       labs:[...docLabs],
-      sections:docResult.sections||[],
+      diagnoses:[...(docResult.diagnoses||[])],
+      conclusions:[...(docResult.conclusions||[])],
+      dxCount:(docResult.diagnoses||[]).length,
     };
     setData(p=>addLog({...p,savedDocs:[doc,...(p.savedDocs||[])]},"documents",`Saved: ${doc.fileName}`));
     setDocCatFilter("all");
@@ -3762,48 +5266,86 @@ export default function App() {
   const deleteDoc=(id)=>{setData(p=>({...p,savedDocs:(p.savedDocs||[]).filter(d=>d.id!==id)}))};
   const getFilteredDocs=()=>{const list=[...(data.savedDocs||[])];if(docCatFilter==="all")return list;return list.filter(d=>d.category===docCatFilter)};
   const [viewingDoc,setViewingDoc]=useState(null); // doc id to view
+  const [circleUI,setCircleUI]=useState({mode:null,host:null,join:null,err:""}); // My Circle pairing flow (paste-based; QR camera ships next layer)
 
   /* ── nav ── */
   const toggle=(gi)=>setExpanded(p=>({...p,[gi]:!p[gi]}));
   const PHI_VIEWS={"incidents":"incidents","medadmin":"medications","contacts":"contacts","documents":"documents","selfreport":"self_reports","poa-decisions":"poa_decisions","capacity":"capacity","physical":"domains","cognitive":"domains","wellness":"domains","legal":"domains","financial":"domains","emergency-card":"emergency_info","binder":"care_plan","handoff":"shift_data"};
-  const nav=(v)=>{if(PHI_VIEWS[v]&&authed)hipaaAudit("view","Accessed "+v,PHI_VIEWS[v]);setNavStack(p=>[...p,{view,hub:currentHub}]);setView(v);setExpanded({});setEditNotes(false);setAddSubFor(null);cancelEdit();setContactForm(null);setContactDetail(null);setEditingDomain(null);setApptForm(null);setCalSelected(null);setDocResult(null);setDocMeds([]);setDocLabs([]);setIncidentForm(null);setExpenseForm(null);setMedForm(null);setViewingDoc(null)};
-  const navHub=(hub)=>{setCurrentHub(hub);setView(hub+"-hub");setNavStack([]);setExpanded({})};
+  // ── Area map: which of the three areas owns each view (drives breadcrumbs + bottom-bar highlight). nav() applies it, so stale setCurrentHub calls are harmless.
+  const VIEW_AREA={"caremgmt-hub":"caremgmt",medadmin:"caremgmt",incidents:"caremgmt",calendar:"caremgmt",messages:"caremgmt",handoff:"caremgmt",emergency:"caremgmt","emergency-card":"caremgmt","caregiver-wellness":"caremgmt",physical:"caremgmt",cognitive:"caremgmt",wellness:"caremgmt",legal:"caremgmt",financial:"caremgmt",triggers:"caremgmt",tracking:"caremgmt",visit:"caremgmt","incident-patterns":"caremgmt","poa-decisions":"caremgmt",capacity:"caremgmt",binder:"caremgmt",postdeath:"caremgmt","docs-hub":"docs",selfreport:"docs",datashare:"docs",contacts:"docs",documents:"docs",program:"docs",expenses:"docs",settings:"settings",circle:"settings",sync:"settings",schedule:"settings",shifts:"settings",availability:"settings",help:"settings"};
+  // ── Context-specific help: every view maps to a help topic. Content arrives later; the wiring is live now.
+  const HELP_TOPICS={medadmin:"Medicine Management",incidents:"Incident Log",calendar:"Appointments & Calendar",messages:"Messages",handoff:"Shift Handoff",emergency:"Emergency Plans","emergency-card":"Emergency Info Card","caregiver-wellness":"Caregiver Check-in",physical:"Physical Health",cognitive:"Cognitive Health",wellness:"Wellness",legal:"Legal Safety",financial:"Financial Security",triggers:"Escalation Triggers",tracking:"Longitudinal Tracking",visit:"Visit Prep","incident-patterns":"Incident Patterns","poa-decisions":"POA Decisions",capacity:"Capacity Observations",binder:"Care Plan Binder",postdeath:"End-of-Life Planning",selfreport:"Self-Report",datashare:"Records In & Out",contacts:"Contacts",documents:"Documents",program:"Share with a Care Provider",expenses:"Expenses",circle:"My Circle",sync:"Sync",schedule:"Care Schedule",shifts:"Weekly Grid",availability:"My Availability",overview:"Overview"};
+  const nav=(v)=>{if(VIEW_AREA[v])setCurrentHub(VIEW_AREA[v]);if(PHI_VIEWS[v]&&authed)hipaaAudit("view","Accessed "+v,PHI_VIEWS[v]);setNavStack(p=>[...p,{view,hub:currentHub}]);setView(v);setExpanded({});setEditNotes(false);setAddSubFor(null);cancelEdit();setContactForm(null);setContactDetail(null);setEditingDomain(null);setApptForm(null);setCalSelected(null);setDocResult(null);setDocMeds([]);setDocLabs([]);setIncidentForm(null);setExpenseForm(null);setMedForm(null);setViewingDoc(null)};
+  const navHub=(hub)=>{setCurrentHub(hub);setView(hub==="settings"?"settings":hub+"-hub");setNavStack([]);setExpanded({})};
   const navBack=()=>{if(navStack.length>0){const prev=navStack[navStack.length-1];setNavStack(p=>p.slice(0,-1));setView(prev.view);setCurrentHub(prev.hub)}else{navHub(currentHub)}};
-  const isHubView=view.endsWith("-hub");
-  const getViewTitle=()=>{const t={"today-hub":"Today","care-hub":"Care plan","records-hub":"Records","team-hub":"Team",physical:"Physical health",cognitive:"Cognitive health",wellness:"Wellness",legal:"Legal safety",financial:"Financial security",incidents:"Incidents",medadmin:"Medication admin",expenses:"Expenses",calendar:"Calendar",contacts:"Contacts",documents:"Documents",shifts:"Shifts",triggers:"Escalation triggers",tracking:"Tracking",visit:"Visit prep",emergency:"Emergency plans",postdeath:"After death",messages:"Messages",sync:"Sync",selfreport:"Self-report",settings:"Settings",help:"Help",overview:"Overview",handoff:"Shift Handoff","emergency-card":"Emergency Card","caregiver-wellness":"Caregiver Check-in","incident-patterns":"Incident Patterns",capacity:"Capacity Observations",binder:"Care Plan Binder","poa-decisions":"POA Decisions",schedule:"Care Schedule",availability:"My Availability"};return t[view]||"Care Guardian"};
-  const getBreadcrumb=()=>{const h={today:"Today",care:"Care plan",records:"Records",team:"Team"};if(isHubView)return null;return h[currentHub]||null};
+  // ── My Circle: device/caregiver circle sharing one symmetric key. Crypto proven in circle-*-test.mjs; transport/sync arrives next layer. ──
+  const circleOf=()=>(data.settings&&data.settings.circle)||null;
+  const circleDeviceId=()=>(data.settings&&data.settings.circle&&data.settings.circle.deviceId)||(data.settings&&data.settings.deviceId)||"this-device";
+  const ensureDeviceKey=async()=>{ let dk=data.settings&&data.settings.deviceKey; if(dk&&dk.pub)return dk; dk=await circleNewDeviceKey(); setData(p=>({...p,settings:{...p.settings,deviceKey:dk}})); return dk; };
+  const circleCreate=async()=>{ const dk=await ensureDeviceKey(); const key=circleNewKey(); const id="circle-"+b64enc(crypto.getRandomValues(new Uint8Array(6))).replace(/[^a-zA-Z0-9]/g,"").slice(0,8); const me={deviceId:circleDeviceId(),pub:dk.pub,label:(data.settings&&data.settings.deviceName)||"This device",addedAt:new Date().toISOString()}; setData(p=>({...p,settings:{...p.settings,circle:{id,key,epoch:0,createdAt:new Date().toISOString()}},circleRoster:[me]})); setCircleUI({mode:null,host:null,join:null,err:""}); flash("Circle created on this device. Add your other devices to keep them in sync."); };
+  const circleLeave=()=>{ setData(p=>({...p,settings:{...p.settings,circle:null},circleRoster:[]})); setCircleUI({mode:null,host:null,join:null,err:""}); flash("Left the circle on this device. Your records stay here; re-pair to sync again."); };
+  const circleHostRespond=async(payloadStr)=>{ try{ const p=JSON.parse((payloadStr||"").trim()); const c=circleOf(); if(!c||!p.eph)throw 0; const res=await circlePairRespondA(c.key,p.eph); const roster=(data.circleRoster||[]); const nextRoster=roster.some(r=>r.deviceId===p.id)?roster:[...roster,{deviceId:p.id,pub:p.dev,label:p.label||"New device",addedAt:new Date().toISOString()}]; let relayCfg=null; if(c.relay&&c.relay.adminToken){ try{ const ctr=await fetch(_ib(c.relay.base)+"/admin/claim-token",{method:"POST",headers:{"Content-Type":"application/json","X-Admin-Token":c.relay.adminToken},body:JSON.stringify({prefix:"circle/"+c.id+"/"+p.id+"/"})}); if(ctr.ok){ const j=await ctr.json(); relayCfg={base:c.relay.base,claimToken:j.token,readCap:c.relay.readCap}; } }catch(e){} } const qr2={v:1,eApub:res.eApub,salt:res.salt,wrap:res.wrap,circleId:c.id,epoch:c.epoch,roster:nextRoster,relay:relayCfg}; setData(d=>({...d,circleRoster:nextRoster})); setCircleUI(u=>({...u,host:{qr2:JSON.stringify(qr2),sas:res.sas,pending:p.label||"New device"},err:""})); }catch(e){ setCircleUI(u=>({...u,err:"That pairing code couldn't be read — paste the joining device's code."})); } };
+  const circleJoinStart=async()=>{ const dk=await ensureDeviceKey(); const eph=await circlePairStartB(); const qr1={v:1,eph:eph.pub,dev:dk.pub,id:circleDeviceId(),label:(data.settings&&data.settings.deviceName)||"This device"}; setCircleUI({mode:"join",join:{ephJwk:eph.ephJwk,ephPub:eph.pub,qr1:JSON.stringify(qr1)},host:null,err:""}); };
+  const circleJoinComplete=async(qr2Str)=>{ try{ const j=circleUI.join; const p=JSON.parse((qr2Str||"").trim()); const res=await circlePairCompleteB(j.ephJwk,j.ephPub,p.eApub,p.salt,p.wrap); if(!res.ok)throw 0; let relay=null; if(p.relay&&p.relay.base&&p.relay.claimToken){ try{ const claimed=await INTAKE_BACKENDS.https.claim({base:p.relay.base,claimToken:p.relay.claimToken,grantId:circleDeviceId()}); relay={base:p.relay.base,prefix:claimed.prefix,writeCap:claimed.writeCap,readCap:p.relay.readCap}; }catch(e){} } setData(d=>({...d,settings:{...d.settings,circle:{id:p.circleId,key:res.circleKey,epoch:p.epoch,relay,createdAt:new Date().toISOString()}},circleRoster:p.roster||[]})); setCircleUI(u=>({...u,join:{...j,done:true,sas:res.sas},err:""})); flash("Joined the circle. Confirm the 6-digit code matches the other device."); }catch(e){ setCircleUI(u=>({...u,err:"Couldn't join with that code — paste the existing device's response."})); } };
+  const circleConnectRelay=async(base,adminToken)=>{ const c=circleOf(); if(!c){flash("Create a circle first.");return;} base=(base||"").trim(); if(!intakeBaseOk(base)){flash("Relay address must use https (or localhost for testing).");return;} try{ const ctr=await fetch(_ib(base)+"/admin/claim-token",{method:"POST",headers:{"Content-Type":"application/json","X-Admin-Token":(adminToken||"").trim()},body:JSON.stringify({prefix:"circle/"+c.id+"/"+circleDeviceId()+"/"})}); if(!ctr.ok)throw 0; const ctj=await ctr.json(); const claimed=await INTAKE_BACKENDS.https.claim({base,claimToken:ctj.token,grantId:circleDeviceId()}); const rcr=await fetch(_ib(base)+"/admin/read-cap",{method:"POST",headers:{"Content-Type":"application/json","X-Admin-Token":(adminToken||"").trim()},body:JSON.stringify({prefix:"circle/"+c.id+"/"})}); if(!rcr.ok)throw 0; const rcj=await rcr.json(); const relay={base,prefix:claimed.prefix,writeCap:claimed.writeCap,readCap:rcj.readCap,adminToken:(adminToken||"").trim()}; setData(d=>({...d,settings:{...d.settings,circle:{...d.settings.circle,relay}}})); flash("Relay connected. You can sync this circle now."); }catch(e){ flash("Couldn't connect the relay — check the address and admin token."); } };
+  const _mintCap=async(base,adminToken,prefix,kind)=>{ const r=await fetch(_ib(base)+"/admin/"+(kind==="read"?"read-cap":"claim-token"),{method:"POST",headers:{"Content-Type":"application/json","X-Admin-Token":adminToken},body:JSON.stringify({prefix})}); if(!r.ok)throw new Error("mint "+r.status); return r.json(); };
+  const _revoke=async(base,adminToken,prefix)=>{ try{ await fetch(_ib(base)+"/admin/revoke",{method:"POST",headers:{"Content-Type":"application/json","X-Admin-Token":adminToken},body:JSON.stringify({prefix})}); }catch(e){} };
+  // Cancel a pending remote invite / not-yet-joined device: revoke its write prefix (server-enforced — it can no longer claim or write), drop the placeholder slot. NOTE: if the code AND passphrase both leaked, also Rotate the key, since the bundle carried the current key.
+  const circleCancelPending=async(deviceId,inviteId)=>{ const c=circleOf(); if(!c||!c.relay||!c.relay.adminToken){flash("Only the circle's main device can cancel an invite.");return;} const base=c.relay.base, admin=c.relay.adminToken; await _revoke(base,admin,"circle/"+c.id+"/"+deviceId+"/"); if(inviteId)await _revoke(base,admin,"circle/"+c.id+"/invite/"+inviteId+"/"); setData(d=>({...d,circleRoster:(d.circleRoster||[]).filter(x=>x.deviceId!==deviceId)})); setCircleUI(u=>(u.remote&&u.remote.assignedId===deviceId?{...u,remote:null}:u)); flash("Invite cancelled — that device can no longer join or write to the circle."); };
+  // Remote invite (co-caregiver not present): wrap the circle key + relay caps under a GENERATED passphrase, stash on the relay behind a one-time read code. Two channels: code + passphrase.
+  const circleRemoteInvite=async()=>{ const c=circleOf(); if(!c){flash("Create a circle first.");return;} if(!c.relay||!c.relay.adminToken){flash("Connect a relay first, then you can invite a remote caregiver.");return;} try{ const pass=circlePassphrase(6); const rid=()=>b64enc(crypto.getRandomValues(new Uint8Array(5))).replace(/[^a-zA-Z0-9]/g,"").slice(0,8); const assignedId="dev-remote-"+rid(); const inviteId="inv-"+rid(); const base=c.relay.base, admin=c.relay.adminToken;
+    const jct=await _mintCap(base,admin,"circle/"+c.id+"/"+assignedId+"/","claim");
+    const expiresAt=Date.now()+CIRCLE_INVITE_TTL_MS;
+    const bundle={circleKey:c.key,circleId:c.id,epoch:c.epoch||0,roster:(data.circleRoster||[]),assignedDeviceId:assignedId,expiresAt,relay:{base,claimToken:jct.token,readCap:c.relay.readCap}};
+    const env=await circleRemoteSeal(JSON.stringify(bundle),pass);
+    const ict=await _mintCap(base,admin,"circle/"+c.id+"/invite/"+inviteId+"/","claim"); const iwc=await INTAKE_BACKENDS.https.claim({base,claimToken:ict.token,grantId:inviteId});
+    await INTAKE_BACKENDS.https.push({base,prefix:iwc.prefix,writeCap:iwc.writeCap},"blob",JSON.stringify(env));
+    const irc=await _mintCap(base,admin,"circle/"+c.id+"/invite/"+inviteId+"/","read");
+    const code=b64enc(new TextEncoder().encode(JSON.stringify({base,circleId:c.id,inviteId,readCap:irc.readCap})));
+    setData(d=>({...d,circleRoster:[...(d.circleRoster||[]),{deviceId:assignedId,pub:"",label:"Remote caregiver (pending)",addedAt:new Date().toISOString(),pending:true}]}));
+    setCircleUI(u=>({...u,remote:{code,pass,assignedId,inviteId,expiresAt}})); }catch(e){ setCircleUI(u=>({...u,err:"Couldn't create the remote invite — check the relay connection."})); } };
+  const circleRemoteJoin=async(codeStr,pass)=>{ try{ const dec=JSON.parse(new TextDecoder().decode(b64dec((codeStr||"").trim()))); const env=JSON.parse(await INTAKE_BACKENDS.https.get({base:dec.base,readCap:dec.readCap},"circle/"+dec.circleId+"/invite/"+dec.inviteId+"/blob")); let bundleStr; try{ bundleStr=await circleRemoteOpen(env,(pass||"").trim()); }catch(e){ setCircleUI(u=>({...u,err:"That passphrase didn't unlock the invite. Check the words and spacing."})); return; } const bundle=JSON.parse(bundleStr); if(circleInviteExpired(bundle)){ setCircleUI(u=>({...u,err:"This invite has expired. Ask your circle's main device for a new one."})); return; } const dk=await ensureDeviceKey(); const claimed=await INTAKE_BACKENDS.https.claim({base:bundle.relay.base,claimToken:bundle.relay.claimToken,grantId:bundle.assignedDeviceId}); const relay={base:bundle.relay.base,prefix:claimed.prefix,writeCap:claimed.writeCap,readCap:bundle.relay.readCap}; const me={deviceId:bundle.assignedDeviceId,pub:dk.pub,label:(data.settings&&data.settings.deviceName)||"My device",addedAt:new Date().toISOString()}; const roster=circleMergeRoster((bundle.roster||[]).filter(r=>r.deviceId!==bundle.assignedDeviceId),[me]); setData(d=>({...d,settings:{...d.settings,circle:{id:bundle.circleId,key:bundle.circleKey,epoch:bundle.epoch,deviceId:bundle.assignedDeviceId,relay,createdAt:new Date().toISOString()}},circleRoster:roster})); setCircleUI({mode:null,host:null,join:null,err:"",remoteJoined:true}); flash("Joined the circle remotely. Press Sync now to exchange records."); }catch(e){ setCircleUI(u=>({...u,err:"Couldn't join with that code — check the invite code and that the relay is reachable."})); } };
+  const circleIsAdmin=()=>{ const c=circleOf(); return !!(c&&c.relay&&c.relay.adminToken); };
+  const circleRotateNow=async(removeDeviceId)=>{ const c=circleOf(); if(!c)return; if(!c.relay||!c.relay.adminToken){flash("Only the circle's main device can rotate the key.");return;} if(removeDeviceId===circleDeviceId()){flash("Can't remove the device you're using.");return;} const dk=await ensureDeviceKey(); const roster=(data.circleRoster||[]).filter(r=>!removeDeviceId||r.deviceId!==removeDeviceId); try{ const newKey=circleNewKey(); const epoch=(c.epoch||0)+1; const rotObj=await circleRotate(newKey,epoch,roster.map(r=>({deviceId:r.deviceId,pub:r.pub}))); const ctr=await fetch(_ib(c.relay.base)+"/admin/claim-token",{method:"POST",headers:{"Content-Type":"application/json","X-Admin-Token":c.relay.adminToken},body:JSON.stringify({prefix:"circle/"+c.id+"/rotation/"})}); if(!ctr.ok)throw 0; const ctj=await ctr.json(); const claimed=await INTAKE_BACKENDS.https.claim({base:c.relay.base,claimToken:ctj.token,grantId:circleDeviceId()}); await INTAKE_BACKENDS.https.push({base:c.relay.base,prefix:claimed.prefix,writeCap:claimed.writeCap},"latest",JSON.stringify(rotObj)); if(removeDeviceId){ try{ await fetch(_ib(c.relay.base)+"/admin/revoke",{method:"POST",headers:{"Content-Type":"application/json","X-Admin-Token":c.relay.adminToken},body:JSON.stringify({prefix:"circle/"+c.id+"/"+removeDeviceId+"/"})}); }catch(e){} } setData(d=>({...d,settings:{...d.settings,circle:{...d.settings.circle,key:newKey,epoch}},circleRoster:roster})); flash(removeDeviceId?"Device removed and the circle key rotated — it can no longer receive updates.":"Circle key rotated."); }catch(e){ flash("Couldn't rotate the key — check the relay connection."); } };
+  const circleSyncNow=async()=>{ const c=circleOf(); if(!c)return; if(!c.relay){flash("Connect a relay first to sync across the circle.");return;} try{ let curKey=c.key, curEpoch=c.epoch||0;
+    const rot=await circleRotationFetch(c.relay,c.id); if(rot&&(rot.epoch||0)>curEpoch){ const dk=await ensureDeviceKey(); try{ curKey=await circleRotationOpen(rot,circleDeviceId(),dk.jwkPriv); curEpoch=rot.epoch; }catch(removed){ flash("This device was removed from the circle. Your records stay here; re-pair to rejoin."); setData(d=>({...d,settings:{...d.settings,circle:null},circleRoster:[]})); setCircleUI({mode:null,host:null,join:null,err:""}); return; } }
+    const payload={...stripPortableSecrets(data),_audit:buildAuditMap(await getAuditBackup(false))}; const sealed=await circleSealState(payload,curKey); await circleSyncPush(c.relay,sealed); const blobs=await circleSyncPull(c.relay,c.id,circleDeviceId()); let cur=data,n=0,auditRestored=0; for(const b of blobs){ try{ const remote=await circleOpenState(b,curKey); const rAudit=remote._audit; delete remote._audit; const {merged}=mergeWithClock(cur,remote); cur={...merged,circleRoster:circleMergeRoster(merged.circleRoster,remote.circleRoster)}; if(rAudit){ const ar=await applyAuditMap(cur,rAudit); cur=ar.data; auditRestored+=ar.restored; } n++; }catch(e){} }
+    cur={...cur,settings:{...cur.settings,deviceKey:data.settings.deviceKey,circle:{...((cur.settings&&cur.settings.circle)||{}),id:c.id,key:curKey,relay:c.relay,epoch:curEpoch}},_sync:{...(cur._sync||{}),lastSync:new Date().toISOString()}}; setData(cur); if(auditRestored)await refreshAuditState(); flash((curEpoch>(c.epoch||0)?"Picked up a new circle key. ":"")+"Circle synced — "+n+" other device"+(n===1?"":"s")+" merged."); }catch(e){ flash("Circle sync couldn't reach the relay."); } };
+  const isHubView=view.endsWith("-hub")||view==="settings";
+  const getViewTitle=()=>{const t={"caremgmt-hub":"Care Management","docs-hub":"Documents & Data","datashare":"Records In & Out",physical:"Physical health",cognitive:"Cognitive health",wellness:"Wellness",legal:"Legal safety",financial:"Financial security",incidents:"Incidents",medadmin:"Medication admin",expenses:"Expenses",calendar:"Calendar",contacts:"Contacts",documents:"Documents",shifts:"Shifts",triggers:"Escalation triggers",tracking:"Tracking",visit:"Visit prep",emergency:"Emergency plans",postdeath:"After death",messages:"Messages",sync:"Sync",selfreport:"Self-report",settings:"Settings",help:"Help",overview:"Overview",handoff:"Shift Handoff","emergency-card":"Emergency Card","caregiver-wellness":"Caregiver Check-in","incident-patterns":"Incident Patterns",capacity:"Capacity Observations",binder:"Care Plan Binder","poa-decisions":"POA Decisions",schedule:"Care Schedule",availability:"My Availability","circle":"My Circle"};return t[view]||"Care Guardian"};
+  const getBreadcrumb=()=>{const h={caremgmt:"Care Management",docs:"Documents & Data",settings:"Settings"};if(isHubView)return null;return h[currentHub]||null};
 
   // Universal search
   const SEARCH_FEATURES=[
-    {label:"Medications",hub:"records",view:"medadmin",icon:"💊",keywords:"medication med admin drug pill prescription"},
-    {label:"Incidents",hub:"records",view:"incidents",icon:"⚠",keywords:"incident fall behavior wandering medication error accident"},
-    {label:"Incident Patterns",hub:"records",view:"incident-patterns",icon:"📊",keywords:"pattern trend chart graph analysis time"},
-    {label:"Expenses",hub:"records",view:"expenses",icon:"$",keywords:"expense cost money payment receipt"},
-    {label:"Documents",hub:"records",view:"documents",icon:"📄",keywords:"document scan pdf lab result upload library"},
-    {label:"Contacts",hub:"records",view:"contacts",icon:"☷",keywords:"contact phone email doctor nurse lawyer provider"},
-    {label:"Calendar",hub:"records",view:"calendar",icon:"▦",keywords:"calendar appointment schedule date"},
-    {label:"Care Schedule",hub:"records",view:"schedule",icon:"🗓",keywords:"schedule shift open swap claim visit clock availability roster assignment"},
-    {label:"Shifts",hub:"records",view:"shifts",icon:"👥",keywords:"shift schedule caregiver aide worker weekly grid"},
-    {label:"Messages",hub:"team",view:"messages",icon:"✉",keywords:"message chat text communication team"},
-    {label:"Self-Reports",hub:"team",view:"selfreport",icon:"🗣",keywords:"self report mood pain sleep voice concern"},
-    {label:"Sync",hub:"team",view:"sync",icon:"📡",keywords:"sync backup export import cloud server team invite"},
-    {label:"Settings",hub:"team",view:"settings",icon:"⚙",keywords:"settings passcode password state region tab order device"},
-    {label:"Help",hub:"team",view:"help",icon:"?",keywords:"help guide how to feature"},
-    {label:"Physical Health",hub:"care",view:"physical",icon:"♥",keywords:"physical health mobility fall nutrition dental vision sleep"},
-    {label:"Cognitive Health",hub:"care",view:"cognitive",icon:"◐",keywords:"cognitive memory assessment routine behavior orientation"},
-    {label:"Wellness",hub:"care",view:"wellness",icon:"✿",keywords:"wellness emotional social activity engagement respite"},
-    {label:"Legal Safety",hub:"care",view:"legal",icon:"⚖",keywords:"legal poa power attorney advance directive hipaa guardianship"},
-    {label:"Financial Security",hub:"care",view:"financial",icon:"◈",keywords:"financial medicaid benefit insurance asset spend down"},
-    {label:"Escalation Triggers",hub:"care",view:"triggers",icon:"📊",keywords:"trigger escalation transition warning condition monitor"},
-    {label:"Tracking",hub:"care",view:"tracking",icon:"📈",keywords:"tracking longitudinal snapshot history trend progress"},
-    {label:"Visit Prep",hub:"care",view:"visit",icon:"📋",keywords:"visit prep doctor appointment provider summary"},
-    {label:"Emergency Plans",hub:"care",view:"emergency",icon:"🚨",keywords:"emergency plan fall choking wandering agitation"},
-    {label:"POA Decisions",hub:"care",view:"poa-decisions",icon:"⚖",keywords:"poa power attorney decision medical financial legal guardian agent fiduciary"},
-    {label:"Capacity Observations",hub:"care",view:"capacity",icon:"📝",keywords:"capacity observation ability assessment functional decline"},
-    {label:"Care Plan Binder",hub:"care",view:"binder",icon:"📖",keywords:"binder care plan printable comprehensive document"},
-    {label:"Shift Handoff",hub:"today",view:"handoff",icon:"📋",keywords:"handoff shift change summary incoming outgoing"},
-    {label:"Emergency Card",hub:"today",view:"emergency-card",icon:"🆔",keywords:"emergency card wallet id printable diagnoses medications"},
-    {label:"Caregiver Check-in",hub:"today",view:"caregiver-wellness",icon:"💛",keywords:"caregiver wellness burnout stress sleep respite self care"},
+    {label:"Medications",hub:"caremgmt",view:"medadmin",icon:"💊",keywords:"medication med admin drug pill prescription"},
+    {label:"Incidents",hub:"caremgmt",view:"incidents",icon:"⚠",keywords:"incident fall behavior wandering medication error accident"},
+    {label:"Incident Patterns",hub:"caremgmt",view:"incident-patterns",icon:"📊",keywords:"pattern trend chart graph analysis time"},
+    {label:"Expenses",hub:"docs",view:"expenses",icon:"$",keywords:"expense cost money payment receipt"},
+    {label:"Documents",hub:"docs",view:"documents",icon:"📄",keywords:"document scan pdf lab result upload library"},
+    {label:"Contacts",hub:"docs",view:"contacts",icon:"☷",keywords:"contact phone email doctor nurse lawyer provider"},
+    {label:"Calendar",hub:"caremgmt",view:"calendar",icon:"▦",keywords:"calendar appointment schedule date"},
+    {label:"Care Schedule",hub:"settings",view:"schedule",icon:"🗓",keywords:"schedule shift open swap claim visit clock availability roster assignment"},
+    {label:"Shifts",hub:"settings",view:"shifts",icon:"👥",keywords:"shift schedule caregiver aide worker weekly grid"},
+    {label:"Messages",hub:"caremgmt",view:"messages",icon:"✉",keywords:"message chat text communication team"},
+    {label:"Self-Reports",hub:"docs",view:"selfreport",icon:"🗣",keywords:"self report mood pain sleep voice concern"},
+    {label:"Sync",hub:"settings",view:"sync",icon:"📡",keywords:"sync backup export import cloud server team invite"},
+    {label:"Settings",hub:"settings",view:"settings",icon:"⚙",keywords:"settings passcode password state region tab order device"},{label:"Records In & Out",hub:"docs",view:"datashare",icon:"📤",keywords:"import export share fhir pdf status bring records"},{label:"My Circle",hub:"settings",view:"circle",icon:"🔗",keywords:"circle devices multi-device pair sync remote"},{label:"Share with Care Provider",hub:"docs",view:"program",icon:"🤝",keywords:"program provider navigator grant consent share"},{label:"My Availability",hub:"settings",view:"availability",icon:"🕐",keywords:"availability schedule when shifts"},
+    {label:"Help",hub:"settings",view:"help",icon:"?",keywords:"help guide how to feature"},
+    {label:"Physical Health",hub:"caremgmt",view:"physical",icon:"♥",keywords:"physical health mobility fall nutrition dental vision sleep"},
+    {label:"Cognitive Health",hub:"caremgmt",view:"cognitive",icon:"◐",keywords:"cognitive memory assessment routine behavior orientation"},
+    {label:"Wellness",hub:"caremgmt",view:"wellness",icon:"✿",keywords:"wellness emotional social activity engagement respite"},
+    {label:"Legal Safety",hub:"caremgmt",view:"legal",icon:"⚖",keywords:"legal poa power attorney advance directive hipaa guardianship"},
+    {label:"Financial Security",hub:"caremgmt",view:"financial",icon:"◈",keywords:"financial medicaid benefit insurance asset spend down"},
+    {label:"Escalation Triggers",hub:"caremgmt",view:"triggers",icon:"📊",keywords:"trigger escalation transition warning condition monitor"},
+    {label:"Tracking",hub:"caremgmt",view:"tracking",icon:"📈",keywords:"tracking longitudinal snapshot history trend progress"},
+    {label:"Visit Prep",hub:"caremgmt",view:"visit",icon:"📋",keywords:"visit prep doctor appointment provider summary"},
+    {label:"Emergency Plans",hub:"caremgmt",view:"emergency",icon:"🚨",keywords:"emergency plan fall choking wandering agitation"},
+    {label:"POA Decisions",hub:"caremgmt",view:"poa-decisions",icon:"⚖",keywords:"poa power attorney decision medical financial legal guardian agent fiduciary"},
+    {label:"Capacity Observations",hub:"caremgmt",view:"capacity",icon:"📝",keywords:"capacity observation ability assessment functional decline"},
+    {label:"Care Plan Binder",hub:"caremgmt",view:"binder",icon:"📖",keywords:"binder care plan printable comprehensive document"},
+    {label:"Shift Handoff",hub:"caremgmt",view:"handoff",icon:"📋",keywords:"handoff shift change summary incoming outgoing"},
+    {label:"Emergency Card",hub:"caremgmt",view:"emergency-card",icon:"🆔",keywords:"emergency card wallet id printable diagnoses medications"},
+    ...(SHOW_CAREGIVER_CHECKIN?[{label:"Caregiver Check-in",hub:"caremgmt",view:"caregiver-wellness",icon:"💛",keywords:"caregiver wellness burnout stress sleep respite self care"}]:[]),
   ];
 
   const getSearchResults=(q)=>{
@@ -3818,56 +5360,56 @@ export default function App() {
     // Search incidents
     (data.incidents||[]).forEach(i=>{
       if((i.description||"").toLowerCase().includes(ql)||(i.type||"").toLowerCase().includes(ql)||(i.response||"").toLowerCase().includes(ql))
-        results.data.push({type:"incident",icon:"⚠",title:i.type+" — "+i.severity,sub:(i.description||"").slice(0,80),date:i.date,hub:"records",view:"incidents",id:i.id});
+        results.data.push({type:"incident",icon:"⚠",title:i.type+" — "+i.severity,sub:(i.description||"").slice(0,80),date:i.date,hub:"caremgmt",view:"incidents",id:i.id});
     });
 
     // Search contacts
     (data.contacts||[]).forEach(c=>{
       if((c.name||"").toLowerCase().includes(ql)||(c.role||"").toLowerCase().includes(ql)||(c.organization||"").toLowerCase().includes(ql))
-        results.data.push({type:"contact",icon:"☷",title:c.name,sub:c.role||c.category||"",hub:"records",view:"contacts",id:c.id});
+        results.data.push({type:"contact",icon:"☷",title:c.name,sub:c.role||c.category||"",hub:"docs",view:"contacts",id:c.id});
     });
 
     // Search documents
     (data.savedDocs||[]).forEach(d=>{
       const name=(d.fileName||d.category||"Document");
       if(name.toLowerCase().includes(ql)||(d.rawText||"").toLowerCase().includes(ql))
-        results.data.push({type:"document",icon:"📄",title:name,sub:d.category||"",hub:"records",view:"documents",id:d.id});
+        results.data.push({type:"document",icon:"📄",title:name,sub:d.category||"",hub:"docs",view:"documents",id:d.id});
     });
 
     // Search medications
     getMedSchedule(true).medications.forEach(m=>{
       if((m.name||"").toLowerCase().includes(ql)||(m.dosage||"").toLowerCase().includes(ql))
-        results.data.push({type:"medication",icon:"💊",title:m.name+(m.dosage?" "+m.dosage:""),sub:m.discontinued?"Discontinued":"Active",hub:"records",view:"medadmin",id:m.id});
+        results.data.push({type:"medication",icon:"💊",title:m.name+(m.dosage?" "+m.dosage:""),sub:m.discontinued?"Discontinued":"Active",hub:"caremgmt",view:"medadmin",id:m.id});
     });
 
     // Search messages
     (data.messages||[]).slice(0,50).forEach(m=>{
       if((m.text||"").toLowerCase().includes(ql)||(m.from||"").toLowerCase().includes(ql))
-        results.data.push({type:"message",icon:"✉",title:m.from||"",sub:(m.text||"").slice(0,80),date:m.timestamp,hub:"team",view:"messages",id:m.id});
+        results.data.push({type:"message",icon:"✉",title:m.from||"",sub:(m.text||"").slice(0,80),date:m.timestamp,hub:"caremgmt",view:"messages",id:m.id});
     });
 
     // Search POA decisions
     (data.poaDecisions||[]).forEach(d=>{
       if((d.description||"").toLowerCase().includes(ql)||(d.type||"").toLowerCase().includes(ql)||(d.reasoning||"").toLowerCase().includes(ql))
-        results.data.push({type:"poa",icon:"⚖",title:(d.type||"Decision")+": "+(d.description||"").slice(0,60),sub:d.date,hub:"care",view:"poa-decisions",id:d.id});
+        results.data.push({type:"poa",icon:"⚖",title:(d.type||"Decision")+": "+(d.description||"").slice(0,60),sub:d.date,hub:"caremgmt",view:"poa-decisions",id:d.id});
     });
 
     // Search expenses
     (data.expenses||[]).forEach(e=>{
       if((e.description||"").toLowerCase().includes(ql)||(e.payee||"").toLowerCase().includes(ql)||(e.category||"").toLowerCase().includes(ql))
-        results.data.push({type:"expense",icon:"$",title:e.description||"Expense",sub:"$"+(e.amount||0)+" — "+e.date,hub:"records",view:"expenses",id:e.id});
+        results.data.push({type:"expense",icon:"$",title:e.description||"Expense",sub:"$"+(e.amount||0)+" — "+e.date,hub:"docs",view:"expenses",id:e.id});
     });
 
     // Search self-reports
     (data.selfReports||[]).slice(0,30).forEach(r=>{
       if((r.text||"").toLowerCase().includes(ql)||(r.mood||"").toLowerCase().includes(ql))
-        results.data.push({type:"self-report",icon:"🗣",title:(r.mood||r.type||"Report"),sub:(r.text||"").slice(0,80),date:r.timestamp,hub:"team",view:"selfreport",id:r.id});
+        results.data.push({type:"self-report",icon:"🗣",title:(r.mood||r.type||"Report"),sub:(r.text||"").slice(0,80),date:r.timestamp,hub:"docs",view:"selfreport",id:r.id});
     });
 
     return results;
   };
   const persistAuditTipToVault=()=>{ const t=auditTipRef.current; if(t&&t.seq){ setData(p=>((p.settings&&p.settings.auditTip&&p.settings.auditTip.seq>=t.seq)?p:{...p,settings:{...p.settings,auditTip:{seq:t.seq,hash:t.hash}}})); } };
-  const lock=()=>{persistAuditTipToVault();if(rKeyRef.current&&!clientScopedRef.current){try{writeProjection(data,rKeyRef.current)}catch{}}hipaaAudit("logout","Session locked","");dekRef.current=null;auditKeyRef.current=null;rKeyRef.current=null;clientScopedRef.current=false;_scopedWriteLock=false;setClientScoped(false);_mediaCache.clear();setAuditEntries([]);setSyncPasscode("");setAuthed(false);setAuthMode(null);setPc("");navHub("today")};
+  const lock=()=>{persistAuditTipToVault();if(rKeyRef.current&&!clientScopedRef.current){try{writeProjection(data,rKeyRef.current)}catch{}}hipaaAudit("logout","Session locked","");dekRef.current=null;backupPassRef.current="";auditKeyRef.current=null;rKeyRef.current=null;clientScopedRef.current=false;_scopedWriteLock=false;setClientScoped(false);_mediaCache.clear();setAuditEntries([]);setSyncPasscode("");setAuthed(false);setAuthMode(null);setPc("");navHub("today")};
 
   // Sync reminder & forced lock
   const SYNC_WARN_DAYS=7;const SYNC_LOCK_DAYS=14;const SYNC_LOCK_ACTIONS=50;
@@ -3909,6 +5451,7 @@ export default function App() {
           await saveVaultData(await encryptWithDEK(cleanData,dek));
           clearLegacyData();await requestPersistentStorage();
           dekRef.current=dek;
+          try{ backupPassRef.current=await deriveBackupPass(cgPw); }catch(e){}
         // Derive separate audit key and load audit log from IndexedDB
         try{
           const aKey=await deriveAuditKey(pc);
@@ -3963,6 +5506,9 @@ export default function App() {
   };
   // Shared post-unwrap routine: load vault via snapshot+WAL, seed refs, load audit log, verify chain.
   const finishUnlock=async(dek,mode,pc)=>{
+    // Prepare the backup key from the passcode the user just typed, so exports need no second secret and a
+    // restore on any device works from the passcode they already know.
+    try{ backupPassRef.current=await deriveBackupPass(pc); }catch(e){}
     _scopedWriteLock=false;clientScopedRef.current=false;setClientScoped(false);
     const loaded=await loadVaultV4(dek);
     if(!loaded){setDataLossDetected(true);return false} // every slot failed to decrypt → treat as data loss
@@ -3972,6 +5518,10 @@ export default function App() {
     ckptSlotRef.current=loaded.baseSlot==="snapB"?"snapA":"snapB";
     prevPersistedRef.current=loaded.state;
     try{const aKey=await deriveAuditKey(pc);auditKeyRef.current=aKey;const aKeyLegacy=await deriveAuditKey(pc,KDF_ITER_LEGACY);const entries=await readAuditLog([aKey,aKeyLegacy],500);setAuditEntries(entries);const cnt=await getAuditCount();setAuditCount(cnt);const si=await getStorageEstimate();setStorageInfo(si);const chained=entries.filter(e=>typeof e.seq==="number"&&e.hash);if(chained.length){const last=chained.sort((a,b)=>a.seq-b.seq)[chained.length-1];auditTipRef.current={seq:last.seq,hash:last.hash}}const cs=await verifyAuditChain(entries,(loaded.state.settings&&loaded.state.settings.auditTip)||null);setAuditChainStatus(cs);if(cs.status==="ok"&&cs.tip)saveAuditTip(cs.tip.seq,cs.tip.hash);await loadSharedTips(aKey);}catch(e){console.error("Audit key derivation failed:",e)}
+    // Retroactively honour the meds-and-tests-only policy: purge document text kept by older builds.
+    if(loaded.state.savedDocs&&loaded.state.savedDocs.some(d=>d&&(d.rawText||d.summary||d.sections))){
+      loaded.state.savedDocs=loaded.state.savedDocs.map(d=>{const{rawText,summary,sections,...keep}=d||{};return{...keep,contentPolicy:keep.contentPolicy||"meds-labs-only"}});
+    }
     if(loaded.state.settings){ const sv=loaded.state.settings.schemaVersion; if(sv==null){loaded.state.settings.schemaVersion=SCHEMA_VERSION} else if(sv>SCHEMA_VERSION){setNewerSchema(true)} } // newer build wrote this vault → warn, don't clobber
     // ── Cryptographic role scoping: derive (or create) the restricted-zone key, ingest any client-written
     //    self-reports from the encrypted outbox, and refresh the client projection. ──
@@ -4183,16 +5733,21 @@ export default function App() {
     await saveVaultData(encrypted);
     await writeProjection(seedData,rKey);
     await requestPersistentStorage();
-    dekRef.current=dek;rKeyRef.current=rKey;setData(seedData);setAuthed(true);setAuthMode("caregiver");
+    dekRef.current=dek;rKeyRef.current=rKey;
+    // A NEW user's backup key was never prepared: the derivation lived only in tryAuth (the returning-user path).
+    // So getBackupPasscode() threw for anyone still in first-run setup — which is exactly where the onboarding
+    // backup buttons live, and why "Download a copy now" appeared to do nothing at all.
+    try{ backupPassRef.current=await deriveBackupPass(setupCgPw); }catch(e){}
+    setData(seedData);setAuthed(true);setAuthMode("caregiver");
     setSetupMode(false);setDataLossDetected(false);
     try{ auditKeyRef.current=await deriveAuditKey(setupCgPw); auditTipRef.current={seq:0,hash:""}; // audit works immediately after setup
-      if(recoveredAudit)await restoreAuditBackup(recoveredAudit,auditKeyRef.current); // restore the 6-year log into the freshly-wiped audit DB
+      if(recoveredAudit){const ar=await applyAuditMap(seedData,recoveredAudit,auditKeyRef.current); if(ar.archived){try{await saveVaultData(await encryptWithDEK(ar.data,dek));setData(ar.data)}catch{}}} // restore this device's chain; archive any foreign device chains
       if(recoveredShared)await restoreSharedAudit(recoveredShared,auditKeyRef.current); // restore the shared-scope chains
       await refreshAuditState(); // sets the tip from restored entries so the chain continues
       await loadSharedTips(auditKeyRef.current);
     }catch{}
     if(recoveryData){hipaaAudit("create","Vault restored from backup after data loss","all");setRecoveryData(null)}
-    else{setShowFirstWin(true)} // fresh setup → personalize before showing the dashboard
+    else{setShowFirstWin(true);setShowStorageChoice(true)} // fresh setup → personalize, then choose where records live
   };
 
   // First Win — capture the care recipient's name (+ optional doctor) and personalize the dashboard.
@@ -4348,7 +5903,7 @@ export default function App() {
           <div className="rv-timeline">{reviewerShared.entries.map(e=>(<div key={e.seq} className="rv-tl-row"><span className="rv-tl-seq">#{e.seq}</span><div className="rv-tl-main"><strong>{e.summary}</strong><div className="rv-tl-meta">{new Date(e.ts).toLocaleString()} · {e.type}</div></div></div>))}</div>
         </div>)}
       </>)}
-      {settingsMsg&&<div className="rv-flash">{settingsMsg}</div>}
+      {settingsMsg&&<div className={"rv-flash"+((settingsMsg&&settingsMsg.bad)?" rv-flash-bad":"")}>{(settingsMsg&&settingsMsg.t)||settingsMsg}</div>}
     </div>
   </>);
 
@@ -4356,14 +5911,18 @@ export default function App() {
   if(setupMode){
     const isStandalone=(typeof window!=="undefined")&&((window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches)||window.navigator.standalone===true);
     const isIOS=(typeof navigator!=="undefined")&&(/iphone|ipad|ipod/i.test(navigator.userAgent)||(/Mac/.test(navigator.userAgent)&&navigator.maxTouchPoints>1));
-    // Which non-iOS browser are we in? The install gesture differs: Chromium has a menu/address-bar install,
-    // desktop Safari uses Share → Add to Dock, and Firefox can't install web apps at all. A single generic
-    // "⋮ or the address bar" line is wrong for two of those three, so we tailor the fallback.
+    // Browser family is still worth knowing (Firefox cannot install web apps at all), but we no longer use it to
+    // DESCRIBE a menu. Whether an install option exists depends on browser, version, platform and whether the
+    // page met installability criteria at that moment — none of which we can see. We only act on the prompt the
+    // browser actually hands us.
     const _ua=(typeof navigator!=="undefined")?navigator.userAgent:"";
     const isFirefox=/firefox|fxios/i.test(_ua);
     const isChromium=/chrome|chromium|edg/i.test(_ua)&&!isIOS&&!isFirefox;
     const isDesktopSafari=/safari/i.test(_ua)&&!isChromium&&!isFirefox&&!isIOS;
-    const step=(onbStep===1&&isStandalone)?2:onbStep; // skip install step if already installed
+    // Skip the install step entirely when it has nothing to offer: already installed, or the browser has already
+    // guaranteed persistent storage. A screen that asks for work the user doesn't need to do is worse than no
+    // screen — it teaches people that our warnings can be ignored.
+    const step=(onbStep===1&&(isStandalone||persistState==="granted"))?2:onbStep;
     const Dots=()=>(<div className="onb-dots">{[0,1,2].map(i=>(<span key={i} className={`onb-dot ${i===step?"onb-dot-on":""} ${i<step?"onb-dot-done":""}`}/>))}</div>);
     return(<>
       <style dangerouslySetInnerHTML={{__html:CSS}}/>
@@ -4371,41 +5930,52 @@ export default function App() {
         {step===0&&(<>
           <div className="onb-emoji">🛡️</div>
           <h1 className="auth-title">Your family's privacy comes first</h1>
-          <p className="onb-body">Care Guardian does not use the cloud. We have no servers, and we can never see your data. Everything you type stays exactly where it belongs: <strong>right here on your device.</strong></p>
+          <p className="onb-body">No readable data ever leaves your device, and nothing leaves at all unless you choose where it goes. Care Guardian has no servers and can never see your records. You can keep everything on this device alone, or save an encrypted copy to storage you own — your choice, and you can change it later.</p>
           <button onClick={()=>setOnbStep(isStandalone?2:1)} className="auth-btn">Get started</button>
           <Dots/>
         </>)}
 
         {step===1&&(<>
-          <div className="onb-emoji">📲</div>
-          <h1 className="auth-title">Lock down your records</h1>
-          <p className="onb-body">Because your data is totally private, your web browser might clear it during routine maintenance. Saving Care Guardian to your home screen keeps your records safe and gives them more durable storage.</p>
-          {deferredInstall&&!isIOS?(<>
-            <button onClick={async()=>{try{deferredInstall.prompt();await deferredInstall.userChoice}catch{}finally{setDeferredInstall(null);setOnbStep(2)}}} className="auth-btn">Install Care Guardian</button>
-          </>):isIOS?(<div className="onb-install">
-            <div className="onb-step"><span className="onb-num">1</span><span>Tap the <strong>Share</strong> button in your browser's toolbar:</span></div>
+          {/* This screen used to claim that "your data is totally private, so your browser might clear it" — which
+              is a non-sequitur (privacy isn't why browsers evict storage) and implied that saving a bookmark is what
+              protects records. It then gave Chrome-specific menu instructions that don't match what most people see.
+              What actually protects the data is navigator.storage.persist(), which the app ALREADY requests during
+              setup. So: check the real state first, say something true about it, and only ask for manual work when
+              the browser actually withheld the guarantee. */}
+          <div className="onb-emoji">{persistState==="granted"?"🛡":"📲"}</div>
+          {persistState==="granted"?(<>
+            <h1 className="auth-title">Your records are protected</h1>
+            <p className="onb-body">This browser has agreed to keep Care Guardian's data in <strong>persistent storage</strong>, so it won't be cleared to free up space. Nothing else is needed.</p>
+            <p className="onb-body" style={{fontSize:"0.9375rem"}}>Adding Care Guardian to your home screen is still worth doing — it opens full-screen like an app and is quicker to reach in a hurry — but your records are safe either way.</p>
+          </>):(<>
+            <h1 className="auth-title">Keep your records safe</h1>
+            <p className="onb-body">Browsers sometimes clear stored data when a device runs low on space. Care Guardian has asked this browser to protect its data permanently, and it hasn't granted that yet — <strong>installing the app is what usually convinces it</strong>.</p>
+          </>)}
+
+          {/* The one reliable path: the browser's own install prompt. If we have it, use it — no instructions to
+              get wrong. Everything else is a genuine fallback. */}
+          {canInstall()?(
+            <button onClick={async()=>{await installApp();const ok=await requestPersistentStorage();setPersistState(ok?"granted":"denied");setOnbStep(2)}} className="auth-btn">Add to my home screen</button>
+          ):isIOS?(<div className="onb-install">
+            {/* iOS is the ONE case where instructions are safe to give: Safari's share sheet is consistent, and
+                there is no install API to use instead. */}
+            <div className="onb-step"><span className="onb-num">1</span><span>Tap the <strong>Share</strong> button in Safari's toolbar:</span></div>
             <div className="onb-share"><svg viewBox="0 0 50 56" width="34" height="38" aria-hidden="true"><path d="M25 3 L25 34" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round"/><path d="M16 13 L25 3.5 L34 13" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round"/><path d="M13 21 H9 a3 3 0 0 0 -3 3 V49 a3 3 0 0 0 3 3 H41 a3 3 0 0 0 3 -3 V24 a3 3 0 0 0 -3 -3 H37" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round"/></svg><span className="onb-share-label">the square with an up-arrow</span></div>
-            <div className="onb-step"><span className="onb-num">2</span><span>Scroll down and tap <strong>"Add to Home Screen."</strong></span></div>
-            <div className="onb-step"><span className="onb-num">3</span><span>Tap <strong>Add</strong>, then open Care Guardian from your home screen.</span></div>
-          </div>):isChromium?(<div className="onb-install">
-            <div className="onb-step"><span className="onb-num">1</span><span>Open the <strong>⋮</strong> menu (top-right of your browser). On a computer, you can also click the install icon at the right end of the address bar.</span></div>
-            <div className="onb-step"><span className="onb-num">2</span><span>Choose <strong>"Install Care Guardian."</strong></span></div>
-          </div>):isDesktopSafari?(<div className="onb-install">
-            <div className="onb-step"><span className="onb-num">1</span><span>Click the <strong>Share</strong> button in the toolbar (or the <strong>File</strong> menu).</span></div>
-            <div className="onb-step"><span className="onb-num">2</span><span>Choose <strong>"Add to Dock."</strong></span></div>
-          </div>):isFirefox?(<div className="onb-install">
-            {persistState==="granted"?(<div className="onb-step"><span className="onb-num" style={{background:"#6F8A5F"}}>✓</span><span><strong>Protected.</strong> Firefox will keep your records in persistent storage and won't clear them during routine cleanup.</span></div>):(<>
-              <p className="onb-body" style={{margin:"4px 0 0",fontSize:"0.875rem"}}>Firefox doesn't add web apps to your desktop, but it protects your data a simpler way: with a one-time storage permission. No installation needed.</p>
-              <button onClick={async()=>{const ok=await requestPersistentStorage();setPersistState(ok?"granted":"denied");if(ok){setStorageAtRisk(false)}}} className="auth-btn" style={{marginTop:14}}>🛡️ Protect my data</button>
-              {persistState==="denied"&&<p className="hint" style={{marginTop:10}}>Firefox didn't grant persistent storage this time. Care Guardian still works and your data stays on this device — just keep an encrypted backup as a safety net. If Firefox asks again later, choose Allow, and the app will remind you while storage isn't protected.</p>}
-            </>)}
-          </div>):(<div className="onb-install">
-            <div className="onb-step"><span className="onb-num">1</span><span>Open your browser's menu and look for an <strong>Install</strong> or <strong>Add to Home Screen</strong> option.</span></div>
-            <div className="onb-step"><span className="onb-num">2</span><span>If your browser doesn't offer one, that's okay — your data is still safe and stays on this device.</span></div>
-          </div>)}
+            <div className="onb-step"><span className="onb-num">2</span><span>Scroll down and tap <strong>Add to Home Screen</strong>.</span></div>
+          </div>):(
+            /* NO INSTRUCTIONS. Previous versions told the user to look in "your browser's menu" for Install or
+               Add to Home Screen, and claimed some browsers show an icon in the address bar. Those menus differ by
+               browser, version and platform, and when the browser has not offered an install prompt the option
+               frequently is not there at all — so the app was sending people to look for something that does not
+               exist. We only claim what we can observe: whether the browser offered us a prompt, and whether it
+               has granted persistent storage. */
+            <p className="onb-body" style={{fontSize:"0.95rem"}}>{persistState==="granted"
+              ? "This browser hasn't offered an install option for Care Guardian. That's fine — your records are already in protected storage and nothing more is needed."
+              : "This browser hasn't offered an install option, and hasn't granted protected storage yet. Your records still work and stay on this device — the reliable safeguard is a backup file, which the next step sets up."}</p>
+          )}
           <div className="onb-nav">
-            {!(deferredInstall&&!isIOS)&&<button onClick={()=>setOnbStep(2)} className="auth-btn">I've installed it — continue</button>}
-            <button onClick={()=>setOnbStep(2)} className="text-btn">Skip for now, I'll do it later</button>
+            {!canInstall()&&<button onClick={async()=>{const ok=await requestPersistentStorage();setPersistState(ok?"granted":"denied");setOnbStep(2)}} className="auth-btn">Continue</button>}
+            {persistState!=="granted"&&<button onClick={()=>setOnbStep(2)} className="text-btn">Skip for now</button>}
           </div>
           <Dots/>
         </>)}
@@ -4503,9 +6073,31 @@ export default function App() {
         <label className="cf-label">Date<input type="date" value={f.date} onChange={e=>upd("date",e.target.value)} className="cf-input"/></label>
         <label className="cf-label">Time<input type="time" value={f.time} onChange={e=>upd("time",e.target.value)} className="cf-input"/></label>
       </div>
+      <div className="cf-grid">
+        <label className="cf-label">Length<select value={f.durationMin||60} onChange={e=>upd("durationMin",Number(e.target.value))} className="cf-input">
+          {[15,30,45,60,90,120,180].map(n=><option key={n} value={n}>{n<60?n+" min":(n/60)+" hour"+(n>60?"s":"")}</option>)}</select></label>
+        <label className="cf-label">Location<input value={f.location||""} onChange={e=>upd("location",e.target.value)} className="cf-input" placeholder="Clinic, address"/></label>
+      </div>
+      {/* Picking the provider fills in where and how to reach them. Caregivers shouldn't retype a clinic name and
+          phone number they already saved once — and at the appointment, the phone number is what they actually need. */}
+      <label className="cf-label" style={{marginTop:12}}>Who are you seeing?
+        <select className="cf-input" value={f.contactId||""} onChange={e=>{const c=(data.contacts||[]).find(x=>String(x.id)===e.target.value);
+          setF(p=>({...p,contactId:e.target.value||"",
+            location:(c&&c.org)?c.org:(p.location||""),
+            title:(p.title||"").trim()?p.title:(c?((c.role?c.role+" — ":"")+c.name):p.title)}))}}>
+          <option value="">Not linked to a contact</option>
+          {(data.contacts||[]).map(c=>(<option key={c.id} value={c.id}>{c.name}{c.role?" — "+c.role:""}{c.org?" ("+c.org+")":""}</option>))}
+        </select></label>
+      {(()=>{ const c=(data.contacts||[]).find(x=>String(x.id)===String(f.contactId)); if(!c) return null;
+        return (<p className="hint" style={{marginTop:4}}>{c.org?c.org+" · ":""}{c.phone||"no phone saved"} — shown on the appointment so you can call from there.</p>); })()}
+
+      <label className="cf-label" style={{marginTop:12}}>Calendar title <span className="hint" style={{fontWeight:400}}>— what your phone calendar shows</span>
+        <input value={f.calTitle||""} onChange={e=>upd("calTitle",e.target.value)} className="cf-input" placeholder={f.title?("e.g. Appointment (instead of \u201C"+f.title+"\u201D)"):"e.g. Appointment"}/></label>
+      <p className="hint" style={{marginTop:4}}>Leave this blank to use the real title. Set it when the calendar is shared — a phone calendar can show a diagnosis to anyone who glances at it.</p>
       <label className="cf-label" style={{marginTop:12,marginBottom:12}}>Notes<textarea value={f.notes} onChange={e=>upd("notes",e.target.value)} className="notes-ta" rows={2}/></label>
       <div className="cf-actions">
         <button disabled={!f.title.trim()||!f.date} onClick={()=>saveAppt(f,apptForm.id)} className="save-btn" style={{opacity:f.title.trim()&&f.date?1:.4}}>Save</button>
+        {apptForm.mode==="edit"&&can("export-data")&&<button onClick={()=>exportAppointmentIcs({...f,id:apptForm.id})} className="cancel-btn">Add to my calendar</button>}
         {apptForm.mode==="edit"&&<button onClick={()=>deleteAppt(apptForm.id)} className="cd-delete-btn">Delete</button>}
         <button onClick={()=>setApptForm(null)} className="cancel-btn">Cancel</button>
       </div>
@@ -4537,9 +6129,9 @@ export default function App() {
       </div>
       <label className="cf-label">Photos</label>
       <div className="photo-attach-row">
-        <button onClick={()=>incidentPhotoRef.current&&incidentPhotoRef.current.click()} type="button" className="edit-btn" style={{marginTop:0,fontSize:"0.8125rem"}}>📷 Add photo{incPhotos.length>0?" ("+incPhotos.length+")":""}</button>
+        <button onClick={()=>incidentPhotoRef.current&&incidentPhotoRef.current.click()} type="button" className="edit-btn" style={{marginTop:0,fontSize:"0.9375rem"}}>📷 Add photo{incPhotos.length>0?" ("+incPhotos.length+")":""}</button>
         <input ref={incidentPhotoRef} type="file" accept="image/*" capture="environment" multiple style={{display:"none"}} onChange={e=>handlePhotoCapture(e,setIncPhotos)}/>
-        {incPhotos.length>0&&<button onClick={()=>setIncPhotos([])} type="button" className="cancel-btn" style={{fontSize:"0.8125rem",padding:"4px 10px"}}>Clear</button>}
+        {incPhotos.length>0&&<button onClick={()=>setIncPhotos([])} type="button" className="cancel-btn" style={{fontSize:"0.9375rem",padding:"4px 10px"}}>Clear</button>}
       </div>
       {incPhotos.length>0&&<div className="photo-preview-row" style={{marginBottom:8}}>{incPhotos.map((p,i)=>(<div key={i} className="photo-thumb"><img src={p} alt={"Photo "+(i+1)}/><button onClick={()=>setIncPhotos(prev=>prev.filter((_,j)=>j!==i))} className="photo-remove">×</button></div>))}</div>}
       <div className="cf-actions" style={{marginTop:12}}>
@@ -4567,11 +6159,26 @@ export default function App() {
       </div>
     </div></div>)};
 
-  const MedFormUI=()=>{const[f,setF]=useState(medForm.med);const toggleSlot=(s)=>setF(p=>({...p,timeSlots:p.timeSlots.includes(s)?p.timeSlots.filter(x=>x!==s):[...p.timeSlots,s]}));return(
+  const MedFormUI=()=>{const[f,setF]=useState(medForm.med);const[drugQ,setDrugQ]=useState(null);const picks=drugQ===null?[]:drugSearch(drugQ,6);const chk=drugValidateDose(f.name,f.dosage);const toggleSlot=(s)=>setF(p=>({...p,timeSlots:p.timeSlots.includes(s)?p.timeSlots.filter(x=>x!==s):[...p.timeSlots,s]}));return(
     <div className="cf-overlay" onClick={()=>setMedForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
       <h2 className="cf-title">{medForm.mode==="edit"?"Edit Medication":"Add Medication to Schedule"}</h2>
-      <label className="cf-label" style={{marginBottom:10}}>Medication Name<input value={f.name} onChange={e=>setF(p=>({...p,name:e.target.value}))} className="cf-input" placeholder="Donepezil"/></label>
-      <label className="cf-label" style={{marginBottom:10}}>Dosage<input value={f.dosage} onChange={e=>setF(p=>({...p,dosage:e.target.value}))} className="cf-input" placeholder="10 mg"/></label>
+      <label className="cf-label" style={{marginBottom:4}}>Medication Name<input value={f.name} onChange={e=>{setF(p=>({...p,name:e.target.value,rxName:""}));setDrugQ(e.target.value)}} onBlur={()=>setTimeout(()=>setDrugQ(null),150)} className="cf-input" placeholder="Start typing — e.g. donep…" autoComplete="off"/></label>
+      {picks.length>0&&(<div className="drug-suggest">{picks.map(({drug,via})=>(
+        <button key={drug.n} className="drug-opt" onMouseDown={e=>e.preventDefault()} onClick={()=>{setF(p=>({...p,name:drug.n,rxName:drug.n}));setDrugQ(null)}}>
+          <span className="drug-opt-name">{drug.n}</span>
+          {via&&<span className="drug-opt-brand">matched “{via}”</span>}
+          <span className="drug-opt-str">{(drug.s||[]).slice(0,4).join(" · ")}{(drug.s||[]).length>4?" …":""}</span>
+        </button>))}</div>)}
+      <label className="cf-label" style={{marginBottom:4}}>Dosage<input value={f.dosage} onChange={e=>setF(p=>({...p,dosage:e.target.value}))} className="cf-input" placeholder="e.g. 10 mg"/></label>
+      {chk.drug&&(chk.drug.s||[]).length>0&&(<div className="drug-strengths">
+        <span className="hint">Strengths {chk.drug.n} comes in — tap to fill:</span>
+        <div className="drug-str-row">{chk.drug.s.map(st=>(<button key={st} className={"drug-str"+(drugNormStrength(st)===drugNormStrength(f.dosage)?" drug-str-on":"")} onClick={()=>setF(p=>({...p,dosage:st}))}>{st}</button>))}</div>
+      </div>)}
+      {chk.status==="match"&&<p className="drug-ok">✓ {f.dosage} is a strength {chk.drug.n} is made in.</p>}
+      {chk.status==="unknown-strength"&&(<p className="drug-warn">{chk.half
+        ? "That looks like half of a "+(chk.known.find(x=>Math.abs(parseFloat(drugNormStrength(x))/2-parseFloat(drugNormStrength(f.dosage)))<1e-6)||"")+" tablet, which is common. Worth a check against the bottle."
+        : "This isn’t a strength we have listed for "+chk.drug.n+". That can be right — split tablets, compounded doses and newer products all exist — so check the label and keep it if it matches."}</p>)}
+      {chk.status==="unknown-strength"&&<p className="hint" style={{marginTop:2}}>Saving is not blocked. Record what was actually prescribed.</p>}
       <label className="cf-label" style={{marginBottom:10}}>Time Slots</label>
       <div className="med-slot-row">{MED_TIME_SLOTS.map(s=>(<button key={s} onClick={()=>toggleSlot(s)} className={`cc-btn ${f.timeSlots.includes(s)?"cc-active":""}`}>{s}</button>))}</div>
       <label className="cf-label" style={{marginTop:12,marginBottom:10}}>Notes<input value={f.notes||""} onChange={e=>setF(p=>({...p,notes:e.target.value}))} className="cf-input" placeholder="Take with food, etc."/></label>
@@ -4594,7 +6201,7 @@ export default function App() {
   const JoinTeamForm=()=>{const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[mr,setMr]=useState("");const[rk,setRk]=useState("family");return(
     <div className="team-form">
       <h4 className="sync-sub-title">Join an Existing Team</h4>
-      <label className="cf-label">Invite code<input value={joinCode} onChange={e=>setJoinCode(e.target.value)} className="cf-input" placeholder="Paste the code from your team member" style={{fontFamily:"monospace",fontSize:"0.8125rem"}}/></label>
+      <label className="cf-label">Invite code<input value={joinCode} onChange={e=>setJoinCode(e.target.value)} className="cf-input" placeholder="Paste the code from your team member" style={{fontFamily:"monospace",fontSize:"0.9375rem"}}/></label>
       {joinCode&&parseInviteCode(joinCode)&&<p className="hint" style={{color:"#718355"}}>✓ Team: <strong>{parseInviteCode(joinCode).teamName}</strong> · Caring for: <strong>{parseInviteCode(joinCode).clientName}</strong></p>}
       <label className="cf-label">Your name<input value={mn} onChange={e=>setMn(e.target.value)} className="cf-input" placeholder="e.g., Sarah"/></label>
       <label className="cf-label">Your role title<input value={mr} onChange={e=>setMr(e.target.value)} className="cf-input" placeholder="e.g., Weekend Caregiver, Son, Home Health Aide"/></label>
@@ -4614,6 +6221,153 @@ export default function App() {
   const visibleTabs=orderedTabs.filter(t=>t.key!=="postdeath"&&roleTabs.some(rt=>rt.key===t.key));
 
   // First Win — personalize before the dashboard appears (fresh setup only)
+  // ── Where should these records live? (Phase 2) ──
+  if(authed&&showStorageChoice&&!showFirstWin) return(<>
+    <style dangerouslySetInnerHTML={{__html:CSS}}/>
+    <div className="auth-wrap"><div className="auth-card onb-card">
+      {!storageChoice&&(<>
+        <div className="onb-emoji">🗄️</div>
+        <h1 className="auth-title">Where should these records live?</h1>
+        <p className="onb-body">Whatever you pick, the records are encrypted on this device first. Nothing readable ever leaves it, and you can change this later in Settings.</p>
+        <div className="storage-choice">
+          <button className="storage-opt" onClick={chooseLocalOnly}>
+            <div className="storage-opt-title">📱 Just this device</div>
+            <div className="storage-opt-sub">Nothing ever leaves. The most private option — and a fully supported one, not a lesser one. If you lose this device and your recovery kit, the records are gone.</div>
+          </button>
+          <button className="storage-opt" onClick={()=>setStorageChoice("cloud")}>
+            <div className="storage-opt-title">☁️ This device and my own cloud</div>
+            <div className="storage-opt-sub">An encrypted copy goes to storage you already own — Dropbox, OneDrive or Google Drive. They store it; they cannot read it. Protects you if this device is lost or breaks.</div>
+          </button>
+          <button className="storage-opt" onClick={()=>setStorageChoice("server")}>
+            <div className="storage-opt-title">🏢 A server my organisation runs</div>
+            <div className="storage-opt-sub">For care teams and programs with their own storage.</div>
+          </button>
+        </div>
+        <button className="text-btn" onClick={skipStorageChoice}>Decide later</button>
+      </>)}
+
+      {storageChoice==="local"&&(<>
+        <div className="onb-emoji">✅</div>
+        <h1 className="auth-title">Everything stays on this device</h1>
+        <p className="onb-body">No account, no uploads, nothing to configure.</p>
+        {/* Backup folded in here rather than added as its own onboarding step (David's decision 2): it is the same
+            conversation as "everything stays on this device" — the obvious next question is "what if I lose it?".
+            Skippable, but skipping leaves the nudge live, exactly like the storage choice itself. */}
+        <div className="storage-gate" style={{textAlign:"left"}}>
+          <h3 className="sec-title" style={{marginTop:0}}>What if this device is lost or breaks?</h3>
+          <p className="onb-body" style={{marginTop:0}}>Care Guardian can keep an encrypted copy in a file you choose, updated every time something changes — so you never have to remember to do it. <strong>Your passcode opens it.</strong> Nothing new to remember.</p>
+          {hasFileSystemAccess?(<>
+            {/* This screen doesn't render settingsMsg, so a flash() here would be invisible — which is exactly
+                how the earlier failure looked like "nothing happens". Report the outcome inline instead. */}
+            <button className="auth-btn" onClick={async()=>{ setOnbBackupMsg(""); 
+              const ok=await setupContinuousBackup();
+              setOnbBackupMsg(ok===false?"Your browser didn't let us set that up. You can still download a copy below, or set this up later in Settings.":"");
+            }}>Choose where to keep it</button>
+            {onbBackupMsg&&<p className="hint" style={{color:"var(--color-text-danger,#8d4a58)"}}>{onbBackupMsg}</p>}
+            {backupStatus==="active"&&<div className="sync-status sync-status-success">✓ Saving automatically to {backupFileName||"your file"}</div>}
+            <button className="text-btn" onClick={async()=>{ setOnbBackupMsg("");
+              const ok=await backupNow();
+              setOnbBackupMsg(ok?"✓ Copy downloaded. Keep it somewhere safe — your passcode opens it.":"That didn't work. You can make a backup later from Settings → Protect Your Data."); }}>Or just download a copy now</button>
+            </>
+          ):(<>
+            {/* This branch is "no File System Access API", which is NOT the same as "iPhone". Brave on Windows
+                lands here too, and telling a desktop user their iPhone can't save files is simply wrong. Say what
+                is actually true of whatever browser they're in. */}
+            <p className="hint" style={{marginTop:0}}>{isIOSDevice
+              ? "iPhone browsers don't allow apps to save files automatically, so this one is a download you keep somewhere safe — iCloud Drive or Files works well."
+              : "This browser doesn't let Care Guardian write to a file on its own, so this one is a download you keep somewhere safe."}</p>
+            <button className="auth-btn" onClick={async()=>{ setOnbBackupMsg("");
+              const ok=await backupNow();
+              setOnbBackupMsg(ok?"✓ Copy downloaded. Keep it somewhere safe — your passcode opens it.":"That didn't work. You can make a backup later from Settings → Protect Your Data."); }}>Download a copy now</button>
+            {onbBackupMsg&&<p className="hint">{onbBackupMsg}</p>}
+          </>)}
+        </div>
+        <p className="hint">Whichever you choose, your <strong>recovery kit</strong> is the only way back if this device is lost and you have no copy — make one from Settings → Protect Your Data.</p>
+        <button className="auth-btn" onClick={finishStorageSetup}>Done</button>
+        <button className="text-btn" onClick={()=>{skipStorageChoice();}}>Skip for now</button>
+      </>)}
+
+      {/* Self-hosting is a genuinely different flow from OAuth: there is no consent screen and no provider to
+          pick — there is a URL the organisation runs and a key they issue. Sending these people through the
+          cloud-provider list showed them three buttons that could not help them. */}
+      {storageChoice==="server"&&(<>
+        <h1 className="auth-title">Connect your organisation's server</h1>
+        {getServerUrl()?(<>
+          <div className="sync-status sync-status-success">Connected to {getServerUrl()}</div>
+          <p className="onb-body">Now let's check the whole path works — Care Guardian will save a small encrypted test file, read it back, and delete it.</p>
+          {storageVerify==="running"&&<p className="hint">Checking…</p>}
+          {storageVerify==="ok"&&<div className="sync-status sync-status-success">✓ Verified. Your server is working end to end.</div>}
+          {storageVerify&&storageVerify.error&&(<div className="sync-status sync-status-error">Couldn't complete the check: {storageVerify.error}<br/>Your records are safe on this device. You can retry, or fix this later in Settings.</div>)}
+          {storageVerify!=="ok"&&<button className="auth-btn" onClick={verifyServerRoundTrip} disabled={storageVerify==="running"}>{storageVerify?"Try again":"Run the check"}</button>}
+          {storageVerify==="ok"&&(<>
+            <div className="storage-gate">
+              <h3 className="sec-title" style={{marginTop:0}}>One thing before you finish</h3>
+              <p className="onb-body" style={{marginTop:0}}>Your server stores the records but <strong>cannot unlock them</strong> — only your devices can. If every device is lost, the server copy alone cannot be opened. Your recovery kit is the way back.</p>
+              {hasRecoveryKit()
+                ? <div className="sync-status sync-status-success">✓ Recovery kit created</div>
+                : <button className="auth-btn" onClick={()=>{setShowStorageChoice(false);nav("settings");flash("Create your recovery kit here, under Protect Your Data.")}}>Create my recovery kit</button>}
+            </div>
+            <button className="auth-btn" onClick={finishStorageSetup} disabled={!hasRecoveryKit()}>Finish</button>
+            {!hasRecoveryKit()&&<p className="hint">The recovery kit is required when records are stored off this device.</p>}
+          </>)}
+          <button className="text-btn" onClick={()=>{setServerConfig("","");setStorageVerify(null)}}>Use a different server</button>
+        </>):(<>
+          <p className="onb-body">Enter the address of the server your organisation runs, and the access key they gave you. Care Guardian writes only encrypted files there — the server never receives anything it can read.</p>
+          <label className="cf-label" style={{textAlign:"left"}}>Server address
+            <input id="srvUrl" className="cf-input" placeholder="https://care.example.org" autoComplete="off" inputMode="url"/></label>
+          <label className="cf-label" style={{textAlign:"left"}}>Access key
+            <input id="srvKey" className="cf-input" placeholder="Provided by your IT team" autoComplete="off"/></label>
+          <p className="hint" style={{textAlign:"left"}}>Must start with <strong>https://</strong>. If you don't have these, ask whoever set up the server — they're not something you create here.</p>
+          <button className="auth-btn" onClick={()=>{const u=document.getElementById("srvUrl").value,k=document.getElementById("srvKey").value;
+            if(!u.trim()){flash("Enter the server address first.");return}
+            setServerConfig(u,k);setStorageVerify(null);}}>Connect</button>
+          <button className="text-btn" onClick={()=>setStorageChoice(null)}>Back</button>
+          <details className="settings-group" style={{marginTop:14,textAlign:"left"}}><summary className="settings-group-summary"><span>What kind of server is this?</span><span className="sg-chev">▾</span></summary><div className="settings-group-body">
+            <p className="hint" style={{marginTop:0}}>Care Guardian needs somewhere it can PUT and GET encrypted files over HTTPS — nothing more. That can be the small reference relay shipped with Care Guardian, an S3-compatible bucket (Backblaze B2, Wasabi, MinIO), or any WebDAV share. It never runs code on your server and never sends anything readable.</p>
+            <p className="hint">Whoever runs it will need to allow this app's web address to reach it (a CORS setting). If the check below fails with a connection error, that is usually why.</p>
+          </div></details>
+        </>)}
+      </>)}
+
+      {storageChoice==="cloud"&&(<>
+        <h1 className="auth-title">Connect your storage</h1>
+        {!getCloudAuth()?(<>
+          <p className="onb-body">Care Guardian will ask for access to <strong>one folder it creates</strong> — never the rest of your account. Everything written there is already encrypted.</p>
+          {configuredProviders.length>0?(<div className="cloud-provider-btns">
+            {configuredProviders.map(id=>{const p=CLOUD_PROVIDERS[id];const caps=storageCaps(id);return(
+              <button key={id} className="cloud-provider-btn" onClick={()=>cloudConnectStart(id)}>
+                <span className="cloud-provider-icon">{p.icon}</span>
+                <span><span className="cloud-provider-label">{p.label}</span>
+                {caps.auth==="session"&&<span className="cloud-provider-note">Reconnects with one tap each visit</span>}</span>
+              </button>);})}
+          </div>):(<p className="hint">No storage providers are configured in this deployment yet.</p>)}
+          <button className="text-btn" onClick={()=>setStorageChoice(null)}>Back</button>
+        </>):(<>
+          <div className="sync-status sync-status-success">Connected to {(CLOUD_PROVIDERS[getCloudAuth().provider]||{}).label}</div>
+          <p className="onb-body">Now let's check the whole path works — Care Guardian will save a small encrypted test file, read it back, and delete it.</p>
+          {storageVerify==="running"&&<p className="hint">Checking…</p>}
+          {storageVerify==="ok"&&<div className="sync-status sync-status-success">✓ Verified. Your storage is working end to end.</div>}
+          {storageVerify&&storageVerify.error&&(<div className="sync-status sync-status-error">Couldn't complete the check: {storageVerify.error}<br/>Your records are safe on this device. You can retry, or continue and fix this later in Settings.</div>)}
+          {storageVerify!=="ok"&&<button className="auth-btn" onClick={verifyStorageRoundTrip} disabled={storageVerify==="running"}>{storageVerify?"Try again":"Run the check"}</button>}
+          {storageVerify==="ok"&&(<>
+            {/* Locked decision: the recovery kit is a HARD GATE for anyone connecting cloud storage. The provider
+                never holds the key, so a cloud copy is a backup of a locked box. Connecting storage is exactly the
+                moment people feel safe enough to skip this, which is why it cannot be skipped. */}
+            <div className="storage-gate">
+              <h3 className="sec-title" style={{marginTop:0}}>One thing before you finish</h3>
+              <p className="onb-body" style={{marginTop:0}}>Your cloud provider stores your records but <strong>cannot unlock them</strong> — only your devices can. If you ever lose every device, the cloud copy alone cannot be opened. Your recovery kit is the way back.</p>
+              {hasRecoveryKit()
+                ? <div className="sync-status sync-status-success">✓ Recovery kit created</div>
+                : <button className="auth-btn" onClick={()=>{setShowStorageChoice(false);nav("settings");flash("Create your recovery kit here, under Protect Your Data.")}}>Create my recovery kit</button>}
+            </div>
+            <button className="auth-btn" onClick={finishStorageSetup} disabled={!hasRecoveryKit()}>Finish</button>
+            {!hasRecoveryKit()&&<p className="hint">The recovery kit is required when you save to the cloud.</p>}
+          </>)}
+        </>)}
+      </>)}
+    </div></div>
+  </>);
+
   if(authed&&showFirstWin) return(<>
     <style dangerouslySetInnerHTML={{__html:CSS}}/>
     <div className="auth-wrap"><div className="auth-card onb-card">
@@ -4637,15 +6391,21 @@ export default function App() {
     {storageAtRisk&&(<div className="nudge-banner nudge-risk">
       <span className="nudge-icon">⚠️</span>
       <div className="nudge-body"><strong>This browser hasn't granted durable storage.</strong> Your records could be cleared if the device runs low on space.{isIOSDevice?" Add Care Guardian to your home screen, and keep a recent backup so nothing is lost.":" Tap Protect to let your browser keep them, and keep a recent backup as a safety net."}{backupStatus==="active"?" Your continuous backup is protecting you in the meantime.":""}</div>
-      {isIOSDevice?(<button className="nudge-act" onClick={()=>{setCurrentHub("team");nav("settings")}}>Back up</button>):(<button className="nudge-act" onClick={async()=>{const ok=await requestPersistentStorage();if(ok){setStorageAtRisk(false);flash("Durable storage granted — your records are protected.")}else{flash("Your browser didn't grant durable storage yet. Keep a backup as a safety net.")}}}>Protect</button>)}
+      {isIOSDevice?(<button className="nudge-act" onClick={()=>nav("settings")}>Back up</button>):(<button className="nudge-act" onClick={async()=>{const ok=await requestPersistentStorage();if(ok){setStorageAtRisk(false);flash("Durable storage granted — your records are protected.")}else{flash("Your browser didn't grant durable storage yet. Keep a backup as a safety net.")}}}>Protect</button>)}
       <button className="nudge-x" onClick={()=>setStorageAtRisk(false)}>×</button>
     </div>)}
     {/* Truthful durability indicator — "saved" only after the edit's append has committed */}
     {saveState!=="saved"&&(<div className={`save-pill save-${saveState}`}>{saveState==="saving"?"Saving…":"⚠ Save error — your last edit may not be stored. Check storage in Settings."}</div>)}
     {/* Option 5 — install nudge (iOS tab → home screen for durable storage) */}
-    {showInstallNudge&&(<div className="nudge-banner nudge-install">
+    {showInstallNudge&&(canInstall()||isIOSDevice)&&(<div className="nudge-banner nudge-install">
       <span className="nudge-icon">📲</span>
-      <div className="nudge-body"><strong>Protect your data from being cleared.</strong> Add Care Guardian to your home screen — installed apps get more durable storage and are far less likely to be wiped by your browser. Tap Share, then "Add to Home Screen."</div>
+      <div className="nudge-body"><strong>Keep your records safer.</strong> {canInstall()
+        ? "Installed apps get more durable storage and are far less likely to have their data cleared."
+        : "On iPhone, tap Share in Safari's toolbar, then Add to Home Screen — installed apps are far less likely to have their data cleared."}</div>
+      {/* Only shown when we can actually DO something about it: either the browser handed us an install prompt,
+          or we're on iOS where the Share-sheet instruction is reliable. Otherwise the banner is nagging about a
+          button that doesn't exist. */}
+      {canInstall()&&<button className="nudge-act" onClick={async()=>{const ok=await installApp();if(ok)setShowInstallNudge(false)}}>Install</button>}
       <button className="nudge-x" onClick={()=>{setShowInstallNudge(false);try{localStorage.setItem("cg-install-nudge-dismissed","1")}catch{}}}>×</button>
     </div>)}
     {/* Option 4 — periodic backup reminder / continuous-backup resume prompt */}
@@ -4657,7 +6417,7 @@ export default function App() {
     </div>):(<div className="nudge-banner nudge-backup">
       <span className="nudge-icon">💾</span>
       <div className="nudge-body"><strong>Time to back up.</strong> {(data.settings&&data.settings.lastBackupAt)?"It's been a while since your last backup.":"You haven't made a backup yet."} A downloaded backup file survives even if your browser clears its storage — it's how you recover everything, including your activity log.</div>
-      <button className="nudge-act" onClick={()=>{setShowBackupReminder(false);setCurrentHub("team");nav("settings")}}>Back up now</button>
+      <button className="nudge-act" onClick={backupNow}>Back up now</button>
       <button className="nudge-x" onClick={()=>setShowBackupReminder(false)}>×</button>
     </div>))}
     {searchOpen&&(<div className="search-overlay" onClick={()=>setSearchOpen(false)}>
@@ -4743,11 +6503,12 @@ export default function App() {
         <button onClick={applyMerge} className="save-btn" disabled={mergePreview.report.added.length===0&&mergePreview.report.updated.length===0}>Apply Merge</button>
         <button onClick={()=>setMergePreview(null)} className="cancel-btn">Cancel</button>
       </div>
-      <p className="hint" style={{marginTop:12,fontSize:"0.8125rem"}}>Merge adds new items and keeps the more recent version of each changed section. Your passcodes, device ID, and tab order are never overwritten.</p>
+      <p className="hint" style={{marginTop:12,fontSize:"0.9375rem"}}>Merge adds new items and keeps the more recent version of each changed section. Your passcodes, device ID, and tab order are never overwritten.</p>
     </div></div>)}
     <input ref={fileRef} type="file" accept=".vcf,.vcard" style={{display:"none"}} onChange={handleImportVCard}/>
     <input ref={importFileRef} type="file" accept=".json" style={{display:"none"}} onChange={handleEncryptedImport}/>
     <input ref={fhirFileRef} type="file" accept=".json" style={{display:"none"}} onChange={handleFHIRImport}/>
+            <input ref={extCalRef} type="file" accept=".ics,text/calendar" style={{display:"none"}} onChange={handleExtCalImport}/>
     <input ref={docFileRef} type="file" accept=".pdf,.txt,.text,.csv,.html,.htm" style={{display:"none"}} onChange={handleDocUpload}/>
     <input ref={syncFileRef} type="file" accept=".json" style={{display:"none"}} onChange={syncPullFromFile}/>
     <div className="shell">
@@ -4759,6 +6520,7 @@ export default function App() {
             {getBreadcrumb()&&<span className="hub-topbar-crumb">{getBreadcrumb()}</span>}
           </div>
           {isClient&&<span className="client-badge">View Only</span>}
+          {!isHubView&&HELP_TOPICS[view]&&<button onClick={()=>{setHelpTopic(view);nav("help")}} className="help-btn" aria-label={"Help for "+HELP_TOPICS[view]} title={"Help: "+HELP_TOPICS[view]}>?</button>}
           <button onClick={()=>{setSearchOpen(true);setSearchQ("")}} className="search-btn">🔍</button>
           <button onClick={lock} className="top-lock">🔒</button>
         </header>
@@ -4767,35 +6529,42 @@ export default function App() {
           {(settingsMsg||importResult)&&<div className="import-toast">{settingsMsg||importResult}</div>}
 
           {/* ═══ TODAY HUB ═══ */}
-          {view==="today-hub"&&(<>
+          {view==="caremgmt-hub"&&(<>
+          {storageNudgeVisible()&&(<div className="storage-nudge">
+            <div><strong>Your records are on this device only.</strong><div className="hint" style={{marginTop:2}}>If this device is lost or breaks, they go with it. You can save an encrypted copy to storage you own — they store it, they can't read it.</div></div>
+            <div className="storage-nudge-acts">
+              <button className="save-btn" style={{margin:0}} onClick={()=>{setStorageChoice(null);setShowStorageChoice(true)}}>Choose storage</button>
+              <button className="text-btn" style={{margin:0}} onClick={()=>setStorageNudgeDismissed(true)}>Not now</button>
+            </div>
+          </div>)}
             <div className="hub-welcome">🛡 Care Guardian{(data.settings&&data.settings.team)?" — "+(data.settings.team.name||""):""}</div>
             {clientDisplayName()&&<p className="hub-client">Caring for <strong>{clientDisplayName()}</strong></p>}
-            {getSyncWarning()==="warn"&&<div className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub("team");nav("sync")}}><div className="hub-card-icon" style={{background:"var(--color-background-warning)"}}><span style={{color:"var(--color-text-warning)"}}>📡</span></div><div className="hub-card-body"><div className="hub-card-title">Sync overdue <span className="pill pill-a">{getSyncAge().days}d ago</span></div><div className="hub-card-sub">Sync now to protect your data</div></div><span className="hub-card-arr">›</span></div>}
-            {(()=>{const d=daysSinceRespite();if(d===null||d<14)return null;return(<div className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub("team");nav("caregiver-wellness")}}><div className="hub-card-icon" style={{background:"var(--color-background-danger)"}}><span style={{color:"var(--color-text-danger)"}}>💛</span></div><div className="hub-card-body"><div className="hub-card-title">No respite in {d} days</div><div className="hub-card-sub">Caregiver burnout risk — please take a break</div></div><span className="hub-card-arr">›</span></div>)})()}
+            {getSyncWarning()==="warn"&&<div className="hub-card hub-card-urgent" onClick={()=>nav("sync")}><div className="hub-card-icon" style={{background:"var(--color-background-warning)"}}><span style={{color:"var(--color-text-warning)"}}>📡</span></div><div className="hub-card-body"><div className="hub-card-title">Sync overdue <span className="pill pill-a">{getSyncAge().days}d ago</span></div><div className="hub-card-sub">Sync now to protect your data</div></div><span className="hub-card-arr">›</span></div>}
+            {SHOW_CAREGIVER_CHECKIN&&(()=>{const d=daysSinceRespite();if(d===null||d<14)return null;return(<div className="hub-card hub-card-urgent" onClick={()=>nav("caregiver-wellness")}><div className="hub-card-icon" style={{background:"var(--color-background-danger)"}}><span style={{color:"var(--color-text-danger)"}}>💛</span></div><div className="hub-card-body"><div className="hub-card-title">No respite in {d} days</div><div className="hub-card-sub">Caregiver burnout risk — please take a break</div></div><span className="hub-card-arr">›</span></div>)})()}
+            <details className="settings-group hub-sec-today" open><summary className="settings-group-summary"><span className="hub-sec-t-title">☀ Today</span><span className="sg-chev">▾</span></summary><div className="settings-group-body">
+            <p className="hint" style={{marginTop:0}}>Daily care, quick actions, and what needs attention now.</p>
             {(()=>{const rems=getReminders();const missed=rems.filter(r=>r.type==="med-missed");const dueMeds=rems.filter(r=>r.type==="med-due");const upcoming=rems.filter(r=>r.type==="med-upcoming");const overdueT=rems.filter(r=>r.type==="task-overdue");const upcomingT=rems.filter(r=>r.type==="task-upcoming");const appts=rems.filter(r=>r.type==="appt");const hasAlerts=missed.length+dueMeds.length+overdueT.length+appts.length>0;
               return(<>
-                {missed.length>0&&<><div className="hub-section-label" style={{color:"#b56576"}}>⚠ Missed medications</div>{missed.map((r,i)=>(<div key={"m"+i} className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#fde2e8"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
-                {dueMeds.length>0&&<><div className="hub-section-label">💊 Medications due now</div>{dueMeds.map((r,i)=>(<div key={"d"+i} className="hub-card" style={{borderLeft:"3px solid #bc6c25"}} onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#fdf0d5"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
-                {appts.length>0&&<><div className="hub-section-label">📅 Upcoming appointments</div>{appts.map((r,i)=>(<div key={"a"+i} className="hub-card" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#eef4f8"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
-                {overdueT.length>0&&<><div className="hub-section-label">Overdue recurring tasks</div>{overdueT.slice(0,5).map((r,i)=>(<div key={"t"+i} className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#fde2e8"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
-                {upcoming.length>0&&<><div className="hub-section-label">Coming up</div>{upcoming.map((r,i)=>(<div key={"u"+i} className="hub-card" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#f6f4f0"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
-                {upcomingT.length>0&&<><div className="hub-section-label">Tasks due this week</div>{upcomingT.slice(0,5).map((r,i)=>(<div key={"tw"+i} className="hub-card" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#fdf0d5"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
+                {missed.length>0&&<><div className="hub-section-label" style={{color:"#b56576"}}>⚠ Missed medications</div>{missed.map((r,i)=>(<div key={"m"+i} className="hub-card hub-card-urgent" onClick={()=>{nav(r.action)}}><div className="hub-card-icon" style={{background:"#fde2e8"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
+                {dueMeds.length>0&&<><div className="hub-section-label">💊 Medications due now</div>{dueMeds.map((r,i)=>(<div key={"d"+i} className="hub-card" style={{borderLeft:"3px solid #bc6c25"}} onClick={()=>{nav(r.action)}}><div className="hub-card-icon" style={{background:"#fdf0d5"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
+                {appts.length>0&&<><div className="hub-section-label">📅 Upcoming appointments</div>{appts.map((r,i)=>(<div key={"a"+i} className="hub-card" onClick={()=>{nav(r.action)}}><div className="hub-card-icon" style={{background:"#eef4f8"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
+                {overdueT.length>0&&<><div className="hub-section-label">Overdue recurring tasks</div>{overdueT.slice(0,5).map((r,i)=>(<div key={"t"+i} className="hub-card hub-card-urgent" onClick={()=>{nav(r.action)}}><div className="hub-card-icon" style={{background:"#fde2e8"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
+                {upcoming.length>0&&<><div className="hub-section-label">Coming up</div>{upcoming.map((r,i)=>(<div key={"u"+i} className="hub-card" onClick={()=>{nav(r.action)}}><div className="hub-card-icon" style={{background:"#f6f4f0"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
+                {upcomingT.length>0&&<><div className="hub-section-label">Tasks due this week</div>{upcomingT.slice(0,5).map((r,i)=>(<div key={"tw"+i} className="hub-card" onClick={()=>{nav(r.action)}}><div className="hub-card-icon" style={{background:"#fdf0d5"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
                 {!hasAlerts&&<><div className="hub-section-label">Status</div><div className="hub-card hub-card-ok"><div className="hub-card-icon" style={{background:"#e8f0df"}}><span style={{color:"#718355"}}>✓</span></div><div className="hub-card-body"><div className="hub-card-title">All clear</div><div className="hub-card-sub">No overdue medications, tasks, or appointments</div></div></div></>}
               </>)})()}
-            <div className="hub-section-label">Daily tasks</div>
-            <div className="hub-card" onClick={()=>{setCurrentHub("records");nav("medadmin")}}><div className="hub-card-icon" style={{background:"var(--color-background-warning)"}}><span style={{color:"var(--color-text-warning)"}}>💊</span></div><div className="hub-card-body"><div className="hub-card-title">Medications</div><div className="hub-card-sub">Today's med admin grid</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-card" onClick={()=>{setCurrentHub("records");nav("calendar")}}><div className="hub-card-icon" style={{background:"var(--color-background-info)"}}><span style={{color:"var(--color-text-info)"}}>▦</span></div><div className="hub-card-body"><div className="hub-card-title">Appointments</div><div className="hub-card-sub">{(data.appointments||[]).length} scheduled</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-card" onClick={()=>{setCurrentHub("team");nav("messages")}}><div className="hub-card-icon" style={{background:"var(--color-background-success)"}}><span style={{color:"var(--color-text-success)"}}>✉</span></div><div className="hub-card-body"><div className="hub-card-title">Messages</div><div className="hub-card-sub">Team chat</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-section-label">Quick actions</div>
-            <div className="hub-card" onClick={()=>{setCurrentHub("today");nav("handoff")}}><div className="hub-card-icon" style={{background:"var(--color-background-info)"}}><span style={{color:"var(--color-text-info)"}}>📋</span></div><div className="hub-card-body"><div className="hub-card-title">Shift handoff</div><div className="hub-card-sub">Summary of recent activity for incoming caregiver</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-card" onClick={()=>{setCurrentHub("records");nav("incidents")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>⚠</span></div><div className="hub-card-body"><div className="hub-card-title">Log incident</div><div className="hub-card-sub">Fall, behavior, medication error</div></div><span className="hub-card-arr">›</span></div>
-            {can("submit-selfreport")&&<div className="hub-card" onClick={()=>{setCurrentHub("team");nav("selfreport")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🗣</span></div><div className="hub-card-body"><div className="hub-card-title">Self-report</div><div className="hub-card-sub">Mood, pain, sleep, voice note</div></div><span className="hub-card-arr">›</span></div>}
-            <div className="hub-card" onClick={()=>{setCurrentHub("today");nav("emergency-card")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🆔</span></div><div className="hub-card-body"><div className="hub-card-title">Emergency info card</div><div className="hub-card-sub">Printable wallet card with vitals</div></div><span className="hub-card-arr">›</span></div>
-            {!isClient&&<div className="hub-card" onClick={()=>{setCurrentHub("today");nav("caregiver-wellness")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>💛</span></div><div className="hub-card-body"><div className="hub-card-title">Caregiver check-in</div><div className="hub-card-sub">Track your stress, sleep, and respite</div></div><span className="hub-card-arr">›</span></div>}
-          </>)}
-
-          {/* ═══ CARE PLAN HUB ═══ */}
-          {view==="care-hub"&&(<>
+            <div className="hub-section-label">Today's features</div>
+            <div className="hub-card" onClick={()=>nav("medadmin")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>💊</span></div><div className="hub-card-body"><div className="hub-card-title">Medicine management</div><div className="hub-card-sub">Today's med admin grid</div></div><span className="hub-card-arr">›</span></div>
+            <div className="hub-card" onClick={()=>nav("incidents")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>⚠</span></div><div className="hub-card-body"><div className="hub-card-title">Incident log</div><div className="hub-card-sub">Fall, behavior, medication error</div></div><span className="hub-card-arr">›</span></div>
+            <div className="hub-card" onClick={()=>nav("calendar")}><div className="hub-card-icon" style={{background:"var(--color-background-info)"}}><span style={{color:"var(--color-text-info)"}}>▦</span></div><div className="hub-card-body"><div className="hub-card-title">Appointments & calendar</div><div className="hub-card-sub">{(data.appointments||[]).length} scheduled</div></div><span className="hub-card-arr">›</span></div>
+            <div className="hub-card" onClick={()=>nav("messages")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>✉</span></div><div className="hub-card-body"><div className="hub-card-title">Messages</div><div className="hub-card-sub">Team chat</div></div><span className="hub-card-arr">›</span></div>
+            <div className="hub-card" onClick={()=>nav("handoff")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📋</span></div><div className="hub-card-body"><div className="hub-card-title">Shift handoff</div><div className="hub-card-sub">Summary of recent activity for incoming caregiver</div></div><span className="hub-card-arr">›</span></div>
+            <div className="hub-card" onClick={()=>nav("emergency")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🚨</span></div><div className="hub-card-body"><div className="hub-card-title">Emergency plans</div><div className="hub-card-sub">6 scenario cards</div></div><span className="hub-card-arr">›</span></div>
+            <div className="hub-card" onClick={()=>nav("emergency-card")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🆔</span></div><div className="hub-card-body"><div className="hub-card-title">Emergency info card</div><div className="hub-card-sub">Printable wallet card with vitals</div></div><span className="hub-card-arr">›</span></div>
+            {SHOW_CAREGIVER_CHECKIN&&!isClient&&<div className="hub-card" onClick={()=>nav("caregiver-wellness")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>💛</span></div><div className="hub-card-body"><div className="hub-card-title">Caregiver check-in</div><div className="hub-card-sub">Track your stress, sleep, and respite</div></div><span className="hub-card-arr">›</span></div>}
+            </div></details>
+            <details className="settings-group hub-sec-lt"><summary className="settings-group-summary"><span>🌱 Long Term</span><span className="sg-chev">▾</span></summary><div className="settings-group-body">
+            <p className="hint" style={{marginTop:0}}>Care planning across the five domains, monitoring, and documentation.</p>
             <div className="strat-grid">{DOMAINS.filter(d=>can("view-domain",d.key)).map(d=>{const p=getProgress(d.key);const hc=p.pct>=80&&p.recency>=70?"#718355":p.pct>=40||p.recency>=40?"#bc6c25":"#b56576";return(
               <div key={d.key} className="strat-card" onClick={()=>nav(d.key)} style={{borderTopColor:d.color}}>
                 <div className="strat-icon">{d.icon}</div>
@@ -4813,34 +6582,30 @@ export default function App() {
             <div className="hub-card" onClick={()=>nav("triggers")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📊</span></div><div className="hub-card-body"><div className="hub-card-title">Escalation triggers</div><div className="hub-card-sub">{Object.values(data.transitionTriggers||{}).filter(Boolean).length} active</div></div><span className="hub-card-arr">›</span></div>
             {can("view-tracking")&&<div className="hub-card" onClick={()=>nav("tracking")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📈</span></div><div className="hub-card-body"><div className="hub-card-title">Longitudinal tracking</div><div className="hub-card-sub">{(data.statusHistory||[]).length} snapshots</div></div><span className="hub-card-arr">›</span></div>}
             {can("view-visit")&&<div className="hub-card" onClick={()=>nav("visit")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📋</span></div><div className="hub-card-body"><div className="hub-card-title">Visit prep</div><div className="hub-card-sub">Auto-generated summary</div></div><span className="hub-card-arr">›</span></div>}
-            <div className="hub-card" onClick={()=>nav("emergency")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🚨</span></div><div className="hub-card-body"><div className="hub-card-title">Emergency plans</div><div className="hub-card-sub">6 scenario cards</div></div><span className="hub-card-arr">›</span></div>
+            {(data.incidents||[]).length>=3&&<div className="hub-card" onClick={()=>nav("incident-patterns")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📊</span></div><div className="hub-card-body"><div className="hub-card-title">Incident patterns</div><div className="hub-card-sub">Time-of-day, type trends, weekly view</div></div><span className="hub-card-arr">›</span></div>}
             <div className="hub-section-label">Documentation</div>
             <div className="hub-card" onClick={()=>nav("poa-decisions")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>⚖</span></div><div className="hub-card-body"><div className="hub-card-title">POA decisions <span className="pill pill-b">{(data.poaDecisions||[]).length}</span></div><div className="hub-card-sub">Document decisions made under power of attorney</div></div><span className="hub-card-arr">›</span></div>
             <div className="hub-card" onClick={()=>nav("capacity")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📝</span></div><div className="hub-card-body"><div className="hub-card-title">Capacity observations <span className="pill pill-b">{(data.capacityLog||[]).length}</span></div><div className="hub-card-sub">Structured ability assessments for legal and clinical use</div></div><span className="hub-card-arr">›</span></div>
             <div className="hub-card" onClick={()=>nav("binder")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📖</span></div><div className="hub-card-body"><div className="hub-card-title">Care plan binder</div><div className="hub-card-sub">Printable comprehensive care document</div></div><span className="hub-card-arr">›</span></div>
             {can("view-postdeath")&&<div className="hub-card" onClick={()=>nav("postdeath")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🕊</span></div><div className="hub-card-body"><div className="hub-card-title">End-of-life planning</div><div className="hub-card-sub">Administrative checklist</div></div><span className="hub-card-arr">›</span></div>}
+            </div></details>
           </>)}
 
-          {/* ═══ RECORDS HUB ═══ */}
-          {view==="records-hub"&&(<>
-            <div className="hub-card" onClick={()=>nav("incidents")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>⚠</span></div><div className="hub-card-body"><div className="hub-card-title">Incidents <span className="pill pill-b">{(data.incidents||[]).length}</span></div><div className="hub-card-sub">Falls, behaviors, medication errors</div></div><span className="hub-card-arr">›</span></div>
-            {(data.incidents||[]).length>=3&&<div className="hub-card" onClick={()=>nav("incident-patterns")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📊</span></div><div className="hub-card-body"><div className="hub-card-title">Incident patterns</div><div className="hub-card-sub">Time-of-day, type trends, weekly view</div></div><span className="hub-card-arr">›</span></div>}
-            <div className="hub-card" onClick={()=>nav("medadmin")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>💊</span></div><div className="hub-card-body"><div className="hub-card-title">Medication admin</div><div className="hub-card-sub">Daily med grid · {getMedSchedule().medications.length} meds</div></div><span className="hub-card-arr">›</span></div>
-            {can("view-expenses")&&<div className="hub-card" onClick={()=>nav("expenses")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>$</span></div><div className="hub-card-body"><div className="hub-card-title">Expenses <span className="pill pill-b">{(data.expenses||[]).length}</span></div><div className="hub-card-sub">Care costs · CSV export</div></div><span className="hub-card-arr">›</span></div>}
-            {can("view-documents")&&<div className="hub-card" onClick={()=>nav("documents")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📄</span></div><div className="hub-card-body"><div className="hub-card-title">Documents <span className="pill pill-b">{(data.savedDocs||[]).length}</span></div><div className="hub-card-sub">Scanner · Library</div></div><span className="hub-card-arr">›</span></div>}
-            {can("view-contacts")&&<div className="hub-card" onClick={()=>nav("contacts")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>☷</span></div><div className="hub-card-body"><div className="hub-card-title">Contacts <span className="pill pill-b">{(data.contacts||[]).length}</span></div><div className="hub-card-sub">Medical, legal, family</div></div><span className="hub-card-arr">›</span></div>}
-            <div className="hub-card" onClick={()=>nav("calendar")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>▦</span></div><div className="hub-card-body"><div className="hub-card-title">Calendar</div><div className="hub-card-sub">Month view · Appointments</div></div><span className="hub-card-arr">›</span></div>
-            {can("view-shifts")&&<div className="hub-card" onClick={()=>nav("schedule")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🗓</span></div><div className="hub-card-body"><div className="hub-card-title">Care schedule <span className="pill pill-b">{(data.careShifts||[]).filter(s=>new Date(s.date)>=new Date(new Date().toDateString())).length}</span></div><div className="hub-card-sub">Shifts, open shifts, swaps, visit logging</div></div><span className="hub-card-arr">›</span></div>}
-            {can("view-shifts")&&<div className="hub-card" onClick={()=>nav("shifts")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>👥</span></div><div className="hub-card-body"><div className="hub-card-title">Weekly grid</div><div className="hub-card-sub">Simple recurring shift pattern</div></div><span className="hub-card-arr">›</span></div>}
-          </>)}
-
-          {/* ═══ TEAM HUB ═══ */}
-          {view==="team-hub"&&(<>
-            <div className="hub-card" onClick={()=>nav("messages")}><div className="hub-card-icon" style={{background:"var(--color-background-success)"}}><span style={{color:"var(--color-text-success)"}}>✉</span></div><div className="hub-card-body"><div className="hub-card-title">Messages</div><div className="hub-card-sub">Team chat</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-card" onClick={()=>nav("sync")}><div className="hub-card-icon" style={{background:"var(--color-background-info)"}}><span style={{color:"var(--color-text-info)"}}>📡</span></div><div className="hub-card-body"><div className="hub-card-title">Sync</div><div className="hub-card-sub">{(data._sync&&data._sync.lastSync)?"Last: "+new Date(data._sync.lastSync).toLocaleString():"Not yet synced"}</div></div><span className="hub-card-arr">›</span></div>
+          {/* ═══ DOCUMENTS & DATA HUB ═══ */}
+          {view==="docs-hub"&&(<>
+              {activeGrants.length>0&&(<div className="prog-indicator" onClick={()=>nav("program")}>
+                <span className="prog-eye">👁</span>
+                <div className="prog-ind-main">{activeGrants.length===1?activeGrants[0].institution+" has a "+(GRANT_ARCHETYPES[activeGrants[0].archetype]||GRANT_ARCHETYPES.navigator).label.toLowerCase()+" view.":activeGrants.length+" care programs have a view."}<div className="prog-ind-sub">Tap to manage or stop.</div></div>
+                <span className="prog-ind-act">Manage ›</span>
+              </div>)}
             <div className="hub-card" onClick={()=>nav("selfreport")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🗣</span></div><div className="hub-card-body"><div className="hub-card-title">Self-reports <span className="pill pill-b">{(data.selfReports||[]).length}</span></div><div className="hub-card-sub">Client wellness updates</div></div><span className="hub-card-arr">›</span></div>
-            {can("manage-settings")&&<div className="hub-card" onClick={()=>nav("settings")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>⚙</span></div><div className="hub-card-body"><div className="hub-card-title">Settings</div><div className="hub-card-sub">Passcodes, state, export</div></div><span className="hub-card-arr">›</span></div>}
-            <div className="hub-card" onClick={()=>nav("help")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>?</span></div><div className="hub-card-body"><div className="hub-card-title">Help</div><div className="hub-card-sub">Feature guide</div></div><span className="hub-card-arr">›</span></div>
+            <div className="hub-card" onClick={()=>nav("datashare")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📤</span></div><div className="hub-card-body"><div className="hub-card-title">Records in & out</div><div className="hub-card-sub">Import health records · share as PDF or FHIR · status update</div></div><span className="hub-card-arr">›</span></div>
+            {can("view-contacts")&&<div className="hub-card" onClick={()=>nav("contacts")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>☷</span></div><div className="hub-card-body"><div className="hub-card-title">Contacts <span className="pill pill-b">{(data.contacts||[]).length}</span></div><div className="hub-card-sub">Medical, legal, family</div></div><span className="hub-card-arr">›</span></div>}
+            <div className="hub-card" onClick={()=>nav("incidents")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>⚠</span></div><div className="hub-card-body"><div className="hub-card-title">Incidents <span className="pill pill-b">{(data.incidents||[]).length}</span></div><div className="hub-card-sub">Falls, behaviors, medication errors</div></div><span className="hub-card-arr">›</span></div>
+            <div className="hub-card" onClick={()=>nav("calendar")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>▦</span></div><div className="hub-card-body"><div className="hub-card-title">Calendar</div><div className="hub-card-sub">Month view · Appointments</div></div><span className="hub-card-arr">›</span></div>
+            {can("view-documents")&&<div className="hub-card" onClick={()=>nav("documents")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📄</span></div><div className="hub-card-body"><div className="hub-card-title">Documents <span className="pill pill-b">{(data.savedDocs||[]).length}</span></div><div className="hub-card-sub">Scanner · Library</div></div><span className="hub-card-arr">›</span></div>}
+            <div className="hub-card" onClick={()=>nav("program")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🤝</span></div><div className="hub-card-body"><div className="hub-card-title">Share with a care provider</div><div className="hub-card-sub">Scoped, consented, revocable program access</div></div><span className="hub-card-arr">›</span></div>
+            {can("view-expenses")&&<div className="hub-card" onClick={()=>nav("expenses")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>$</span></div><div className="hub-card-body"><div className="hub-card-title">Expenses <span className="pill pill-b">{(data.expenses||[]).length}</span></div><div className="hub-card-sub">Care costs · CSV export</div></div><span className="hub-card-arr">›</span></div>}
           </>)}
 
           {/* ═══ SHIFT HANDOFF ═══ */}
@@ -4988,15 +6753,15 @@ export default function App() {
                   <div className="shift-head"><span className="shift-date">{s.date} · {s.startTime}–{s.endTime}</span><span className="pill pill-a">{s.status==="claim-requested"?"Claim":"Swap"}</span></div>
                   {s.status==="claim-requested"&&<div className="shift-approvals">
                     <p className="hint">Caregivers requesting this open shift:</p>
-                    {(s.claimRequests||[]).map(c=>(<div key={c.deviceId} className="shift-approval-row"><span>{c.name}</span><div style={{display:"flex",gap:6}}><button onClick={()=>approveClaim(s.id,c.deviceId)} className="edit-btn" style={{marginTop:0,fontSize:"0.8125rem",background:"#718355",color:"#fff",borderColor:"#718355"}}>Approve</button><button onClick={()=>denyClaim(s.id,c.deviceId)} className="edit-btn" style={{marginTop:0,fontSize:"0.8125rem"}}>Deny</button></div></div>))}
+                    {(s.claimRequests||[]).map(c=>(<div key={c.deviceId} className="shift-approval-row"><span>{c.name}</span><div style={{display:"flex",gap:6}}><button onClick={()=>approveClaim(s.id,c.deviceId)} className="edit-btn" style={{marginTop:0,fontSize:"0.9375rem",background:"#718355",color:"#fff",borderColor:"#718355"}}>Approve</button><button onClick={()=>denyClaim(s.id,c.deviceId)} className="edit-btn" style={{marginTop:0,fontSize:"0.9375rem"}}>Deny</button></div></div>))}
                   </div>}
                   {s.status==="swap-requested"&&s.swapRequest&&<div className="shift-approvals">
                     <p className="hint">{s.swapRequest.fromName} wants to give up this shift{s.swapRequest.reason?": "+s.swapRequest.reason:"."}</p>
                     <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
                       <span className="hint">Reassign to:</span>
                       <select className="cf-input" style={{width:"auto",padding:"4px 8px"}} onChange={e=>{if(e.target.value)approveSwap(s.id,e.target.value)}} defaultValue=""><option value="">Open for claiming</option>{teamMembers().filter(m=>m.deviceId!==s.swapRequest.fromDevice).map(m=>(<option key={m.deviceId} value={m.deviceId}>{m.name}</option>))}</select>
-                      <button onClick={()=>approveSwap(s.id,null)} className="edit-btn" style={{marginTop:0,fontSize:"0.8125rem",background:"#718355",color:"#fff",borderColor:"#718355"}}>Open it</button>
-                      <button onClick={()=>denySwap(s.id)} className="edit-btn" style={{marginTop:0,fontSize:"0.8125rem"}}>Deny</button>
+                      <button onClick={()=>approveSwap(s.id,null)} className="edit-btn" style={{marginTop:0,fontSize:"0.9375rem",background:"#718355",color:"#fff",borderColor:"#718355"}}>Open it</button>
+                      <button onClick={()=>denySwap(s.id)} className="edit-btn" style={{marginTop:0,fontSize:"0.9375rem"}}>Deny</button>
                     </div>
                   </div>}
                 </div>))}
@@ -5006,7 +6771,7 @@ export default function App() {
             {(()=>{const open=(data.careShifts||[]).filter(s=>s.status==="open"&&new Date(s.date)>=new Date(new Date().toDateString())).sort((a,b)=>a.date.localeCompare(b.date));if(open.length===0)return null;return(
               <div className="section"><h3 className="sec-title">🟢 Open shifts ({open.length})</h3>
                 {open.map(s=>(<div key={s.id} className="shift-card shift-open">
-                  <div className="shift-head"><span className="shift-date">{s.date} · {s.startTime}–{s.endTime}</span>{can("claim-shift")&&!isAdmin&&<button onClick={()=>requestClaim(s.id)} className="edit-btn" style={{marginTop:0,fontSize:"0.8125rem",background:"#457b9d",color:"#fff",borderColor:"#457b9d"}}>Request to claim</button>}{can("manage-schedule")&&<button onClick={()=>deleteShift(s.id)} className="remove-sub">×</button>}</div>
+                  <div className="shift-head"><span className="shift-date">{s.date} · {s.startTime}–{s.endTime}</span>{can("claim-shift")&&!isAdmin&&<button onClick={()=>requestClaim(s.id)} className="edit-btn" style={{marginTop:0,fontSize:"0.9375rem",background:"#457b9d",color:"#fff",borderColor:"#457b9d"}}>Request to claim</button>}{can("manage-schedule")&&<button onClick={()=>deleteShift(s.id)} className="remove-sub">×</button>}</div>
                   {s.carePlan&&<div className="shift-careplan">{s.carePlan}</div>}
                   {(s.tasks||[]).length>0&&<div className="hint">{s.tasks.length} task(s)</div>}
                 </div>))}
@@ -5022,13 +6787,13 @@ export default function App() {
                 {s.carePlan&&<div className="shift-careplan"><strong>Care plan:</strong> {s.carePlan}</div>}
                 {(s.tasks||[]).length>0&&<div className="shift-tasks">{s.tasks.map(t=>(<div key={t.id} className="shift-task-check" onClick={()=>{if(isMine&&can("log-visit"))toggleShiftTask(s.id,t.id)}} style={{cursor:isMine?"pointer":"default",opacity:t.done?.6:1}}><span>{t.done?"☑":"☐"}</span> <span style={{textDecoration:t.done?"line-through":"none"}}>{t.text}</span></div>))}</div>}
                 {isMine&&can("log-visit")&&<div className="shift-visit">
-                  {!s.visitStarted&&<button onClick={()=>startVisit(s.id)} className="edit-btn" style={{marginTop:0,fontSize:"0.8125rem",background:"#718355",color:"#fff",borderColor:"#718355"}}>▶ Start visit</button>}
-                  {s.visitStarted&&!s.visitEnded&&<><span className="hint">Started {new Date(s.visitStarted).toLocaleTimeString()}</span> <button onClick={()=>endVisit(s.id)} className="edit-btn" style={{marginTop:0,fontSize:"0.8125rem",background:"#b56576",color:"#fff",borderColor:"#b56576"}}>■ End visit</button></>}
+                  {!s.visitStarted&&<button onClick={()=>startVisit(s.id)} className="edit-btn" style={{marginTop:0,fontSize:"0.9375rem",background:"#718355",color:"#fff",borderColor:"#718355"}}>▶ Start visit</button>}
+                  {s.visitStarted&&!s.visitEnded&&<><span className="hint">Started {new Date(s.visitStarted).toLocaleTimeString()}</span> <button onClick={()=>endVisit(s.id)} className="edit-btn" style={{marginTop:0,fontSize:"0.9375rem",background:"#b56576",color:"#fff",borderColor:"#b56576"}}>■ End visit</button></>}
                   {s.visitStarted&&s.visitEnded&&<span className="hint" style={{color:"#718355"}}>✓ Visit logged: {new Date(s.visitStarted).toLocaleTimeString()}–{new Date(s.visitEnded).toLocaleTimeString()}</span>}
                 </div>}
                 {isMine&&can("log-visit")&&<><label className="cf-label" style={{marginTop:8}}>Visit notes</label><textarea defaultValue={s.visitNotes} onBlur={e=>setVisitNotes(s.id,e.target.value)} className="notes-ta" rows={2} placeholder="What happened during this visit?"/></>}
                 {!isMine&&s.visitNotes&&<div className="shift-careplan"><strong>Visit notes:</strong> {s.visitNotes}</div>}
-                {isMine&&s.status==="assigned"&&can("claim-shift")&&<button onClick={()=>setSwapModal(s.id)} className="edit-btn" style={{marginTop:8,fontSize:"0.8125rem"}}>⇄ Request swap</button>}
+                {isMine&&s.status==="assigned"&&can("claim-shift")&&<button onClick={()=>setSwapModal(s.id)} className="edit-btn" style={{marginTop:8,fontSize:"0.9375rem"}}>⇄ Request swap</button>}
               </div>);
               return(<>
                 <div className="section"><h3 className="sec-title">My shifts ({mine.length})</h3>{mine.length>0?mine.map(s=>renderShift(s,true)):<p className="hint">No upcoming shifts assigned to you.</p>}</div>
@@ -5107,7 +6872,7 @@ export default function App() {
             </div>)}
 
             {(data.poaDecisions||[]).length>0&&(<div className="section"><h3 className="sec-title">Decision History ({(data.poaDecisions||[]).length})</h3>
-              {can("export-data")&&<div style={{marginBottom:12}}><button onClick={()=>{const lines=(data.poaDecisions||[]).map(d=>{const t=POA_DECISION_TYPES.find(x=>x.key===d.type);return d.date+" | "+(t&&t.label||d.type)+" | "+d.description+(d.reasoning?" | Reasoning: "+d.reasoning:"")+(d.knownWishes?" | Wishes: "+d.knownWishes:"")+(d.consulted?" | Consulted: "+d.consulted:"")+(d.outcome?" | Outcome: "+d.outcome:"")+" | Agent: "+d.agent});try{navigator.clipboard.writeText("POA DECISION LOG\n"+lines.join("\n"));flash("Decision log copied to clipboard.")}catch{}}} className="edit-btn" style={{fontSize:"0.8125rem",marginTop:0}}>📋 Export log</button></div>}
+              {can("export-data")&&<div style={{marginBottom:12}}><button onClick={()=>{const lines=(data.poaDecisions||[]).map(d=>{const t=POA_DECISION_TYPES.find(x=>x.key===d.type);return d.date+" | "+(t&&t.label||d.type)+" | "+d.description+(d.reasoning?" | Reasoning: "+d.reasoning:"")+(d.knownWishes?" | Wishes: "+d.knownWishes:"")+(d.consulted?" | Consulted: "+d.consulted:"")+(d.outcome?" | Outcome: "+d.outcome:"")+" | Agent: "+d.agent});try{navigator.clipboard.writeText("POA DECISION LOG\n"+lines.join("\n"));flash("Decision log copied to clipboard.")}catch{}}} className="edit-btn" style={{fontSize:"0.9375rem",marginTop:0}}>📋 Export log</button></div>}
               {(data.poaDecisions||[]).map(d=>{const t=POA_DECISION_TYPES.find(x=>x.key===d.type);return(
                 <div key={d.id} className="poa-entry">
                   <div className="poa-entry-head">
@@ -5216,10 +6981,52 @@ export default function App() {
           </>)}
 
           {/* ═══ MED ADMIN LOG ═══ */}
-          {view==="medadmin"&&(<>
+          {/* ── Care recipient's own view: what to take next, in large print ──
+              A person with dementia should not have to read a caregiver's admin grid to answer "have I taken my
+              tablets?". This shows the next dose only, at size, with no editing controls and no adherence
+              scoring — the record is about them, not a report card on them. */}
+          {view==="medadmin"&&isClient&&(()=>{
+            const today=medDayKey(new Date()); const hour=new Date().getHours();
+            const meds=getMedSchedule().medications;
+            const rows=[];
+            for(const m of meds) for(const s of (m.timeSlots||[])){
+              if(s===MED_PRN_SLOT) continue;
+              const w=MED_SLOTS[s]; const e=getMedEntry(m.id,s,today);
+              rows.push({m,s,e,start:(w&&w.start)!=null?w.start:99});
+            }
+            const pending=rows.filter(r=>!r.e).sort((a,b)=>a.start-b.start);
+            const nextSlot=pending.length?pending.find(r=>r.start>=hour)||pending[0]:null;
+            const group=nextSlot?pending.filter(r=>r.s===nextSlot.s):[];
+            const doneToday=rows.filter(r=>r.e&&r.e.status==="given");
+            return (<>
+              <h1 className="page-title">💊 My medicines</h1>
+              {group.length?(<div className="client-dose">
+                <div className="client-dose-when">{group[0].s}</div>
+                {group.map(({m})=>(<div key={m.id} className="client-dose-med">
+                  <div className="client-dose-name">{m.name}</div>
+                  <div className="client-dose-amt">{m.dosage}</div>
+                </div>))}
+                <p className="client-dose-note">Your caregiver records these once you've taken them.</p>
+              </div>):(<div className="client-dose client-dose-clear">
+                <div className="client-dose-when">All done for today</div>
+                <p className="client-dose-note">Nothing else is due. {doneToday.length?doneToday.length+" recorded today.":""}</p>
+              </div>)}
+              {doneToday.length>0&&(<div className="section"><h3 className="sec-title">Already taken today</h3>
+                {doneToday.map(({m,s,e})=>(<div key={m.id+s} className="client-taken">
+                  <span>{m.name} <span className="hint">{m.dosage}</span></span>
+                  <span className="hint">{s}{e.at?" · "+new Date(e.at).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"}):""}</span>
+                </div>))}</div>)}
+            </>); })()}
+
+          {view==="medadmin"&&!isClient&&(<>
             <div className="contacts-header"><div><h1 className="page-title">💊 Medication Administration Log</h1><p className="page-sub" style={{margin:"4px 0 0"}}>Track daily medication administration. Tap cells to cycle: ✓ given → ✗ missed → ⊘ refused → clear.</p></div>
               {!isClient&&<button onClick={()=>setMedForm({mode:"add",med:{name:"",dosage:"",timeSlots:["Morning"],notes:""}})} className="save-btn">+ Add Medication</button>}
             </div>
+            <div className="med-view-toggle">
+              <button className={"mvt-btn"+(medView==="day"?" mvt-on":"")} onClick={()=>setMedView("day")}>Day</button>
+              <button className={"mvt-btn"+(medView==="calendar"?" mvt-on":"")} onClick={()=>{setMedView("calendar");setMedCalDay(null)}}>Calendar</button>
+            </div>
+            {medView==="day"&&(<>
             <div className="med-date-nav">
               <button onClick={()=>{const d=new Date(medAdminDate+"T12:00:00");d.setDate(d.getDate()-1);setMedAdminDate(fmtDate(d.getFullYear(),d.getMonth(),d.getDate()))}} className="cal-nav-btn">‹</button>
               <input type="date" value={medAdminDate} onChange={e=>setMedAdminDate(e.target.value)} className="cf-input" style={{textAlign:"center",fontWeight:700,maxWidth:180}}/>
@@ -5238,17 +7045,130 @@ export default function App() {
                 <tbody>{getMedSchedule().medications.map(m=>(<tr key={m.id}>
                   <td><strong>{m.name}</strong>{m.notes&&<div className="med-note">{m.notes}</div>}</td>
                   <td>{m.dosage}</td>
-                  {MED_TIME_SLOTS.map(s=>{const active=m.timeSlots.includes(s);const status=active?getMedStatus(m.id,s,medAdminDate):null;return(
-                    <td key={s} className="med-cell" onClick={()=>{if(active&&!isClient)toggleMedAdmin(m.id,s,medAdminDate)}} style={{cursor:active&&!isClient?"pointer":"default",background:status==="given"?"#e8f0df":status==="missed"?"#fde2e8":status==="refused"?"#fdf0d5":active?"#faf9f7":"#f6f4f0"}}>
-                      {active?(status==="given"?<span className="med-check given">✓</span>:status==="missed"?<span className="med-check missed">✗</span>:status==="refused"?<span className="med-check refused">⊘</span>:<span className="med-check pending">○</span>):<span className="med-check na">—</span>}
+                  {MED_TIME_SLOTS.map(s=>{const active=m.timeSlots.includes(s);const entry=active?getMedEntry(m.id,s,medAdminDate):null;const status=entry&&entry.status||null;return(
+                    <td key={s} className="med-cell" onClick={()=>{if(active&&!isClient)toggleMedAdmin(m.id,s,medAdminDate)}} title={entry?((entry.status||"")+(entry.by?" — "+entry.by:"")+(entry.at?" at "+new Date(entry.at).toLocaleTimeString():"")+(entry.reason?" · "+entry.reason:"")):""} style={{cursor:active&&!isClient?"pointer":"default",background:status==="given"?"#e8f0df":status==="missed"?"#f6e3e6":status==="refused"?"#f6ecdf":status==="skipped"?"#eef1f5":"transparent"}}>
+                      {active?(<>{status==="given"?<span className="med-check given">✓</span>:status==="missed"?<span className="med-check missed">✗</span>:status==="refused"?<span className="med-check refused">⊘</span>:status==="skipped"?<span className="med-check skipped">⤼</span>:<span className="med-check">·</span>}{/* WHO and WHEN, shown in the grid itself — a second caregiver has to be able to SEE that a dose was already given, which is what prevents a double dose. */}{entry&&entry.by&&<span className="med-by">{entry.by.split(" ")[0]}{entry.at?" "+new Date(entry.at).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"}):""}</span>}{entry&&entry.reason&&<span className="med-reason-tag">{entry.reason}</span>}</>):<span className="med-dash">—</span>}
                     </td>)})}
                   {!isClient&&<td><button onClick={()=>setMedForm({mode:"edit",med:{...m},id:m.id})} className="edit-icon edit-icon-visible">✎</button></td>}
                 </tr>))}</tbody>
               </table></div>}
+            {/* A withheld dose without a reason is a gap in the record. Offer the reason right where it happened,
+                rather than expecting someone to remember to write a note later. */}
+            {!isClient&&(()=>{ const pend=[];
+              for(const m of getMedSchedule().medications) for(const s of (m.timeSlots||[])){
+                const e=getMedEntry(m.id,s,medAdminDate);
+                if(e&&(e.status==="skipped"||e.status==="refused")&&!e.reason) pend.push({m,s,e}); }
+              if(!pend.length) return null;
+              return (<div className="section"><h3 className="sec-title">Why was this dose not given?</h3>
+                {pend.map(({m,s,e})=>(<div key={m.id+s} className="doc-section-card">
+                  <strong>{m.name}</strong> <span className="hint">{s} · {e.status}</span>
+                  <div className="med-reason-row">{MED_SKIP_REASONS.map(r=>(
+                    <button key={r} className="mc-chip" onClick={()=>setMedReason(m.id,s,medAdminDate,r)}>{r}</button>))}</div>
+                </div>))}
+                <p className="hint">Optional, but it turns a blank into a decision someone can stand behind later.</p>
+              </div>); })()}
+            </>)}
+
+            {medView==="calendar"&&(()=>{
+              const allMeds=getMedSchedule(true).medications;
+              const log=(data.medSchedule&&data.medSchedule.log)||[];
+              const today=medDayKey(new Date());
+              const [cy,cm]=medCalMonth.split("-").map(Number);
+              const first=new Date(cy,cm-1,1), last=new Date(cy,cm,0);
+              const range=medAdherenceRange(allMeds,log,medDayKey(first),medDayKey(last),medCalFilter,today);
+              const pFirst=new Date(cy,cm-2,1), pLast=new Date(cy,cm-1,0);
+              const prev=medAdherenceRange(allMeds,log,medDayKey(pFirst),medDayKey(pLast),medCalFilter,today);
+              const delta=(range.pct!==null&&prev.pct!==null)?range.pct-prev.pct:null;
+              const streak=medStreak(range.days,today);
+              const byDate={}; range.days.forEach(d=>byDate[d.date]=d);
+              const cells=[]; for(let i=0;i<first.getDay();i++)cells.push(null); range.days.forEach(d=>cells.push(d));
+              const sel=medCalDay?byDate[medCalDay]:null;
+              const shiftMonth=(n)=>{const d=new Date(cy,cm-1+n,1);setMedCalMonth(d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"));setMedCalDay(null)};
+              const stripStart=new Date(); stripStart.setDate(stripStart.getDate()-29);
+              const filterName=medCalFilter==="all"?"All medications":((allMeds.find(m=>m.id===medCalFilter)||{}).name||"");
+              const copySummary=()=>{ const lines=["Medication adherence — "+filterName,
+                  new Date(cy,cm-1,1).toLocaleDateString(undefined,{month:"long",year:"numeric"}),
+                  "Doses given: "+range.given+" of "+range.scheduled+(range.pct!==null?" ("+range.pct+"%)":""),
+                  "Marked missed: "+range.missed+" · refused: "+range.refused+" · not recorded: "+range.unrecorded];
+                if(range.prnGiven)lines.push("As-needed doses given: "+range.prnGiven);
+                const txt=lines.join("\n");
+                try{ navigator.clipboard.writeText(txt); flash("Adherence summary copied — paste it into a note or message."); }
+                catch(e){ flash("Couldn't copy automatically. The figures are on screen."); } };
+              return (<>
+                <div className="med-cal-filters">
+                  <button className={"mc-chip"+(medCalFilter==="all"?" mc-chip-on":"")} onClick={()=>{setMedCalFilter("all");setMedCalDay(null)}}>All medications</button>
+                  {allMeds.map(m=>(<button key={m.id} className={"mc-chip"+(medCalFilter===m.id?" mc-chip-on":"")} onClick={()=>{setMedCalFilter(m.id);setMedCalDay(null)}}>
+                    {m.name}{m.discontinued?" (stopped)":""}</button>))}
+                </div>
+                <div className="med-date-nav">
+                  <button onClick={()=>shiftMonth(-1)} className="med-nav-btn">‹</button>
+                  <strong style={{flex:1,textAlign:"center"}}>{new Date(cy,cm-1,1).toLocaleDateString(undefined,{month:"long",year:"numeric"})}</strong>
+                  <button onClick={()=>shiftMonth(1)} className="med-nav-btn">›</button>
+                </div>
+                <div className="med-adh-stats">
+                  <div className="mas-card"><div className="mas-num">{range.pct===null?"—":range.pct+"%"}</div><div className="mas-lbl">doses given{delta!==null&&<span className={"mas-delta "+(delta>0?"up":delta<0?"down":"")}>{delta>0?"▲ +":delta<0?"▼ ":"– "}{delta!==0?Math.abs(delta)+"%":""}</span>}</div></div>
+                  <div className="mas-card"><div className="mas-num">{range.given}<span className="mas-of">/{range.scheduled}</span></div><div className="mas-lbl">scheduled doses</div></div>
+                  <div className="mas-card"><div className="mas-num">{streak}</div><div className="mas-lbl">day streak</div></div>
+                  {range.unrecorded>0&&<div className="mas-card mas-warn"><div className="mas-num">{range.unrecorded}</div><div className="mas-lbl">not recorded</div></div>}
+                </div>
+                <div className="med-cal-grid">
+                  {["S","M","T","W","T","F","S"].map((d,i)=><div key={i} className="mc-dow">{d}</div>)}
+                  {cells.map((d,i)=>d===null?<div key={"b"+i} className="mc-cell mc-blank"/>:(
+                    <button key={d.date} className={"mc-cell mc-"+d.state+(medCalDay===d.date?" mc-sel":"")+(d.date===today?" mc-today":"")}
+                      onClick={()=>setMedCalDay(medCalDay===d.date?null:d.date)}
+                      title={d.scheduled?(d.given+" of "+d.scheduled+" given"):(d.prnGiven?d.prnGiven+" as-needed":"nothing scheduled")}>
+                      <span className="mc-day">{Number(d.date.slice(8))}</span>
+                      {d.scheduled>0&&<span className="mc-frac">{d.given}/{d.scheduled}</span>}
+                    </button>))}
+                </div>
+                <div className="med-cal-legend">
+                  <span><i className="mc-key mc-full"/>All given</span><span><i className="mc-key mc-partial"/>Some given</span>
+                  <span><i className="mc-key mc-missed"/>Missed / refused</span><span><i className="mc-key mc-unrecorded"/>Not recorded</span>
+                  <span><i className="mc-key mc-none"/>None scheduled</span>
+                </div>
+                {sel&&(<div className="section">
+                  <h3 className="sec-title">{new Date(sel.date+"T12:00:00").toLocaleDateString(undefined,{weekday:"long",month:"long",day:"numeric"})}</h3>
+                  {sel.scheduled===0&&sel.prnGiven===0?<p className="hint">Nothing scheduled this day.</p>:(<>
+                    <p className="hint" style={{marginTop:0}}>{sel.given} of {sel.scheduled} scheduled doses given{sel.prnGiven?" · "+sel.prnGiven+" as-needed":""}{sel.unrecorded?" · "+sel.unrecorded+" not recorded":""}</p>
+                    {allMeds.filter(m=>(medCalFilter==="all"||m.id===medCalFilter)&&medActiveOn(m,sel.date)).map(m=>(
+                      <div key={m.id} className="doc-section-card">
+                        <strong>{m.name}</strong> <span className="hint">{m.dosage}</span>
+                        <div className="mc-slots">{(m.timeSlots||[]).map(sl=>{const st=getMedStatus(m.id,sl,sel.date);
+                          return <span key={sl} className={"mc-slot mc-slot-"+(st||(sl===MED_PRN_SLOT?"prn":"unrecorded"))}>{sl}{st==="given"?" ✓":st==="missed"?" ✗":st==="refused"?" ⊘":""}</span>})}</div>
+                      </div>))}
+                  </>)}
+                </div>)}
+                <div className="section">
+                  <h3 className="sec-title">Last 30 days by medication</h3>
+                  <p className="hint" style={{marginTop:0}}>Each square is a day. This is where a single medication slipping shows up even when the overall figure looks fine.</p>
+                  {allMeds.filter(m=>!m.discontinued).map(m=>{
+                    const r=medAdherenceRange(allMeds,log,medDayKey(stripStart),today,m.id,today);
+                    return (<div key={m.id} className="med-strip-row">
+                      <div className="med-strip-head"><strong>{m.name}</strong><span className={"med-strip-pct"+(r.pct!==null&&r.pct<80?" low":"")}>{r.pct===null?"—":r.pct+"%"}</span></div>
+                      <div className="med-strip">{r.days.map(d=><i key={d.date} className={"mc-key mc-"+d.state} title={d.date+": "+(d.scheduled?d.given+"/"+d.scheduled:"none scheduled")}/>)}</div>
+                    </div>);})}
+                  {allMeds.filter(m=>!m.discontinued).length===0&&<p className="hint">No active medications.</p>}
+                </div>
+                {can("export-data")&&<button className="cancel-btn" onClick={copySummary}>Copy adherence summary</button>}
+              </>);
+            })()}
+
+            {/* ── Medication change log ── */}
+            <details className="settings-group" style={{marginTop:18}}><summary className="settings-group-summary"><span>📜 Medication change log ({(data.medChanges||[]).length})</span><span className="sg-chev">▾</span></summary><div className="settings-group-body">
+            <p className="hint" style={{marginTop:0}}>Every medication added, stopped, or dose-changed — whether entered by hand or imported from a document.</p>
+            {(data.medChanges||[]).length===0?<p className="hint">No changes recorded yet.</p>:
+            (data.medChanges||[]).slice(0,200).map(c=>(
+            <div key={c.id} className="doc-section-card">
+            <div><strong>{c.action==="added"?"➕ Added":c.action==="discontinued"?"⛔ Discontinued":c.action==="reactivated"?"↩ Restarted":"✏ Dose changed"}</strong> — {c.name}</div>
+            {c.detail&&<div className="hint">{c.detail}</div>}
+            <div className="hint">{new Date(c.ts).toLocaleString()} · {c.source==="document"?"from a document":"entered by hand"} · {c.by}</div>
+            </div>))}
+            </div></details>
           </>)}
 
           {/* ═══ EXPENSE TRACKER ═══ */}
-          {view==="expenses"&&(<>
+
+{view==="expenses"&&(<>
             <div className="contacts-header"><div><h1 className="page-title">$ Expense Tracker</h1><p className="page-sub" style={{margin:"4px 0 0"}}>Track care expenses for Medicaid spend-down documentation and POA fiduciary accountability (ORS 127.045).</p></div>
               <div className="contacts-header-actions">
                 {((data.expenses&&data.expenses.length)||0)>0&&can("export-data")&&<><button onClick={exportExpensesCsv} className="edit-btn" style={{marginTop:0}}>📋 CSV</button><button onClick={printExpenses} className="edit-btn" style={{marginTop:0}}>🖨 Print</button></>}
@@ -5281,7 +7201,7 @@ export default function App() {
                     <td>{(cat&&cat.label)||exp.category}</td>
                     <td>{exp.description}</td>
                     <td>{exp.payee}</td>
-                    <td style={{fontSize:"0.8125rem",color:"#8d99ae"}}>{exp.receipt}</td>
+                    <td style={{fontSize:"0.9375rem",color:"#8d99ae"}}>{exp.receipt}</td>
                     {!isClient&&<td><button onClick={()=>setExpenseForm({mode:"edit",expense:{...exp},id:exp.id})} className="edit-icon edit-icon-visible">✎</button></td>}
                   </tr>)})}</tbody>
               </table></div>}
@@ -5292,6 +7212,30 @@ export default function App() {
             <div className="contacts-header"><div><h1 className="page-title">▦ Calendar</h1><p className="page-sub" style={{margin:"4px 0 0"}}>Track appointments and important dates.</p></div>
               {!isClient&&<button onClick={()=>setApptForm({mode:"add",appt:{title:"",date:calSelected||fmtDate(calYear,calMonth,new Date().getDate()),time:"09:00",notes:""}})} className="save-btn">+ Appointment</button>}
             </div>
+            {can("export-data")&&(<details className="settings-group" style={{marginTop:12}}><summary className="settings-group-summary"><span>📆 Add these appointments to my calendar</span><span className="sg-chev">▾</span></summary><div className="settings-group-body">
+              <p className="hint" style={{marginTop:0}}>This creates a calendar file. Opening it adds the appointments to whichever calendar you already use — phone, tablet, or computer. Exporting again <strong>updates</strong> the same appointments rather than making duplicates, and an appointment you delete here is removed from your calendar on the next export.</p>
+              <label className="cf-label" style={{flexDirection:"row",alignItems:"center",gap:8,marginBottom:10}}>
+                <input type="checkbox" checked={icsIncludeNotes} onChange={e=>setIcsIncludeNotes(e.target.checked)}/>
+                <span>Include appointment notes</span></label>
+              <p className="hint" style={{marginTop:0}}>Notes often hold clinical detail. They stay out of the calendar unless you tick this. Each appointment can also carry a plainer <strong>calendar title</strong> — set it when other people can see your calendar.</p>
+              <button className="save-btn" onClick={exportAllAppointmentsIcs}>Create calendar file</button>
+              <p className="hint" style={{marginTop:8,marginBottom:0}}>On a phone, opening the file offers to add the appointments to your calendar app. Care Guardian cannot write to your calendar directly — no website can — so this one tap is the handover.</p>
+            </div></details>)}
+            {!isClient&&(<details className="settings-group" style={{marginTop:10}}><summary className="settings-group-summary"><span>🔀 Check my own calendar for clashes</span><span className="sg-chev">▾</span></summary><div className="settings-group-body">
+              <p className="hint" style={{marginTop:0}}>Export your work or personal calendar as a <strong>.ics</strong> file and open it here. Care Guardian compares it against these appointments and flags clashes. It stays on this device — no account, no login, nothing sent anywhere.</p>
+              <button className="save-btn" onClick={()=>extCalRef.current&&extCalRef.current.click()}>Choose a calendar file</button>
+              {data.externalCal&&(<>
+                <p className="hint" style={{marginTop:10}}>{(data.externalCal.events||[]).length} event(s) from <strong>{data.externalCal.source}</strong>, imported {new Date(data.externalCal.importedAt).toLocaleDateString()}. Only the title and time of each event are kept, for the next 120 days.</p>
+                {(()=>{const c=getApptConflicts(); return c.length===0
+                  ? <div className="sync-status sync-status-success">✓ No clashes with your appointments.</div>
+                  : (<><div className="sync-status sync-status-error">⚠ {c.length} clash{c.length===1?"":"es"} found</div>
+                      {c.map((h,i)=>(<div key={i} className="doc-section-card">
+                        <strong>{icsCalendarTitle(h.appt)}</strong> <span className="hint">{h.appt.date} {h.appt.time}</span>
+                        <div className="hint">clashes with “{h.event.title}”{h.allDay?" (all day)":" at "+h.event.time}</div>
+                      </div>))}</>); })()}
+                <button className="cancel-btn" style={{marginTop:8}} onClick={clearExtCal}>Remove imported calendar</button>
+              </>)}
+            </div></details>)}
             <div className="cal-nav"><button onClick={()=>{if(calMonth===0){setCalMonth(11);setCalYear(y=>y-1)}else setCalMonth(m=>m-1)}} className="cal-nav-btn">‹</button><span className="cal-month">{MONTHS[calMonth]} {calYear}</span><button onClick={()=>{if(calMonth===11){setCalMonth(0);setCalYear(y=>y+1)}else setCalMonth(m=>m+1)}} className="cal-nav-btn">›</button></div>
             <div className="cal-grid"><div className="cal-header">{DAYS.map(d=><div key={d} className="cal-dow">{d}</div>)}</div>
               <div className="cal-body">{(()=>{const days=getMonthDays(calYear,calMonth);const first=getFirstDow(calYear,calMonth);const cells=[];
@@ -5310,6 +7254,15 @@ export default function App() {
                   <div className="cal-appt-head"><strong>{a.time||"--:--"}</strong> {a.title}
                     {!isClient&&<button onClick={()=>setApptForm({mode:"edit",appt:{...a},id:a.id})} className="edit-icon edit-icon-visible">✎</button>}
                   </div>
+                  {(()=>{ const c=(data.contacts||[]).find(x=>String(x.id)===String(a.contactId));
+                    const where=a.location||(c&&c.org)||"";
+                    if(!c&&!where) return null;
+                    return (<div className="cal-appt-meta">
+                      {where&&<span>📍 {where}</span>}
+                      {/* The phone number is the thing a caregiver actually reaches for at an appointment —
+                          running late, lost, or needing to reschedule. One tap, no digging through contacts. */}
+                      {c&&c.phone&&<a href={"tel:"+String(c.phone).replace(/[^+\d]/g,"")} className="cal-appt-call">📞 {c.name}</a>}
+                    </div>); })()}
                   {a.notes&&<p className="cal-appt-notes">{a.notes}</p>}
                 </div>))}
             </div>)}
@@ -5371,11 +7324,11 @@ export default function App() {
             {!isClient&&<button onClick={recordStatusSnapshot} className="save-btn" style={{marginBottom:20}}>📸 Record Snapshot Today</button>}
             {(data.statusHistory||[]).length===0?<div className="contacts-empty"><p>No snapshots recorded yet. Take your first snapshot to begin tracking changes over time.</p></div>:
               <div className="doc-table-wrap"><table className="doc-table">
-                <thead><tr><th>Date</th>{DOMAINS.map(d=><th key={d.key} style={{fontSize:"0.8125rem"}}>{d.icon} {getDomLabel(d.key).split(" ")[0]}</th>)}<th>Triggers</th><th>Incidents</th></tr></thead>
+                <thead><tr><th>Date</th>{DOMAINS.map(d=><th key={d.key} style={{fontSize:"0.9375rem"}}>{d.icon} {getDomLabel(d.key).split(" ")[0]}</th>)}<th>Triggers</th><th>Incidents</th></tr></thead>
                 <tbody>{[...(data.statusHistory||[])].reverse().map((snap,i)=>(<tr key={i}>
                   <td style={{whiteSpace:"nowrap",fontWeight:600}}>{snap.date}</td>
                   {DOMAINS.map(d=>{const s=(snap.domains&&snap.domains[d.key]);const pct=(s&&s.pct)||0;const hColor=pct>=80?"#718355":pct>=40?"#bc6c25":"#b56576";return(
-                    <td key={d.key}><span className="o-badge" style={{background:hColor+"18",color:hColor,fontSize:"0.8125rem"}}>{pct}%</span></td>)})}
+                    <td key={d.key}><span className="o-badge" style={{background:hColor+"18",color:hColor,fontSize:"0.9375rem"}}>{pct}%</span></td>)})}
                   <td>{snap.triggeredCount||0}</td>
                   <td>{snap.incidentCount||0}</td>
                 </tr>))}</tbody>
@@ -5399,7 +7352,7 @@ export default function App() {
                 <h3 className="sec-title">{section.title} <span className="prog-label">({doneCount}/{section.items.length})</span></h3>
                 <div className="goals-wrap">{section.items.map((item,ii)=>{const done=getPostDeathChecked(si,ii);return(
                   <label key={ii} className="sub-item" style={{background:done?"#f5f9f0":"#faf9f7"}}>
-                    {!isClient?<input type="checkbox" checked={done} onChange={()=>togglePostDeath(si,ii)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:"0.8125rem"}}>{done?"✓":"○"}</span>}
+                    {!isClient?<input type="checkbox" checked={done} onChange={()=>togglePostDeath(si,ii)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:"0.9375rem"}}>{done?"✓":"○"}</span>}
                     <span className="sub-text" style={{textDecoration:done?"line-through":"none",color:done?"#a09a92":"#3d3730"}}>{item}</span>
                   </label>)})}</div>
               </div>)})}
@@ -5409,6 +7362,7 @@ export default function App() {
           {view==="help"&&(<>
             <h1 className="page-title">? Help & User Guide</h1>
             <p className="page-sub">How to use each feature of the Care Guardian.</p>
+            {helpTopic&&HELP_TOPICS[helpTopic]&&(<div className="help-context"><div className="help-context-title">📍 Help for: {HELP_TOPICS[helpTopic]}</div><p className="hint" style={{margin:0}}>Step-by-step guidance for this screen is on its way. Until then, the general guide below covers every feature.</p><button className="mini-btn" style={{marginTop:6}} onClick={()=>setHelpTopic(null)}>Show general help</button></div>)}
             <div className="help-toc"><strong>Contents:</strong> {["Getting Started","Overview","Care Domains","Incident Log","Medication Log","Expense Tracker","Calendar","Contacts","Document Scanner","Self Report","Emergency Plans","Shift Schedule","Escalation Triggers","Longitudinal Tracking","Visit Prep","After Death Checklist","Messages","Team Sync","Settings & Security","Privacy"].map((t,i)=><span key={i}>{i>0?" · ":""}<a href="#" onClick={e=>{e.preventDefault();(document.getElementById("help-"+i)||{scrollIntoView:()=>{}}).scrollIntoView({behavior:"smooth"})}} className="help-link">{t}</a></span>)}</div>
 
             {[
@@ -5466,9 +7420,9 @@ export default function App() {
               </div>)}
 
               <div className="photo-attach-row">
-                <button onClick={()=>srPhotoRef.current&&srPhotoRef.current.click()} className="edit-btn" style={{marginTop:0,fontSize:"0.8125rem"}}>📷 Add photo{srPhotos.length>0?" ("+srPhotos.length+")":""}</button>
+                <button onClick={()=>srPhotoRef.current&&srPhotoRef.current.click()} className="edit-btn" style={{marginTop:0,fontSize:"0.9375rem"}}>📷 Add photo{srPhotos.length>0?" ("+srPhotos.length+")":""}</button>
                 <input ref={srPhotoRef} type="file" accept="image/*" capture="environment" multiple style={{display:"none"}} onChange={e=>handlePhotoCapture(e,setSrPhotos)}/>
-                {srPhotos.length>0&&<button onClick={()=>setSrPhotos([])} className="cancel-btn" style={{fontSize:"0.8125rem",padding:"4px 10px"}}>Clear photos</button>}
+                {srPhotos.length>0&&<button onClick={()=>setSrPhotos([])} className="cancel-btn" style={{fontSize:"0.9375rem",padding:"4px 10px"}}>Clear photos</button>}
               </div>
               {srPhotos.length>0&&<div className="photo-preview-row">{srPhotos.map((p,i)=>(<div key={i} className="photo-thumb"><img src={p} alt={"Photo "+(i+1)}/><button onClick={()=>setSrPhotos(prev=>prev.filter((_,j)=>j!==i))} className="photo-remove">×</button></div>))}</div>}
               <textarea value={srText} onChange={e=>{setSrText(e.target.value);setSrErr("")}} className="notes-ta" rows={3}
@@ -5498,6 +7452,97 @@ export default function App() {
           </>)}
 
           {/* ═══ SYNC ═══ */}
+          {view==="circle"&&(<>
+            <h1 className="page-title">🔗 My Circle</h1>
+            <p className="page-sub">Your own devices and a second caregiver, kept in sync under one encrypted key.</p>
+            {circleUI.err&&<div className="sync-status sync-status-error">✗ {circleUI.err}</div>}
+            {circleUI.scanFor&&(<div className="section"><h3 className="sec-title">📷 Scan the other device</h3><CircleScanner onScan={d=>{const t=circleUI.scanFor;setCircleUI(u=>({...u,scanFor:null}));if(t==="host")circleHostRespond(d);else circleJoinComplete(d);}} onClose={()=>setCircleUI(u=>({...u,scanFor:null}))}/></div>)}
+            {!circleOf()?(
+              <div className="section">
+                <p className="hint">Set up a circle on your main device, then add your phone, tablet, or a co-caregiver. Everything stays end-to-end encrypted; the circle key never leaves your devices.</p>
+                <div className="sync-methods">
+                  <div className="sync-method-card" onClick={circleCreate}><div className="sync-method-icon">✦</div><div className="sync-method-info"><strong>Create a circle</strong><span>This is your main device</span></div></div>
+                  <div className="sync-method-card" onClick={circleJoinStart}><div className="sync-method-icon">🔗</div><div className="sync-method-info"><strong>Join a circle</strong><span>In person, with another device</span></div></div>
+                  <div className="sync-method-card" onClick={()=>setCircleUI({mode:"rjoin",host:null,join:null,err:""})}><div className="sync-method-icon">✉</div><div className="sync-method-info"><strong>Join with a code</strong><span>You were sent an invite + passphrase</span></div></div>
+                </div>
+                {circleUI.mode==="rjoin"&&(<div style={{marginTop:"0.85rem"}}>
+                  <p className="hint">Paste the invite code, then the passphrase you were given separately.</p>
+                  <textarea className="cf-input" id="rjCode" rows={3} placeholder="Invite code"/>
+                  <input className="cf-input" id="rjPass" placeholder="six-word passphrase" style={{marginTop:"0.4rem"}}/>
+                  <button className="save-btn" style={{marginTop:"0.5rem"}} onClick={()=>circleRemoteJoin(document.getElementById("rjCode").value,document.getElementById("rjPass").value)}>Join circle</button>
+                </div>)}
+              </div>
+            ):(
+              <div className="section">
+                <h3 className="sec-title">👥 Devices &amp; caregivers</h3>
+                <p className="hint">Circle <strong>{circleOf().id}</strong></p>
+                {(data.circleRoster||[]).map(r=>(<div key={r.deviceId} className="sync-method-card" style={{cursor:"default"}}><div className="sync-method-icon">📱</div><div className="sync-method-info"><strong>{r.label}{r.deviceId===circleDeviceId()?" (this device)":""}</strong><span style={{fontFamily:"monospace"}}>{r.pub?r.pub.slice(0,16)+"…":"awaiting first sync"}</span></div>{circleIsAdmin()&&r.deviceId!==circleDeviceId()&&((r.pending||!r.pub)?<button className="cancel-btn" style={{marginLeft:"auto",padding:"0.25rem 0.6rem",fontSize:"0.9375rem"}} onClick={()=>{if(window.confirm("Cancel the invite for "+r.label+"? It won't be able to join or write to the circle."))circleCancelPending(r.deviceId)}}>Cancel</button>:<button className="cancel-btn" style={{marginLeft:"auto",padding:"0.25rem 0.6rem",fontSize:"0.9375rem"}} onClick={()=>{if(window.confirm("Remove "+r.label+"? It keeps its current copy but receives no future updates."))circleRotateNow(r.deviceId)}}>Remove</button>)}</div>))}
+                <button className="save-btn" style={{marginTop:"0.75rem"}} onClick={()=>setCircleUI({mode:"host",host:null,join:null,err:""})}>Add a device</button>
+                <button className="cancel-btn" style={{marginTop:"0.5rem"}} onClick={circleLeave}>Leave circle on this device</button>
+                {!circleOf().relay?(
+                  <div style={{marginTop:"1rem",paddingTop:"0.75rem",borderTop:"1px solid var(--color-border)"}}>
+                    <h3 className="sec-title">📡 Sync relay</h3>
+                    <p className="hint">Connect a relay so your circle devices exchange records automatically. The relay only ever holds ciphertext — it can't read your data.</p>
+                    <input className="cf-input" id="relayBase" placeholder="https://your-relay.example"/>
+                    <input className="cf-input" id="relayAdmin" placeholder="Relay admin token" style={{marginTop:"0.4rem"}}/>
+                    <button className="save-btn" style={{marginTop:"0.5rem"}} onClick={()=>circleConnectRelay(document.getElementById("relayBase").value,document.getElementById("relayAdmin").value)}>Connect relay</button>
+                  </div>
+                ):(
+                  <div style={{marginTop:"1rem",paddingTop:"0.75rem",borderTop:"1px solid var(--color-border)"}}>
+                    <h3 className="sec-title">📡 Sync</h3>
+                    <p className="hint">Relay connected: <strong>{circleOf().relay.base}</strong>{(data._sync&&data._sync.lastSync)?" · last sync "+new Date(data._sync.lastSync).toLocaleString():""}</p>
+                    <button className="save-btn" onClick={circleSyncNow}>Sync now</button>{circleIsAdmin()&&<button className="cancel-btn" style={{marginTop:"0.5rem"}} onClick={()=>circleRotateNow(null)}>Rotate key now</button>}
+                    {circleIsAdmin()&&<><button className="cancel-btn" style={{marginTop:"0.5rem"}} onClick={circleRemoteInvite}>Invite a remote caregiver</button>
+                    {circleUI.remote&&(<div style={{marginTop:"0.6rem",padding:"0.6rem",background:"var(--color-background-info)",borderRadius:"8px"}}>
+                      <p className="hint" style={{marginTop:0}}>Send these to your co-caregiver over <strong>two different channels</strong> (e.g. the code by message, the passphrase by phone). The invite is single-use.</p>
+                      <strong style={{fontSize:"0.9375rem"}}>Invite code</strong>
+                      <textarea className="cf-input" readOnly rows={3} value={circleUI.remote.code} onFocus={e=>e.target.select()}/>
+                      <strong style={{fontSize:"0.9375rem"}}>Passphrase (separate channel)</strong>
+                      <input className="cf-input" readOnly value={circleUI.remote.pass} onFocus={e=>e.target.select()} style={{fontFamily:"monospace"}}/>
+                      <p className="hint" style={{marginTop:"0.4rem",marginBottom:"0.4rem"}}>Single-use · expires {new Date(circleUI.remote.expiresAt).toLocaleString()}. If you think both the code and passphrase leaked, also use <strong>Rotate key now</strong> above.</p>
+                      <button className="cancel-btn" onClick={()=>circleCancelPending(circleUI.remote.assignedId,circleUI.remote.inviteId)}>Cancel this invite</button>
+                    </div>)}</>}
+                  </div>
+                )}
+              </div>
+            )}
+            {circleUI.mode==="host"&&circleOf()&&(
+              <div className="section">
+                <h3 className="sec-title">Add a device</h3>
+                {!circleUI.host?(<>
+                  <p className="hint">On the <strong>new</strong> device open My Circle → "Join a circle", then scan its QR or paste its code here.</p>
+                  <button className="save-btn" onClick={()=>setCircleUI(u=>({...u,scanFor:"host"}))}>📷 Scan the new device's code</button>
+                  <textarea className="cf-input" id="hostIn" rows={3} placeholder="…or paste the new device's code" style={{marginTop:"0.5rem"}}/>
+                  <button className="save-btn" onClick={()=>circleHostRespond(document.getElementById("hostIn").value)}>Continue</button>
+                  <button className="cancel-btn" onClick={()=>setCircleUI({mode:null,host:null,join:null,err:""})}>Cancel</button>
+                </>):(<>
+                  <p className="hint">Let the new device <strong>scan this</strong> (or paste the code below):</p>
+                  <div style={{textAlign:"center",margin:"0.5rem 0"}}><CircleQR value={circleUI.host.qr2} size={240}/></div>
+                  <textarea className="cf-input" readOnly rows={3} value={circleUI.host.qr2} onFocus={e=>e.target.select()}/>
+                  <div className="sync-status sync-status-success">Confirm this 6-digit code matches on both devices: <strong>{circleUI.host.sas}</strong></div>
+                  <button className="save-btn" onClick={()=>setCircleUI({mode:null,host:null,join:null,err:""})}>Done</button>
+                </>)}
+              </div>
+            )}
+            {circleUI.mode==="join"&&circleUI.join&&(
+              <div className="section">
+                <h3 className="sec-title">Join a circle</h3>
+                {!circleUI.join.done?(<>
+                  <p className="hint">1 — let your <strong>existing</strong> device scan this (or paste the code on it):</p>
+                  <div style={{textAlign:"center",margin:"0.5rem 0"}}><CircleQR value={circleUI.join.qr1} size={240}/></div>
+                  <textarea className="cf-input" readOnly rows={3} value={circleUI.join.qr1} onFocus={e=>e.target.select()}/>
+                  <p className="hint">2 — scan the existing device's response, or paste it here:</p>
+                  <button className="save-btn" onClick={()=>setCircleUI(u=>({...u,scanFor:"join"}))}>📷 Scan the response</button>
+                  <textarea className="cf-input" id="joinIn" rows={3} placeholder="…or paste the existing device's response" style={{marginTop:"0.5rem"}}/>
+                  <button className="save-btn" onClick={()=>circleJoinComplete(document.getElementById("joinIn").value)}>Join</button>
+                  <button className="cancel-btn" onClick={()=>setCircleUI({mode:null,host:null,join:null,err:""})}>Cancel</button>
+                </>):(<>
+                  <div className="sync-status sync-status-success">Joined ✓ — confirm this 6-digit code matches the other device: <strong>{circleUI.join.sas}</strong></div>
+                  <button className="save-btn" onClick={()=>setCircleUI({mode:null,host:null,join:null,err:""})}>Done</button>
+                </>)}
+              </div>
+            )}
+          </>)}
           {view==="sync"&&(<>
             <h1 className="page-title">📡 Team Sync</h1>
             <p className="page-sub">Keep your care team in sync. Set up once, then just press Sync.</p>
@@ -5530,7 +7575,7 @@ export default function App() {
                       <div className="team-member-name">{m.name}{m.deviceId===(data.settings&&data.settings.deviceId)&&<span className="team-member-you"> (you)</span>}</div>
                       <div className="team-member-role">{(rl&&rl.icon)||"👤"} {m.role||(rl&&rl.label)||"Member"}</div>
                     </div>
-                    {isAdmin&&m.deviceId!==(data.settings&&data.settings.deviceId)&&<select value={m.role_key||"family"} onChange={e=>{const newKey=e.target.value;setData(p=>{const team={...p.settings.team,members:p.settings.team.members.map(x=>x.deviceId===m.deviceId?{...x,role_key:newKey}:x)};return{...p,settings:{...p.settings,team}}});flash(`${m.name} is now ${(ROLES.find(r=>r.key===newKey)||{}).label}`)}} className="cf-select" style={{width:"auto",fontSize:"0.8125rem",padding:"4px 8px"}}>{ROLES.filter(r=>!r.key.startsWith("client")).map(r=>(<option key={r.key} value={r.key}>{r.icon} {r.label}</option>))}</select>}
+                    {isAdmin&&m.deviceId!==(data.settings&&data.settings.deviceId)&&<select value={m.role_key||"family"} onChange={e=>{const newKey=e.target.value;setData(p=>{const team={...p.settings.team,members:p.settings.team.members.map(x=>x.deviceId===m.deviceId?{...x,role_key:newKey}:x)};return{...p,settings:{...p.settings,team}}});flash(`${m.name} is now ${(ROLES.find(r=>r.key===newKey)||{}).label}`)}} className="cf-select" style={{width:"auto",fontSize:"0.9375rem",padding:"4px 8px"}}>{ROLES.filter(r=>!r.key.startsWith("client")).map(r=>(<option key={r.key} value={r.key}>{r.icon} {r.label}</option>))}</select>}
                     <div className="team-member-sync">{m.lastSync?new Date(m.lastSync).toLocaleDateString():"Not synced"}</div>
                   </div>)})}
                 </div>
@@ -5585,6 +7630,35 @@ export default function App() {
                   <button onClick={cloudDisconnectStorage} className="cancel-btn" style={{flexShrink:0}}>Disconnect</button>
                 </div>):(<>
                   <p className="hint" style={{marginTop:2}}>Connect your own cloud storage. Your data is encrypted on this device first, so the provider only ever holds an unreadable file in a private app folder — and it syncs the same on iPhone, iPad, Android, and computers.</p>
+                  {unavailableProviders.length>0&&(<p className="hint" style={{marginTop:6}}>{unavailableProviders.map(id=>CLOUD_PROVIDERS[id].label).join(", ")} {unavailableProviders.length===1?"is":"are"} not offered here: {CLOUD_PROVIDERS[unavailableProviders[0]].unavailable} Dropbox and OneDrive connect without one.</p>)}
+                  {(()=>{ const fs=storageFailState(); if(!fs) return null; const ui=storageFailUI(fs.cls);
+                    return (<div className={"storage-fail"+(ui.alarm?" storage-fail-alarm":"")}>
+                      <div className="storage-fail-title">{ui.title}</div>
+                      <p className="hint" style={{margin:"4px 0 0"}}>{ui.body}</p>
+                      {ui.retry&&fs.nextAttemptAt&&<p className="hint" style={{margin:"4px 0 0"}}>Next attempt {new Date(fs.nextAttemptAt).toLocaleTimeString()}. Nothing is lost in the meantime.</p>}
+                      <div className="storage-fail-acts">
+                        {ui.action==="reconnect"&&<button className="save-btn" style={{margin:0}} onClick={reconnectStorage}>Reconnect</button>}
+                        {ui.action==="reupload"&&<button className="save-btn" style={{margin:0}} onClick={reuploadEverything}>Upload everything again</button>}
+                        <button className="text-btn" style={{margin:0}} onClick={cloudStorageSync}>Try now</button>
+                      </div>
+                    </div>); })()}
+                  {(()=>{ const auth=getCloudAuth(); if(!auth) return null;
+                    const caps=storageCaps(auth.provider);
+                    const st=storageStaleness((data._sync&&(data._sync.lastCloudOk||data._sync.lastSync))||null);
+                    const pending=outboxPending();
+                    return (<div className="storage-state">
+                      <div className="storage-state-row">
+                        <span className={"storage-dot storage-dot-"+(pending?"pending":st.level)}/>
+                        <span>{pending?(pending+" change"+(pending===1?"":"s")+" waiting to upload")
+                          :st.level==="never"?"Nothing uploaded yet"
+                          :st.days===0?"Cloud copy is up to date":("Cloud copy is "+st.days+" day"+(st.days===1?"":"s")+" old")}</span>
+                      </div>
+                      {st.stale&&(<p className="hint" style={{marginTop:6,marginBottom:0}}>{caps.auth==="session"
+                        ? "Your cloud copy is out of date. "+caps.label+" can only save while you have Care Guardian open — tap Sync now to bring it up to date."
+                        : "Your cloud copy hasn't updated in a while. Tap Sync now, and reconnect "+caps.label+" if it asks."}</p>)}
+                      {caps.note&&<p className="hint" style={{marginTop:6,marginBottom:0}}>{caps.note}</p>}
+                      {pending>0&&<p className="hint" style={{marginTop:6,marginBottom:0}}>Nothing is lost — those changes are saved on this device and will upload on the next successful sync.</p>}
+                    </div>); })()}
                   {configuredProviders.length>0?(<div className="cloud-provider-btns">
                     {configuredProviders.map(id=>{const p=CLOUD_PROVIDERS[id];return(
                       <button key={id} onClick={()=>cloudConnectStart(id)} className="cloud-provider-btn">
@@ -5595,7 +7669,7 @@ export default function App() {
                     <div className="sync-ios-note-head">Cloud sync isn't set up on this deployment yet</div>
                     <p className="hint" style={{marginTop:6}}>One-tap cloud sync (Dropbox, Google Drive, OneDrive) needs provider keys configured at deploy time — see DEPLOY.md. Until then, the methods below work everywhere, including iOS.</p>
                   </div>)}
-                  <p className="hint" style={{marginTop:8,fontSize:"0.8125rem"}}>On a desktop browser you can also <button className="linklike" onClick={()=>setShowFolderMethod(s=>!s)}>use a local synced folder</button> or a self-hosted server.</p>
+                  <p className="hint" style={{marginTop:8,fontSize:"0.9375rem"}}>On a desktop browser you can also <button className="linklike" onClick={()=>setShowFolderMethod(s=>!s)}>use a local synced folder</button> or a self-hosted server.</p>
                   {(showFolderMethod&&hasFileSystemAccess)&&(<div style={{marginTop:10}}>
                     {!cloudConnected?(<>
                       <div className="cloud-setup-steps">
@@ -5671,7 +7745,7 @@ export default function App() {
                     <div className="sync-method-icon">📋</div>
                     <div className="sync-method-info"><strong>Paste from Clipboard</strong><span>Copy sync data from chat first</span></div>
                   </div>
-                  <div className="sync-method-card" onClick={()=>(syncFileRef.current&&syncFileRef.current.click)()}>
+                  <div className="sync-method-card" onClick={()=>syncFileRef.current&&syncFileRef.current.click()}>
                     <div className="sync-method-icon">📁</div>
                     <div className="sync-method-info"><strong>Open File</strong><span>Select a sync file</span></div>
                   </div>
@@ -5682,7 +7756,7 @@ export default function App() {
                 </div>
                 <details className="sync-paste-details" style={{marginTop:12}}>
                   <summary className="sync-paste-summary">Manual paste fallback</summary>
-                  <textarea value={syncPullText} onChange={e=>setSyncPullText(e.target.value)} className="notes-ta" rows={3} placeholder='Paste encrypted sync data here...' style={{fontFamily:"monospace",fontSize:"0.8125rem"}}/>
+                  <textarea value={syncPullText} onChange={e=>setSyncPullText(e.target.value)} className="notes-ta" rows={3} placeholder='Paste encrypted sync data here...' style={{fontFamily:"monospace",fontSize:"0.9375rem"}}/>
                   <button onClick={()=>{if(syncPullText.trim())syncPullFromText(syncPullText.trim())}} className="save-btn" style={{marginTop:8}} disabled={!syncPullText.trim()}>Decrypt & Merge</button>
                 </details>
               </div>
@@ -5703,7 +7777,7 @@ export default function App() {
             <h1 className="page-title">✉ Care Team Messages</h1>
             <p className="page-sub">{hasTeam()?`${getTeam().name} — caring for ${getTeam().clientName}`:"A shared message board for care team coordination. Syncs via encrypted backup or team sync."}</p>
             {!isClient&&<div className="msg-compose">
-              {hasTeam()?(<div className="msg-sender"><div className="team-member-avatar" style={{width:28,height:28,fontSize:"0.8125rem"}}>{myName?myName[0].toUpperCase():"?"}</div><span className="msg-sender-name">{myName}{myRole&&<span className="msg-sender-role"> · {myRole}</span>}</span></div>
+              {hasTeam()?(<div className="msg-sender"><div className="team-member-avatar" style={{width:28,height:28,fontSize:"0.9375rem"}}>{myName?myName[0].toUpperCase():"?"}</div><span className="msg-sender-name">{myName}{myRole&&<span className="msg-sender-role"> · {myRole}</span>}</span></div>
               ):(<input value={msgFrom} onChange={e=>setMsgFrom(e.target.value)} placeholder="Your name" className="cf-input" style={{width:160}}/>)}
               <input value={msgText} onChange={e=>setMsgText(e.target.value)} onKeyDown={e=>e.key==="Enter"&&(hasTeam()?myName:msgFrom.trim())&&msgText.trim()&&sendMessage()} placeholder="Type a message…" className="cf-input" style={{flex:1}}/>
               <button onClick={()=>{if(hasTeam()&&myName){setMsgFrom(myName)}sendMessage()}} disabled={!msgText.trim()||!(hasTeam()?myName:msgFrom.trim())} className="save-btn" style={{opacity:msgText.trim()&&(hasTeam()?myName:msgFrom.trim())?1:.4}}>Send</button>
@@ -5712,7 +7786,7 @@ export default function App() {
               {(data.messages||[]).length===0?<p className="contacts-empty">No messages yet.{!hasTeam()?" Set up a care team in the Sync tab to get started.":""}</p>:
                 [...(data.messages||[])].reverse().map(m=>{const member=getMemberInfo(m.from);const isMe=m.from===myName;return(<div key={m.id} className={`msg-bubble ${isMe?"msg-self":""}`}>
                   <div className="msg-meta">
-                    {member&&<div className="team-member-avatar" style={{width:24,height:24,fontSize:"0.8125rem",background:isMe?"#457b9d":"#8d99ae"}}>{m.from[0].toUpperCase()}</div>}
+                    {member&&<div className="team-member-avatar" style={{width:24,height:24,fontSize:"0.9375rem",background:isMe?"#457b9d":"#8d99ae"}}>{m.from[0].toUpperCase()}</div>}
                     <strong>{m.from}</strong>{member&&<span className="msg-role">{member.role}</span>}
                     <span className="msg-time">{m.timestamp}</span>
                   </div>
@@ -5781,28 +7855,48 @@ export default function App() {
             <h1 className="page-title">⚙ Settings</h1>
             {isClient?<p className="page-sub">Settings are only available to caregivers.</p>:(<>
               <p className="page-sub">Protect, back up, and share your data.</p>
-              {activeGrants.length>0&&(<div className="prog-indicator" onClick={()=>nav("program")}>
-                <span className="prog-eye">👁</span>
-                <div className="prog-ind-main">{activeGrants.length===1?activeGrants[0].institution+" has a "+(GRANT_ARCHETYPES[activeGrants[0].archetype]||GRANT_ARCHETYPES.navigator).label.toLowerCase()+" view.":activeGrants.length+" care programs have a view."}<div className="prog-ind-sub">Tap to manage or stop.</div></div>
-                <span className="prog-ind-act">Manage ›</span>
-              </div>)}
+              <details className="settings-group" open><summary className="settings-group-summary"><span>🛡 Protect Your Data</span><span className="sg-chev">▾</span></summary><div className="settings-group-body">
               <div className="protect-steps">
                 <h3 className="protect-title">Three Steps to Protect Your Data</h3>
-                <p className="protect-sub">Do these once. You'll see a check when each is set.</p>
+                <p className="protect-sub">Each one is a single tap. You'll see a check when it's set.</p>
+                {/* These were three lines of text with status badges; only the first had a button, and the real
+                    controls lived in separate sections further down the same page titled "(Step 1)", "(Step 2)".
+                    Now each step IS its control. */}
                 <div className="protect-step"><span className="protect-num">1</span><div className="protect-main">
-                  <div className="protect-text"><strong>Protect your data from deletion by your browser.</strong></div>
-                  <div className="protect-foot">{storageDurable===true?<span className="protect-badge done">✓ Done</span>:<><span className="protect-badge not">○ Not done</span>{!isIOSDevice?<button className="protect-btn" onClick={async()=>{const ok=await requestPersistentStorage();setStorageDurable(ok);if(ok){setStorageAtRisk(false);flash("Protected — your browser will keep your data.")}else{flash("Your browser didn't grant it. Keep a backup as a safety net.")}}}>🛡️ Protect my data</button>:<span className="protect-ios">On iPhone: Share → Add to Home Screen</span>}</>}</div>
+                  <div className="protect-text"><strong>Stop your browser deleting your records.</strong> Browsers clear stored data when a device runs low on space.</div>
+                  <div className="protect-foot">{storageDurable===true?<span className="protect-badge done">✓ Protected</span>:(!isIOSDevice?<button className="protect-btn" onClick={async()=>{const ok=await requestPersistentStorage();setStorageDurable(ok);if(ok){setStorageAtRisk(false);flash("Protected — your browser will keep your data.")}else{flash("Your browser didn't grant it. A backup covers you either way.")}}}>Protect my data</button>:<span className="protect-ios">On iPhone: Share → Add to Home Screen</span>)}</div>
                 </div></div>
                 <div className="protect-step"><span className="protect-num">2</span><div className="protect-main">
-                  <div className="protect-text"><strong>Back up your data in a .care file</strong> to recover from crashes or a lost device.</div>
-                  <div className="protect-foot">{((data.settings&&data.settings.lastBackupAt)||backupStatus==="active")?<span className="protect-badge done">✓ Done</span>:<span className="protect-badge not">○ Not done</span>}</div>
+                  <div className="protect-text"><strong>Keep a safety copy.</strong> An encrypted <code>.care</code> file that survives a lost or broken device.</div>
+                  <div className="protect-foot">{(()=>{ const st=backupState(data,backupFp);
+                    if(backupStatus==="active"&&st.state==="up-to-date") return (<><span className="protect-badge done">✓ Saving automatically</span><span className="protect-when">{lastAutoBackupAt?"saved "+relTime(lastAutoBackupAt):""}</span></>);
+                    if(backupStatus==="paused") return (<><span className="protect-badge not">⚠ Paused</span><button className="protect-btn" onClick={resumeBackup}>Reconnect the file</button></>);
+                    if(st.state==="up-to-date") return (<><span className="protect-badge done">✓ Up to date</span><button className="protect-btn" onClick={backupNow}>Back up again</button></>);
+                    if(st.state==="behind") return (<><span className="protect-badge not">{st.changed} change{st.changed===1?"":"s"} not saved</span><button className="protect-btn" onClick={backupNow}>Save now</button></>);
+                    return (<><span className="protect-badge not">○ No copy yet</span>{hasFileSystemAccess?<button className="protect-btn" onClick={setupContinuousBackup}>Set up automatic backups</button>:<button className="protect-btn" onClick={backupNow}>Download a copy</button>}</>); })()}</div>
                 </div></div>
                 <div className="protect-step"><span className="protect-num">3</span><div className="protect-main">
-                  <div className="protect-text">If you're caregiving with others, <strong>establish a Team</strong> so changes made by one user can be seen by all users. Establishing a Team will also synchronize your data across all your devices.</div>
-                  <div className="protect-foot">{(data._sync&&data._sync.name)?<span className="protect-badge done">✓ Done</span>:<span className="protect-badge not">○ Not done</span>}</div>
+                  <div className="protect-text"><strong>Know how to get back in.</strong> Your recovery kit is the only way in if every device is lost.</div>
+                  <div className="protect-foot">{hasRecoveryKit()?<span className="protect-badge done">✓ Created</span>:<button className="protect-btn" onClick={()=>{ const el=document.getElementById("security-group");
+                    if(el){ el.open=true; el.scrollIntoView({behavior:"smooth",block:"start"}); flash("Your recovery kit is here, under Security & Integrity."); }
+                    else flash("Open Settings → Security & Integrity to create your recovery kit."); }}>Create my recovery kit</button>}</div>
                 </div></div>
+                {/* Team/circle moved to Team Management (David's decision) — it is a collaboration feature, and
+                    listing it here framed it as a protection step. A pointer stays, because multi-device copies
+                    genuinely do add durability. */}
+                {/* Diagnostic, because "why is there no install option?" was unanswerable from the outside. This
+                    reports what the BROWSER says, so a support conversation starts from facts rather than guesses
+                    about menus. */}
+                <details className="settings-group" style={{marginTop:12}}><summary className="settings-group-summary"><span>Storage &amp; install status</span><span className="sg-chev">▾</span></summary><div className="settings-group-body">
+                  <div className="diag-row"><span>Running as an installed app</span><strong>{isStandaloneNow()?"Yes":"No"}</strong></div>
+                  <div className="diag-row"><span>Browser offered an install prompt</span><strong>{canInstall()?"Yes":(isIOS?"Not applicable on iPhone":"No")}</strong></div>
+                  <div className="diag-row"><span>Storage marked persistent</span><strong>{storageDurable===true?"Yes":storageDurable===false?"No":"Unknown"}</strong></div>
+                  <div className="diag-row"><span>Safety copy</span><strong>{backupState(data,backupFp).state==="up-to-date"?"Up to date":backupState(data,backupFp).state==="behind"?"Behind":"None yet"}</strong></div>
+                  {canInstall()&&<button className="protect-btn" style={{marginTop:8}} onClick={installApp}>Install Care Guardian</button>}
+                  <p className="hint" style={{marginTop:8,marginBottom:0}}>If your browser hasn't offered an install prompt, Care Guardian can't create one — that decision belongs to the browser. It changes nothing about your records: they stay on this device either way, and a backup file is the safeguard that doesn't depend on any of this.</p>
+                </div></details>
+                <p className="protect-pointer">Caring with other people? Setting up <button className="link-btn" onClick={()=>nav("circle")}>My Circle</button> keeps everyone in step and puts a copy of the records on each device.</p>
               </div>
-              <details className="settings-group" open><summary className="settings-group-summary"><span>🛟 Keep your records safe</span><span className="sg-chev">▾</span></summary><div className="settings-group-body">
               <div className="section">
                 <h3 className="sec-title">🛡️ Storage durability (Step 1)</h3>
                 {storageDurable===true?(
@@ -5838,63 +7932,11 @@ export default function App() {
               <div className="section"><h3 className="sec-title">Save or restore a .care file (Step 2)</h3>
                 <p className="hint">Export your data with AES-256-GCM encryption. Import merges intelligently — new items are added, more recent changes win. Your passcodes and device ID are never overwritten.</p>
                 <div className="settings-row"><input value={exportPw} onChange={e=>setExportPw(e.target.value)} className="cf-input" placeholder="Export passcode" type="password" style={{width:200}}/><button onClick={handleEncryptedExport} className="save-btn">↓ Export Encrypted</button></div>
-                <div className="settings-row" style={{marginTop:12}}><input value={importPw} onChange={e=>setImportPw(e.target.value)} className="cf-input" placeholder="Import passcode" type="password" style={{width:200}}/><button onClick={()=>(importFileRef.current&&importFileRef.current.click)()} className="save-btn" style={{background:"#457b9d"}}>↑ Import & Merge</button></div>
+                <div className="settings-row" style={{marginTop:12}}><input value={importPw} onChange={e=>setImportPw(e.target.value)} className="cf-input" placeholder="Import passcode" type="password" style={{width:200}}/><button onClick={()=>importFileRef.current&&importFileRef.current.click()} className="save-btn" style={{background:"#457b9d"}}>↑ Import & Merge</button></div>
                 <p className="hint" style={{marginTop:12}}>Workflow: team member exports → shares file via text/Signal/AirDrop/Drive → you import → merge preview shows changes → you confirm.</p>
               </div>
               </div></details>
-              <details className="settings-group"><summary className="settings-group-summary"><span>📤 Bring records in, share records out</span><span className="sg-chev">▾</span></summary><div className="settings-group-body">
-              <div className="section"><h3 className="sec-title">Bring records in</h3>
-                <p className="hint">Scan a document, or import health records (FHIR), from the Documents screen.</p>
-                <button onClick={()=>nav("documents")} className="edit-btn" style={{marginTop:0}}>Go to Documents →</button>
-              </div>
-              {can("export-data")&&(<><div className="section"><h3 className="sec-title">Share your records</h3>
-                <p className="hint">Give your parent's records to a new doctor, a pharmacist, or family. You choose what to include and the format.</p>
-                <div className="share-card">
-                  <div className="share-q">What to include</div>
-                  <div className="share-chips">
-                    {[["meds","Medications"],["conditions","Conditions & notes"],["providers","Providers"],["appointments","Appointments"],["incidents","Incidents"],["carePlan","Care plan status"]].map(([k,label])=>(<button key={k} onClick={()=>setShareScope(s=>({...s,[k]:!s[k]}))} className={"share-chip "+(shareScope[k]?"on":"")}>{shareScope[k]?"✓ ":""}{label}</button>))}
-                  </div>
-                  <div className="share-q">Choose a format</div>
-                  <div className="share-fmts">
-                    <button onClick={handleSharePdf} className="share-fmt"><span className="share-fi">📄</span><span className="share-ft"><strong>PDF</strong><span>To print or email — for a person to read.</span></span></button>
-                    <button onClick={handleShareFhir} className="share-fmt"><span className="share-fi">🔗</span><span className="share-ft"><strong>Structured file (FHIR)</strong><span>For another clinic's system to load.</span></span></button>
-                  </div>
-                  <p className="share-warn">⚠ A PDF or structured file isn't encrypted. Only send it to someone you trust — it's a medical record. For a secure copy another Care Guardian can open, use <strong>Back up to a .care file</strong> under "Keep your records safe."</p>
-                </div>
-              </div>
-              <div className="section"><h3 className="sec-title">Send a status update (no health info)</h3>
-                <p className="hint">Progress only — no names, notes, or health details. Safe to email a funder or relative.</p>
-                <button onClick={handleNonSensitiveExport} className="edit-btn" style={{marginTop:0}}>↓ Export status summary</button>
-              </div></>)}
-              </div></details>
-              <details className="settings-group"><summary className="settings-group-summary"><span>🤝 Share with a care program</span><span className="sg-chev">▾</span></summary><div className="settings-group-body">
-              <div className="section">
-                <p className="hint">Grant a care navigator or program reviewer a scoped, consented, revocable view — encrypted so only they can open it.{activeGrants.length>0?" "+activeGrants.length+" active.":""}</p>
-                <button onClick={()=>nav("program")} className="save-btn" style={{marginTop:0}}>Manage care program access →</button>
-              </div>
-              </div></details>
-              <details className="settings-group"><summary className="settings-group-summary"><span>🔆 Display &amp; text size</span><span className="sg-chev">▾</span></summary><div className="settings-group-body">
-              <div className="section">
-                <h3 className="sec-title">Text size</h3>
-                <p className="hint">Make everything larger or smaller — this affects the whole app, and it's saved.</p>
-                <div className="textsize-btns">
-                  {[["Standard",1],["Large",1.15],["Larger",1.3],["Largest",1.5]].map(([label,v])=>{const active=(((data.settings&&data.settings.uiScale)||1)===v);return <button key={label} onClick={()=>setData(p=>({...p,settings:{...p.settings,uiScale:v}}))} className={`textsize-btn ${active?"textsize-active":""}`}>{label}</button>;})}
-                </div>
-              </div>
-              <div className="section">
-                <h3 className="sec-title">Large print &amp; roomy spacing</h3>
-                <p className="hint">Bigger text with more space between items and larger tap targets — easier on the eyes and on shaky hands.</p>
-                <label className="disp-toggle"><input type="checkbox" checked={!!(data.settings&&data.settings.largePrint)} onChange={e=>{const on=e.target.checked;setData(p=>{const s={...p.settings,largePrint:on};if(on&&(!s.uiScale||s.uiScale<1.15))s.uiScale=1.15;return{...p,settings:s}})}}/><span>{(data.settings&&data.settings.largePrint)?"On":"Off"}</span></label>
-              </div>
-              </div></details>
-              <details className="settings-group"><summary className="settings-group-summary"><span>🧭 This device &amp; access</span><span className="sg-chev">▾</span></summary><div className="settings-group-body">
-              <div className="section"><h3 className="sec-title">🗺 State / Region</h3>
-                <p className="hint">Choose your state for localized Medicaid thresholds, legal citations, program names, and resources. Generic mode provides universal guidance with no state-specific details.</p>
-                <div className="state-selector">
-                  {AVAILABLE_STATES.map(s=>(<button key={s.code} onClick={()=>switchState(s.code)} className={`state-btn ${((data.settings&&data.settings.stateCode)||"")===s.code?"state-btn-active":""}`}>{s.code?("🏛 "+s.name):("🌐 "+s.name)}</button>))}
-                </div>
-                <p className="hint" style={{marginTop:8}}>Current mode: <strong>{(data.settings&&data.settings.stateCode)?(AVAILABLE_STATES.find(s=>s.code===(data.settings&&data.settings.stateCode))||{}).name:"Generic"}</strong>{(data.settings&&data.settings.stateCode)?" — state-specific goals, citations, and thresholds are active.":" — universal guidance, no state-specific information."}</p>
-              </div>
+              <details className="settings-group" id="security-group"><summary className="settings-group-summary"><span>🔒 Security &amp; Integrity</span><span className="sg-chev">▾</span></summary><div className="settings-group-body">
               {can("change-passcodes")&&<div className="section"><h3 className="sec-title">Passcodes</h3>
                 <div className="cf-grid" style={{maxWidth:400}}>
                   <label className="cf-label">Caregiver passcode<input value={newCaregiverPw} onChange={e=>setNewCaregiverPw(e.target.value)} className="cf-input" placeholder="New caregiver passcode"/></label>
@@ -5902,16 +7944,7 @@ export default function App() {
                 </div>
                 <button onClick={updatePasscodes} className="save-btn" style={{marginTop:12}}>Update Passcodes</button>
               </div>
-              }<div className="section"><h3 className="sec-title">📡 Device Identity & Sync</h3>
-                <p className="hint">Each device has a unique ID used during sync. Set a name so team members know whose backup is whose.</p>
-                <div className="cf-grid" style={{maxWidth:400}}>
-                  <label className="cf-label">Device name<input value={(data.settings&&data.settings.deviceName)||""} onChange={e=>setData(p=>({...p,settings:{...p.settings,deviceName:e.target.value}}))} className="cf-input" placeholder="e.g., David's phone, Sarah's laptop"/></label>
-                  <label className="cf-label">Device ID<input value={(data.settings&&data.settings.deviceId)||""} readOnly className="cf-input" style={{color:"#a09a92",fontSize:"0.8125rem"}}/></label>
-                </div>
-                {(data._sync&&data._sync.lastMerge)&&<p className="hint" style={{marginTop:8}}>Last merge: {new Date(data._sync.lastMerge).toLocaleString()} from {data._sync.mergedFromName||data._sync.mergedFrom||"unknown"}</p>}
-              </div>
-              </div></details>
-              <details className="settings-group"><summary className="settings-group-summary"><span>🔒 Security &amp; integrity</span><span className="sg-chev">▾</span></summary><div className="settings-group-body">
+              }
               <div className="section">
                 <div className="integrity-row">
                   <span className="integrity-label">Audit log integrity</span>
@@ -5961,24 +7994,90 @@ export default function App() {
                   </>)
                 ):<p className="hint" style={{marginTop:2}}>Multi-factor sign-in is available for professional roles (Admin, Care Professional).</p>}
               </div>
-              </div></details>
-              <details className="settings-group"><summary className="settings-group-summary"><span>🧾 Diagnostics &amp; data</span><span className="sg-chev">▾</span></summary><div className="settings-group-body">
               <div className="section">
                 <p className="hint">Storage key: {SKEY} · Device: {(data.settings&&data.settings.deviceName)||(data.settings&&data.settings.deviceId)||"unnamed"} · Contacts: {(data.contacts&&data.contacts.length)||0} · Appointments: {(data.appointments&&data.appointments.length)||0} · Messages: {(data.messages&&data.messages.length)||0} · Incidents: {(data.incidents&&data.incidents.length)||0} · Expenses: {(data.expenses&&data.expenses.length)||0} · Meds: {getMedSchedule().medications.length} · Self-reports: {(data.selfReports&&data.selfReports.length)||0} · Docs: {(data.savedDocs&&data.savedDocs.length)||0}</p>
               </div>
               </div></details>
+              <details className="settings-group"><summary className="settings-group-summary"><span>👥 Team Management</span><span className="sg-chev">▾</span></summary><div className="settings-group-body">
+            <div className="hub-card" onClick={()=>nav("circle")}><div className="hub-card-icon" style={{background:"#dff3ef"}}><span>🔗</span></div><div className="hub-card-body"><div className="hub-card-title">My Circle{circleOf()?" · "+((data.circleRoster||[]).length)+" device(s)":""}</div><div className="hub-card-sub">{circleOf()?"Your synced devices & caregivers":"Set up multi-device sync"}</div></div><span className="hub-card-arr">›</span></div>
+            <div className="hub-card" onClick={()=>nav("sync")}><div className="hub-card-icon" style={{background:"var(--color-background-info)"}}><span style={{color:"var(--color-text-info)"}}>📡</span></div><div className="hub-card-body"><div className="hub-card-title">Sync</div><div className="hub-card-sub">{(data._sync&&data._sync.lastSync)?"Last: "+new Date(data._sync.lastSync).toLocaleString():"Not yet synced"}</div></div><span className="hub-card-arr">›</span></div>
+            {can("view-shifts")&&<div className="hub-card" onClick={()=>nav("schedule")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🗓</span></div><div className="hub-card-body"><div className="hub-card-title">Care schedule <span className="pill pill-b">{(data.careShifts||[]).filter(s=>new Date(s.date)>=new Date(new Date().toDateString())).length}</span></div><div className="hub-card-sub">Shifts, open shifts, swaps, visit logging</div></div><span className="hub-card-arr">›</span></div>}
+            {can("view-shifts")&&<div className="hub-card" onClick={()=>nav("shifts")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>👥</span></div><div className="hub-card-body"><div className="hub-card-title">Weekly grid</div><div className="hub-card-sub">Simple recurring shift pattern</div></div><span className="hub-card-arr">›</span></div>}
+              <div className="hub-card" onClick={()=>nav("availability")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🕐</span></div><div className="hub-card-body"><div className="hub-card-title">My availability</div><div className="hub-card-sub">Tell the team when you can take shifts</div></div><span className="hub-card-arr">›</span></div>
+              <div className="section"><h3 className="sec-title">📡 Device Identity & Sync</h3>
+                <p className="hint">Each device has a unique ID used during sync. Set a name so team members know whose backup is whose.</p>
+                <div className="cf-grid" style={{maxWidth:400}}>
+                  <label className="cf-label">Device name<input value={(data.settings&&data.settings.deviceName)||""} onChange={e=>setData(p=>({...p,settings:{...p.settings,deviceName:e.target.value}}))} className="cf-input" placeholder="e.g., David's phone, Sarah's laptop"/></label>
+                  <label className="cf-label">Device ID<input value={(data.settings&&data.settings.deviceId)||""} readOnly className="cf-input" style={{color:"#a09a92",fontSize:"0.9375rem"}}/></label>
+                </div>
+                {(data._sync&&data._sync.lastMerge)&&<p className="hint" style={{marginTop:8}}>Last merge: {new Date(data._sync.lastMerge).toLocaleString()} from {data._sync.mergedFromName||data._sync.mergedFrom||"unknown"}</p>}
+              </div>
+              </div></details>
+              <details className="settings-group"><summary className="settings-group-summary"><span>🔆 Display &amp; Customization</span><span className="sg-chev">▾</span></summary><div className="settings-group-body">
+              <div className="section">
+                <h3 className="sec-title">Text size</h3>
+                <p className="hint">Make everything larger or smaller — this affects the whole app, and it's saved.</p>
+                <div className="textsize-btns">
+                  {[["Standard",1],["Large",1.15],["Larger",1.3],["Largest",1.5]].map(([label,v])=>{const active=(((data.settings&&data.settings.uiScale)||1)===v);return <button key={label} onClick={()=>setData(p=>({...p,settings:{...p.settings,uiScale:v}}))} className={`textsize-btn ${active?"textsize-active":""}`}>{label}</button>;})}
+                </div>
+              </div>
+              <div className="section">
+                <h3 className="sec-title">Large print &amp; roomy spacing</h3>
+                <p className="hint">Bigger text with more space between items and larger tap targets — easier on the eyes and on shaky hands.</p>
+                <label className="disp-toggle"><input type="checkbox" checked={!!(data.settings&&data.settings.largePrint)} onChange={e=>{const on=e.target.checked;setData(p=>{const s={...p.settings,largePrint:on};if(on&&(!s.uiScale||s.uiScale<1.15))s.uiScale=1.15;return{...p,settings:s}})}}/><span>{(data.settings&&data.settings.largePrint)?"On":"Off"}</span></label>
+              </div>
+              <div className="section"><h3 className="sec-title">🗺 State / Region</h3>
+                <p className="hint">Choose your state for localized Medicaid thresholds, legal citations, program names, and resources. Generic mode provides universal guidance with no state-specific details.</p>
+                <div className="state-selector">
+                  {AVAILABLE_STATES.map(s=>(<button key={s.code} onClick={()=>switchState(s.code)} className={`state-btn ${((data.settings&&data.settings.stateCode)||"")===s.code?"state-btn-active":""}`}>{s.code?("🏛 "+s.name):("🌐 "+s.name)}</button>))}
+                </div>
+                <p className="hint" style={{marginTop:8}}>Current mode: <strong>{(data.settings&&data.settings.stateCode)?(AVAILABLE_STATES.find(s=>s.code===(data.settings&&data.settings.stateCode))||{}).name:"Generic"}</strong>{(data.settings&&data.settings.stateCode)?" — state-specific goals, citations, and thresholds are active.":" — universal guidance, no state-specific information."}</p>
+              </div>
+              </div></details>
+              <div className="hub-card" onClick={()=>nav("help")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>?</span></div><div className="hub-card-body"><div className="hub-card-title">Help</div><div className="hub-card-sub">Feature guide</div></div><span className="hub-card-arr">›</span></div>
+            </>)}
+          </>)}
+
+          {/* ═══ RECORDS IN & OUT ═══ */}
+          {view==="datashare"&&(<>
+            <h1 className="page-title">📤 Records In &amp; Out</h1>
+            {isClient?<p className="page-sub">Available to caregivers.</p>:(<>
+            <p className="page-sub">Bring records in; share records out.</p>
+              <div className="section"><h3 className="sec-title">Bring records in</h3>
+                <p className="hint">Scan a document, or import health records (FHIR), from the Documents screen.</p>
+                <button onClick={()=>nav("documents")} className="edit-btn" style={{marginTop:0}}>Go to Documents →</button>
+              </div>
+              {can("export-data")&&(<><div className="section"><h3 className="sec-title">Share your records</h3>
+                <p className="hint">Give your parent's records to a new doctor, a pharmacist, or family. You choose what to include and the format.</p>
+                <div className="share-card">
+                  <div className="share-q">What to include</div>
+                  <div className="share-chips">
+                    {[["meds","Medications"],["conditions","Conditions & notes"],["providers","Providers"],["appointments","Appointments"],["incidents","Incidents"],["carePlan","Care plan status"]].map(([k,label])=>(<button key={k} onClick={()=>setShareScope(s=>({...s,[k]:!s[k]}))} className={"share-chip "+(shareScope[k]?"on":"")}>{shareScope[k]?"✓ ":""}{label}</button>))}
+                  </div>
+                  <div className="share-q">Choose a format</div>
+                  <div className="share-fmts">
+                    <button onClick={handleSharePdf} className="share-fmt"><span className="share-fi">📄</span><span className="share-ft"><strong>PDF</strong><span>To print or email — for a person to read.</span></span></button>
+                    <button onClick={handleShareFhir} className="share-fmt"><span className="share-fi">🔗</span><span className="share-ft"><strong>Structured file (FHIR)</strong><span>For another clinic's system to load.</span></span></button>
+                  </div>
+                  <p className="share-warn">⚠ A PDF or structured file isn't encrypted. Only send it to someone you trust — it's a medical record. For a secure copy another Care Guardian can open, use <strong>Back up to a .care file</strong> under "Keep your records safe."</p>
+                </div>
+              </div>
+              <div className="section"><h3 className="sec-title">Send a status update (no health info)</h3>
+                <p className="hint">Progress only — no names, notes, or health details. Safe to email a funder or relative.</p>
+                <button onClick={handleNonSensitiveExport} className="edit-btn" style={{marginTop:0}}>↓ Export status summary</button>
+              </div></>)}
             </>)}
           </>)}
 
           {/* ═══ DOCUMENTS ═══ */}
           {view==="documents"&&(<>
             <div className="contacts-header"><div><h1 className="page-title">📄 Document Scanner</h1><p className="page-sub" style={{margin:"4px 0 0"}}>Upload PDFs or text files. Medications and lab results are extracted automatically — no data leaves your device.</p></div>
-              {!isClient&&<button onClick={()=>(docFileRef.current&&docFileRef.current.click)()} className="save-btn" disabled={docProcessing}>{docProcessing?"Processing…":"↑ Upload Document"}</button>}
+              {!isClient&&<button onClick={()=>docFileRef.current&&docFileRef.current.click()} className="save-btn" disabled={docProcessing}>{docProcessing?"Processing…":"↑ Upload Document"}</button>}
             </div>
 
             {!isClient&&<div className="section" style={{marginBottom:16}}><h3 className="sec-title">Import Health Records (FHIR R4)</h3>
               <p className="hint">Have a FHIR R4 JSON Bundle from a patient portal or provider? Import it to extract practitioners, conditions, and medications directly into your records.</p>
-              <button onClick={()=>(fhirFileRef.current&&fhirFileRef.current.click)()} className="edit-btn" style={{marginTop:0}}>↑ Import FHIR Bundle</button>
+              <button onClick={()=>fhirFileRef.current&&fhirFileRef.current.click()} className="edit-btn" style={{marginTop:0}}>↑ Import FHIR Bundle</button>
             </div>}
 
             {/* saved documents library */}
@@ -6031,28 +8130,69 @@ export default function App() {
                   {doc.sections.map((s,i)=>(<div key={i} className="doc-section-card"><h4 className="doc-section-title">{s.title}</h4><p className="doc-section-body">{s.body}</p></div>))}
                 </div>)}
 
-                {doc.rawText&&(<details className="doc-raw-details"><summary className="doc-raw-summary">View raw extracted text</summary>
-                  <pre className="doc-raw-text">{doc.rawText}</pre>
-                </details>)}
+                {(doc.diagnoses&&doc.diagnoses.length>0)&&(<div style={{marginBottom:20}}>
+                  <h4 className="sync-sub-title">🩺 Diagnoses</h4>
+                  {doc.diagnoses.map((d,i)=>(<div key={i} className="doc-section-card"><strong>{d.text}</strong>{d.code&&<span className="hint" style={{marginLeft:6}}>{d.code}</span>}</div>))}
+                </div>)}
+                {(doc.conclusions&&doc.conclusions.length>0)&&(<div style={{marginBottom:20}}>
+                  <h4 className="sync-sub-title">📝 Clinical conclusions</h4>
+                  {doc.conclusions.map((c,i)=>(<div key={i} className="doc-section-card"><h4 className="doc-section-title">{c.title}</h4><p className="doc-section-body">{c.body}{c.truncated?" …":""}</p>{c.truncated&&<span className="hint">Shortened when saved.</span>}</div>))}
+                </div>)}
+                <p className="hint" style={{marginTop:12}}>📋 From this document, Care Guardian saved only the medications, test results, diagnoses, and clinical conclusions shown here. The document's own text is not stored on this device.</p>
               </div>);})()}
 
-            {docProcessing&&<div className="doc-processing"><div className="doc-spinner"/>Extracting text and parsing document…</div>}
+            {docProcessing&&(<div className="doc-processing"><div className="doc-spinner"/>
+              <div style={{display:"flex",flexDirection:"column",alignItems:"flex-start",gap:6}}>
+                <span>Reading{(docCancelRef.current&&docCancelRef.current.name)?(" \u201C"+docCancelRef.current.name+"\u201D"):" the document"}\u2026</span>
+                <button className="cancel-btn" style={{marginTop:0,padding:"0.25rem 0.7rem",fontSize:"0.9375rem"}} onClick={cancelDocUpload}>Cancel</button>
+              </div>
+            </div>)}
 
             {docResult&&(<>
               {/* detected type + category selector + save to library */}
               <div className="doc-type-row">
                 <div className="doc-type-badge">{docResult.docType.icon} Detected: <strong>{docResult.docType.label}</strong> · {docResult.fileName}</div>
                 {!isClient&&<div className="doc-save-row">
-                  <select value={docSaveCategory} onChange={e=>setDocSaveCategory(e.target.value)} className="cf-input" style={{width:180,fontSize:"0.8125rem"}}>
+                  <select value={docSaveCategory} onChange={e=>setDocSaveCategory(e.target.value)} className="cf-input" style={{width:180,fontSize:"0.9375rem"}}>
                     {DOC_CATEGORIES.filter(c=>c.key!=="all").map(c=><option key={c.key} value={c.key}>{c.icon} {c.label}</option>)}
                   </select>
-                  <button onClick={()=>saveDocToLibrary()} className="save-btn" style={{fontSize:"0.8125rem",padding:"7px 14px"}}>Save to Library</button>
+                  <button onClick={()=>saveDocToLibrary()} className="save-btn" style={{fontSize:"0.9375rem",padding:"7px 14px"}}>Save to Library</button>
                 </div>}
               </div>
 
               {/* medication table */}
+              {((docResult.diagnoses||[]).length>0||(docResult.conclusions||[]).length>0)&&(<div className="section">
+                <h3 className="sec-title">🩺 Diagnoses &amp; clinical conclusions</h3>
+                <p className="hint" style={{marginTop:0}}>These are saved with the document, along with medications and test results.</p>
+                {(docResult.diagnoses||[]).length>0&&(<>
+                  <div className="hub-section-label">Diagnoses ({(docResult.diagnoses||[]).length})</div>
+                  {(docResult.diagnoses||[]).map((d,i)=>(<div key={i} className="doc-section-card"><strong>{d.text}</strong>{d.code&&<span className="hint" style={{marginLeft:6}}>{d.code}</span>}</div>))}
+                </>)}
+                {(docResult.conclusions||[]).length>0&&(<>
+                  <div className="hub-section-label">Clinical conclusions</div>
+                  {(docResult.conclusions||[]).map((c,i)=>(<div key={i} className="doc-section-card"><h4 className="doc-section-title">{c.title}</h4><p className="doc-section-body">{c.body}{c.truncated?" …":""}</p>{c.truncated&&<span className="hint">Shortened to keep the saved record small — the full text is above and is not saved.</span>}</div>))}
+                </>)}
+              </div>)}
+
+              {!isClient&&docMeds.length>0&&(()=>{ const plan=getDocMedChanges(); const n=plan.toAdd.length+plan.toDiscontinue.length+plan.toUpdate.length; return (
+                <div className="section">
+                  <h3 className="sec-title">🔄 Medication changes in this document</h3>
+                  {docMedsApplied?(<div className="sync-status sync-status-success">✓ Applied to Medication Management. See the change log there for the full history.</div>):
+                   n===0?(<p className="hint">Nothing new — these medications already match the schedule.</p>):(<>
+                    {plan.toAdd.length>0&&(<><div className="hub-section-label">New ({plan.toAdd.length})</div>
+                      {plan.toAdd.map(m=>(<div key={m.key} className="doc-section-card"><strong>{m.name}</strong> {m.dosage} <span className="hint">→ {m.timeSlots.join(", ")}</span></div>))}</>)}
+                    {plan.toDiscontinue.length>0&&(<><div className="hub-section-label">Discontinued ({plan.toDiscontinue.length})</div>
+                      {plan.toDiscontinue.map(m=>(<div key={m.key} className="doc-section-card"><strong>{m.name}</strong> {m.dosage} <span className="hint">→ will be marked stopped</span></div>))}</>)}
+                    {plan.toUpdate.length>0&&(<><div className="hub-section-label">Dose changed ({plan.toUpdate.length})</div>
+                      {plan.toUpdate.map(m=>(<div key={m.key} className="doc-section-card"><strong>{m.name}</strong> <span className="hint">{m.from} → {m.to}</span></div>))}</>)}
+                    <p className="hint">Check these against the document before applying — medication text is read automatically and can be misread.</p>
+                    <button className="save-btn" onClick={()=>applyDocMedChanges(plan)}>Apply {n} change{n===1?"":"s"} to Medication Management</button>
+                  </>)}
+                </div>); })()}
+
               {docMeds.length>0&&(<div className="section">
                 <h3 className="sec-title">💊 Extracted Medications ({docMeds.length})</h3>
+                <p className="hint" style={{marginTop:0}}>From a document, only medications, test results, diagnoses, and clinical conclusions are saved — its text is never stored.</p>
                 <p className="hint">Review and edit the table below, then save to your care notes.</p>
                 <div className="doc-table-wrap"><table className="doc-table">
                   <thead><tr><th>Medication</th><th>Dosage</th><th>Frequency</th><th>Route</th><th>Notes</th>{!isClient&&<th></th>}</tr></thead>
@@ -6096,43 +8236,31 @@ export default function App() {
               {(docResult.sections&&docResult.sections.length)>0&&docResult.docType.key==="clinical"&&(<div className="section">
                 <h3 className="sec-title">📋 Clinical Note Sections</h3>
                 {docResult.sections.map((s,i)=>(<div key={i} className="doc-section-card"><h4 className="doc-section-title">{s.title}</h4><p className="doc-section-body">{s.body}</p></div>))}
-                {!isClient&&<div className="doc-table-actions"><label className="cf-label" style={{flexDirection:"row",alignItems:"center",gap:8}}>Save full text to:
-                  <select className="cf-input" style={{width:180}} onChange={e=>{if(e.target.value)saveRawTextToNotes(e.target.value);e.target.value=""}}><option value="">Select domain…</option>{DOMAINS.map(d=><option key={d.key} value={d.key}>{d.icon} {getDomLabel(d.key)}</option>)}</select>
-                </label></div>}
+                <p className="hint">Shown for review. Assessment, plan, impression, and follow-up sections are saved as clinical conclusions; the rest of the text is not stored.</p>
               </div>)}
 
               {/* no structured data found */}
               {docMeds.length===0&&docLabs.length===0&&(docResult.docType.key!=="clinical"||!(docResult.sections&&docResult.sections.length))&&(
                 <div className="section">
-                  <h3 className="sec-title">Raw Extracted Text</h3>
-                  <p className="hint">No structured medications or lab results were detected. You can save the raw text to a care domain.</p>
+                  <h3 className="sec-title">No medications or test results found</h3>
+                  <p className="hint">This document didn't contain medications, test results, or diagnoses that could be read automatically, so there is nothing to save. The text below is shown for review only and is not stored — you can add anything important by hand.</p>
                   <pre className="doc-raw-text">{docResult.rawText.slice(0,3000)}{docResult.rawText.length>3000?"…(truncated)":""}</pre>
-                  {!isClient&&<div className="doc-table-actions"><label className="cf-label" style={{flexDirection:"row",alignItems:"center",gap:8}}>Save to:
-                    <select className="cf-input" style={{width:180}} onChange={e=>{if(e.target.value)saveRawTextToNotes(e.target.value);e.target.value=""}}><option value="">Select domain…</option>{DOMAINS.map(d=><option key={d.key} value={d.key}>{d.icon} {getDomLabel(d.key)}</option>)}</select>
-                  </label></div>}
                 </div>
               )}
 
-              {/* always show raw text toggle */}
-              {(docMeds.length>0||docLabs.length>0)&&(<details className="doc-raw-details"><summary className="doc-raw-summary">View raw extracted text</summary>
-                <pre className="doc-raw-text">{docResult.rawText.slice(0,3000)}{docResult.rawText.length>3000?"…(truncated)":""}</pre>
-                {!isClient&&<div className="doc-table-actions" style={{marginTop:8}}><label className="cf-label" style={{flexDirection:"row",alignItems:"center",gap:8}}>Save raw text to:
-                  <select className="cf-input" style={{width:180}} onChange={e=>{if(e.target.value)saveRawTextToNotes(e.target.value);e.target.value=""}}><option value="">Select domain…</option>{DOMAINS.map(d=><option key={d.key} value={d.key}>{d.icon} {getDomLabel(d.key)}</option>)}</select>
-                </label></div>}
-              </details>)}
             </>)}
 
             {!docResult&&!docProcessing&&(<div className="contacts-empty">
               <p style={{fontSize:"1rem",marginBottom:8}}>📄 Upload a PDF or text file to get started.</p>
               <p>Supported: medication lists, lab results, clinical notes, and general documents.</p>
-              <p style={{marginTop:12,fontSize:"0.8125rem",color:"#a09a92"}}>Text-based PDFs are extracted automatically. Scanned documents may require manual entry.<br/>All processing happens locally in your browser — nothing is uploaded or sent anywhere.</p>
+              <p style={{marginTop:12,fontSize:"0.9375rem",color:"#a09a92"}}>Text-based PDFs are extracted automatically. Scanned documents may require manual entry.<br/>All processing happens locally in your browser — nothing is uploaded or sent anywhere.</p>
             </div>)}
           </>)}
 
           {/* ═══ CONTACTS (list) ═══ */}
           {view==="contacts"&&!contactDetail&&(<>
             <div className="contacts-header"><div><h1 className="page-title">☷ Care Team Contacts</h1></div>
-              {!isClient&&<div className="contacts-header-actions"><button onClick={()=>(fileRef.current&&fileRef.current.click)()} className="edit-btn" style={{marginTop:0}}>↑ Import vCard</button><button onClick={()=>setContactForm({mode:"add",contact:{...EMPTY_CONTACT}})} className="save-btn">+ Add</button></div>}
+              {!isClient&&<div className="contacts-header-actions"><button onClick={()=>fileRef.current&&fileRef.current.click()} className="edit-btn" style={{marginTop:0}}>↑ Import vCard</button><button onClick={()=>setContactForm({mode:"add",contact:{...EMPTY_CONTACT}})} className="save-btn">+ Add</button></div>}
             </div>
             <div className="contacts-controls">
               <div className="cc-group"><span className="cc-label">Sort:</span><button onClick={()=>setContactSort("category")} className={`cc-btn ${contactSort==="category"?"cc-active":""}`}>Category</button><button onClick={()=>setContactSort("alpha")} className={`cc-btn ${contactSort==="alpha"?"cc-active":""}`}>A → Z</button></div>
@@ -6192,10 +8320,10 @@ export default function App() {
                       return(<div key={si} className={`sub-item sub-typed ${isDone?"sub-done":""} ${isOverdue||isStale?"sub-overdue":""}`}>
                         <div className="sub-type-badge" style={{color:tt.color}} title={`${tt.label}${interval?" — every "+interval+" days":""}`}>{tt.icon}</div>
                         {type==="O"?(
-                          !isClient?<input type="checkbox" checked={st.done} onChange={()=>toggleSub(activeDom.key,gi,si)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:"0.8125rem"}}>{st.done?"✓":"○"}</span>
+                          !isClient?<input type="checkbox" checked={st.done} onChange={()=>toggleSub(activeDom.key,gi,si)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:"0.9375rem"}}>{st.done?"✓":"○"}</span>
                         ):(
                           !isClient?<button onClick={()=>toggleSub(activeDom.key,gi,si)} className="sub-attend-btn" title="Mark as attended today" style={{background:age!==null&&age<7?"#e8f0df":"transparent",borderColor:age!==null&&age<7?"#718355":"#e5e1db"}}>✓</button>
-                          :<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:"0.8125rem"}}>{age!==null&&age<7?"✓":"○"}</span>
+                          :<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:"0.9375rem"}}>{age!==null&&age<7?"✓":"○"}</span>
                         )}
                         <div style={{flex:1,minWidth:0}}>
                           {!isClient&&(editing&&editing.type)==="sub"&&editing.gi===gi&&editing.si===si?(<div className="inline-edit" onClick={e=>e.preventDefault()}><input ref={editRef} value={editText} onChange={e=>setEditText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveEdit();if(e.key==="Escape")cancelEdit()}} className="inline-edit-input"/><button onClick={e=>{e.preventDefault();saveEdit()}} className="inline-edit-save">✓</button><button onClick={e=>{e.preventDefault();cancelEdit()}} className="inline-edit-cancel">✕</button></div>
@@ -6208,8 +8336,8 @@ export default function App() {
                         {can("remove-subtask")&&<button onClick={()=>removeSub(activeDom.key,gi,si)} className="remove-sub" title="Remove this sub-task">×</button>}
                       </div>)})}
                     {/* Show removed subs count with restore option */}
-                    {(()=>{const removedCount=goal.subs.filter((_,si)=>getSubState(activeDom.key,gi,si).removed).length;return removedCount>0&&!isClient?(<details className="removed-subs-details"><summary className="removed-subs-summary">{removedCount} removed sub-task{removedCount>1?"s":""}</summary><div className="removed-subs-list">{goal.subs.map((subDef,si)=>{const st=getSubState(activeDom.key,gi,si);if(!st.removed)return null;return(<div key={si} className="sub-item sub-removed"><span className="sub-text" style={{color:"#c5c0b8",flex:1}}>{getSubText(activeDom.key,gi,si)}</span><button onClick={()=>restoreSub(activeDom.key,gi,si)} className="edit-btn" style={{marginTop:0,fontSize:"0.8125rem",padding:"3px 10px"}}>Restore</button></div>)})}</div></details>):null})()}                    {gd.customSubs.map((cs,ci)=>(<label key={`c${ci}`} className="sub-item sub-custom" style={{background:cs.done?"#f5f9f0":"#faf9f7"}}>
-                      {!isClient?<input type="checkbox" checked={cs.done} onChange={()=>toggleCustomSub(activeDom.key,gi,ci)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:"0.8125rem"}}>{cs.done?"✓":"○"}</span>}
+                    {(()=>{const removedCount=goal.subs.filter((_,si)=>getSubState(activeDom.key,gi,si).removed).length;return removedCount>0&&!isClient?(<details className="removed-subs-details"><summary className="removed-subs-summary">{removedCount} removed sub-task{removedCount>1?"s":""}</summary><div className="removed-subs-list">{goal.subs.map((subDef,si)=>{const st=getSubState(activeDom.key,gi,si);if(!st.removed)return null;return(<div key={si} className="sub-item sub-removed"><span className="sub-text" style={{color:"#c5c0b8",flex:1}}>{getSubText(activeDom.key,gi,si)}</span><button onClick={()=>restoreSub(activeDom.key,gi,si)} className="edit-btn" style={{marginTop:0,fontSize:"0.9375rem",padding:"3px 10px"}}>Restore</button></div>)})}</div></details>):null})()}                    {gd.customSubs.map((cs,ci)=>(<label key={`c${ci}`} className="sub-item sub-custom" style={{background:cs.done?"#f5f9f0":"#faf9f7"}}>
+                      {!isClient?<input type="checkbox" checked={cs.done} onChange={()=>toggleCustomSub(activeDom.key,gi,ci)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:"0.9375rem"}}>{cs.done?"✓":"○"}</span>}
                       <span className="sub-text" style={{flex:1,textDecoration:cs.done?"line-through":"none",color:cs.done?"#a09a92":"#3d3730"}}>{cs.text}</span>
                       {!isClient&&<button onClick={e=>{e.preventDefault();removeCustomSub(activeDom.key,gi,ci)}} className="remove-sub">×</button>}
                     </label>))}
@@ -6233,10 +8361,9 @@ export default function App() {
         </div>
       </main>
       <nav className="hub-bar">
-        <button onClick={()=>navHub("today")} className={`hub-btn ${currentHub==="today"?"hub-active":""}`}><span className="hub-btn-icon">☀</span><span className="hub-btn-label">Today</span></button>
-        <button onClick={()=>navHub("care")} className={`hub-btn ${currentHub==="care"?"hub-active":""}`}><span className="hub-btn-icon">♥</span><span className="hub-btn-label">Care plan</span></button>
-        <button onClick={()=>navHub("records")} className={`hub-btn ${currentHub==="records"?"hub-active":""}`}><span className="hub-btn-icon">📁</span><span className="hub-btn-label">Records</span></button>
-        <button onClick={()=>navHub("team")} className={`hub-btn ${currentHub==="team"?"hub-active":""}`}><span className="hub-btn-icon">👥</span><span className="hub-btn-label">Team</span></button>
+        <button onClick={()=>navHub("caremgmt")} className={`hub-btn ${currentHub==="caremgmt"?"hub-active":""}`}><span className="hub-btn-icon">♥</span><span className="hub-btn-label">Care</span></button>
+        <button onClick={()=>navHub("docs")} className={`hub-btn ${currentHub==="docs"?"hub-active":""}`}><span className="hub-btn-icon">📁</span><span className="hub-btn-label">Documents</span></button>
+        <button onClick={()=>navHub("settings")} className={`hub-btn ${currentHub==="settings"?"hub-active":""}`}><span className="hub-btn-icon">⚙</span><span className="hub-btn-label">Settings</span></button>
       </nav>
     </div>
   </>);
@@ -6246,14 +8373,14 @@ export default function App() {
 const CSS=`
 :root,*{color-scheme:light}
 /* Fonts (Libre Baskerville, Source Sans 3) are bundled locally via @fontsource — no external requests. */
-html{font-size:var(--ui-scale-pct,100%);-webkit-text-size-adjust:100%}*{box-sizing:border-box;margin:0;color:inherit}body{margin:0;font-size:1rem;background:#f6f4f0;color:#3d3730}button{cursor:pointer;color:inherit;background:transparent;border:none}button:hover{opacity:.92}
+html{font-size:calc(var(--ui-scale-pct,100%) * var(--screen-boost,1));-webkit-text-size-adjust:100%}*{box-sizing:border-box;margin:0;color:inherit}body{margin:0;font-size:1rem;background:#f6f4f0;color:#3d3730}button{cursor:pointer;color:inherit;background:transparent;border:none}button:hover{opacity:.92}
 .auth-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(150deg,#faf9f7,#ede8df);font-family:'Libre Baskerville',Georgia,serif;padding:20px}
-.auth-card{background:#fff;border-radius:18px;padding:40px 32px;max-width:360px;width:100%;text-align:center;box-shadow:0 1px 2px rgba(61,55,48,.04),0 12px 32px rgba(61,55,48,.08);border:1px solid rgba(61,55,48,.05)}
-.auth-title{font-size:1.5rem;font-weight:700;color:#3d3730;margin:0 0 10px}.auth-sub{font-size:0.875rem;color:#6b6560;line-height:1.6;margin:0 0 22px}.auth-note{font-size:0.8125rem;color:#a09a92;font-style:italic}
+.auth-card{background:#fff;border-radius:18px;padding:clamp(32px,4vw,64px) clamp(26px,4vw,64px);max-width:min(860px,94vw);width:100%;text-align:center;box-shadow:0 1px 2px rgba(61,55,48,.04),0 12px 32px rgba(61,55,48,.08);border:1px solid rgba(61,55,48,.05)}
+.auth-title{font-size:1.5rem;font-weight:700;color:#3d3730;margin:0 0 10px}.auth-sub{font-size:0.9375rem;color:#6b6560;line-height:1.6;margin:0 0 22px}.auth-note{font-size:0.9375rem;color:#a09a92;font-style:italic}
 .auth-input{width:100%;padding:14px 16px;font-size:1.0625rem;border-radius:12px;border:1.5px solid #d5d0c8;outline:none;text-align:center;background:#fdfcfa;color:#3d3730;transition:border-color .15s,box-shadow .15s;margin-bottom:12px;-webkit-appearance:none}
 .auth-input::placeholder{letter-spacing:normal;color:#a8a29a;font-weight:400;opacity:1}
 .auth-input:focus{border-color:#457b9d;box-shadow:0 0 0 3px rgba(69,123,157,.12)}
-.auth-input-err{border-color:#b56576!important}.auth-error{color:#b56576;font-size:0.8125rem;margin:0 0 8px}
+.auth-input-err{border-color:#b56576!important}.auth-error{color:#b56576;font-size:0.9375rem;margin:0 0 8px}
 .sync-ios-note{background:#f3f6f9;border:1px solid #d4e0ea;border-radius:14px;padding:16px 16px 18px;margin-top:4px}
 .sync-ios-note-head{font-size:0.9375rem;font-weight:700;color:#2f4858}
 .sync-ios-paths{display:flex;flex-direction:column;gap:10px;margin-top:12px}
@@ -6263,26 +8390,67 @@ html{font-size:var(--ui-scale-pct,100%);-webkit-text-size-adjust:100%}*{box-sizi
 .sync-ios-path-icon{font-size:1.625rem;flex-shrink:0}
 .sync-ios-path>span:last-child{display:flex;flex-direction:column;gap:2px}
 .sync-ios-path strong{font-size:0.9375rem;color:#2f4858}
-.sync-ios-path span span,.sync-ios-path>span:last-child span{font-size:0.8125rem;color:#6b7785;font-weight:400}
+.sync-ios-path span span,.sync-ios-path>span:last-child span{font-size:0.9375rem;color:#6b7785;font-weight:400}
+.rv-flash-bad{background:#fdecee;border-color:#e8c4ca;color:#8d4a58}
+@media(max-width:640px){.nudge{flex-wrap:wrap}.nudge-body{flex:1 1 100%;min-width:0}.nudge-act{margin-top:8px}}
+.diag-row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid #f1ede7;font-size:0.9375rem}
+.protect-when{font-size:0.9375rem;color:#8d99ae;margin-left:8px}
+.protect-pointer{font-size:0.9375rem;color:#6b6560;margin:14px 0 0;line-height:1.5}
+.protect-btn{margin-left:0}
+.protect-foot{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px}
+.storage-choice{display:flex;flex-direction:column;gap:10px;margin:16px 0}
+.storage-opt{text-align:left;padding:14px 16px;border:1px solid #e0dbd3;background:#fff;border-radius:12px;cursor:pointer;font:inherit}
+.storage-opt:hover{border-color:#5b7553;background:#fbfaf8}
+.storage-opt-title{font-weight:700;color:#3d3a36;margin-bottom:3px}
+.storage-opt-sub{font-size:0.9375rem;color:#6b6560;line-height:1.45}
+.storage-gate{border:1px solid #e8d9b8;background:#fdf8ee;border-radius:12px;padding:13px 15px;margin:14px 0;text-align:left}
+.storage-nudge{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;border:1px solid #e8d9b8;background:#fdf8ee;border-radius:12px;padding:12px 14px;margin-bottom:14px}
+.storage-nudge-acts{display:flex;gap:8px;align-items:center}
+.cloud-provider-note{display:block;font-size:0.9375rem;color:#8d99ae}
+.storage-fail{border:1px solid #e0dbd3;background:#fbfaf8;border-radius:12px;padding:12px 14px;margin:12px 0}
+.storage-fail-alarm{border-color:#e8d9b8;background:#fdf8ee}
+.storage-fail-title{font-weight:700;color:#3d3a36}
+.storage-fail-acts{display:flex;gap:8px;align-items:center;margin-top:9px;flex-wrap:wrap}
+.cal-appt-meta{display:flex;flex-wrap:wrap;gap:10px;font-size:0.9375rem;color:#6b6560;margin-top:3px}
+.cal-appt-call{color:#5b7553;text-decoration:none;font-weight:600}
+.client-dose{background:#fff;border:2px solid #5b7553;border-radius:16px;padding:22px 20px;margin:14px 0;text-align:center}
+.client-dose-clear{border-color:#e0dbd3}
+.client-dose-when{font-size:1.15rem;font-weight:700;color:#5b7553;margin-bottom:12px}
+.client-dose-med{padding:10px 0;border-top:1px solid #f1ede7}
+.client-dose-med:first-of-type{border-top:none}
+.client-dose-name{font-size:1.6rem;font-weight:700;color:#3d3a36;line-height:1.25}
+.client-dose-amt{font-size:1.2rem;color:#6b6560;margin-top:2px}
+.client-dose-note{font-size:0.9375rem;color:#8d99ae;margin:14px 0 0}
+.client-taken{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid #f1ede7;font-size:1.05rem}
+.med-by{display:block;font-size:0.9375rem;color:#6b6560;line-height:1.2;margin-top:1px}
+.med-reason-tag{display:block;font-size:0.9375rem;color:#8a6534;line-height:1.2}
+.med-check.skipped{color:#5e6b7d}
+.med-dash{color:#d5cfc5}
+.med-reason-row{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.storage-state{background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:11px 13px;margin:12px 0}
+.storage-state-row{display:flex;align-items:center;gap:8px;font-size:0.9375rem;color:#3d3a36}
+.storage-dot{width:9px;height:9px;border-radius:50%;flex:none}
+.storage-dot-fresh{background:#5b7553}.storage-dot-ageing{background:#d9a441}
+.storage-dot-stale{background:#b56576}.storage-dot-never{background:#b8b2a8}.storage-dot-pending{background:#d9a441}
 .cloud-provider-btns{display:flex;flex-direction:column;gap:10px;margin-top:12px}
 .cloud-provider-btn{display:flex;align-items:center;gap:14px;width:100%;text-align:left;background:#457b9d;border:none;border-radius:12px;padding:15px 18px;cursor:pointer;color:#fff;transition:background .15s,transform .05s}
 .cloud-provider-btn:hover{background:#3d6e8c}.cloud-provider-btn:active{transform:scale(.99)}
 .cloud-provider-icon{font-size:1.625rem;flex-shrink:0}
 .cloud-provider-text{display:flex;flex-direction:column;gap:2px}
 .cloud-provider-text strong{font-size:1rem}
-.cloud-provider-text span{font-size:0.8125rem;opacity:.9}
+.cloud-provider-text span{font-size:0.9375rem;opacity:.9}
 .linklike{background:none;border:none;color:#457b9d;text-decoration:underline;cursor:pointer;font:inherit;padding:0}
 .sync-method-primary{border-color:#457b9d;background:#f3f8fb}
 .sync-method-primary:hover{background:#e9f2f8}
 .auth-btn{width:100%;padding:14px;font-size:0.9375rem;font-weight:700;border-radius:12px;border:none;background:#6d6875;color:#fff;font-family:'Libre Baskerville',serif;cursor:pointer;transition:background .15s,transform .05s}.auth-btn:hover{background:#5f5a67}.auth-btn:active{transform:scale(.99)}
-.auth-footer{font-size:0.8125rem;color:#b5b0a8;margin-top:14px}
+.auth-footer{font-size:0.9375rem;color:#b5b0a8;margin-top:14px}
 .recovery-box{background:#f6f4f0;border:1px solid #e4e0d8;border-radius:10px;padding:16px;margin-top:16px}
-.save-pill{position:fixed;bottom:16px;left:16px;z-index:900;font-size:0.8125rem;font-weight:600;padding:7px 13px;border-radius:20px;box-shadow:0 2px 10px rgba(0,0,0,.15);max-width:300px}
+.save-pill{position:fixed;bottom:16px;left:16px;z-index:900;font-size:0.9375rem;font-weight:600;padding:7px 13px;border-radius:20px;box-shadow:0 2px 10px rgba(0,0,0,.15);max-width:300px}
 .save-saving{background:#eef4f8;color:#2c4654;border:1px solid #cfe0ea}
 .save-error{background:#fbeaea;color:#8a2b2b;border:1px solid #e3b8b8}
-.recovery-label{font-size:0.8125rem;font-weight:700;color:#3d3730;margin:0 0 10px;text-align:left}
-.recovery-banner{background:#e8f0df;border:1px solid #a9c08f;border-radius:8px;padding:10px 12px;font-size:0.8125rem;color:#4a5d3a;margin-bottom:12px;line-height:1.4}
-.onb-card{max-width:400px}
+.recovery-label{font-size:0.9375rem;font-weight:700;color:#3d3730;margin:0 0 10px;text-align:left}
+.recovery-banner{background:#e8f0df;border:1px solid #a9c08f;border-radius:8px;padding:10px 12px;font-size:0.9375rem;color:#4a5d3a;margin-bottom:12px;line-height:1.4}
+.onb-card{max-width:min(900px,94vw)}
 .onb-emoji{font-size:2.875rem;margin-bottom:14px;line-height:1}
 .onb-body{font-size:0.9375rem;color:#5a554e;line-height:1.55;margin:0 0 22px;text-align:left}
 .onb-dots{display:flex;gap:8px;justify-content:center;margin-top:20px}
@@ -6290,48 +8458,48 @@ html{font-size:var(--ui-scale-pct,100%);-webkit-text-size-adjust:100%}*{box-sizi
 .onb-dot-on{background:#457b9d;transform:scale(1.25)}
 .onb-dot-done{background:#a9c08f}
 .onb-install{text-align:left;background:#f6f4f0;border:1px solid #e4e0d8;border-radius:10px;padding:16px;margin-bottom:18px}
-.onb-step{display:flex;align-items:flex-start;gap:10px;font-size:0.84375rem;color:#3d3730;line-height:1.45;margin:10px 0}
-.onb-num{flex-shrink:0;width:22px;height:22px;border-radius:50%;background:#457b9d;color:#fff;font-size:0.8125rem;font-weight:700;display:flex;align-items:center;justify-content:center}
+.onb-step{display:flex;align-items:flex-start;gap:10px;font-size:0.9375rem;color:#3d3730;line-height:1.45;margin:10px 0}
+.onb-num{flex-shrink:0;width:22px;height:22px;border-radius:50%;background:#457b9d;color:#fff;font-size:0.9375rem;font-weight:700;display:flex;align-items:center;justify-content:center}
 .onb-share{display:flex;align-items:center;gap:10px;justify-content:center;color:#457b9d;background:#eef4f8;border-radius:8px;padding:10px;margin:6px 0}
-.onb-share-label{font-size:0.8125rem;color:#6b6560;font-style:italic}
+.onb-share-label{font-size:0.9375rem;color:#6b6560;font-style:italic}
 .onb-nav{display:flex;flex-direction:column;gap:4px}
-.onb-field-label{display:block;text-align:left;font-size:0.8125rem;font-weight:600;color:#3d3730;margin-bottom:5px}
+.onb-field-label{display:block;text-align:left;font-size:0.9375rem;font-weight:600;color:#3d3730;margin-bottom:5px}
 .onb-hint-inline{font-weight:400;color:#9a948c}
 .onb-input{font-size:1.0625rem;padding:13px 15px;text-align:left}
-.onb-optional{text-align:left;font-size:0.8125rem;color:#6b6560}
+.onb-optional{text-align:left;font-size:0.9375rem;color:#6b6560}
 .onb-optional summary{cursor:pointer;padding:6px 0;color:#457b9d}
-.text-btn{background:none;border:none;color:#457b9d;font-size:0.8125rem;cursor:pointer;margin-top:10px;text-decoration:underline;font-family:inherit}
-.nudge-banner{display:flex;align-items:flex-start;gap:10px;padding:11px 14px;font-size:0.8125rem;line-height:1.4;border-bottom:1px solid rgba(0,0,0,.08)}
+.text-btn{background:none;border:none;color:#457b9d;font-size:0.9375rem;cursor:pointer;margin-top:10px;text-decoration:underline;font-family:inherit}
+.nudge-banner{display:flex;align-items:flex-start;gap:10px;padding:11px 14px;font-size:0.9375rem;line-height:1.4;border-bottom:1px solid rgba(0,0,0,.08)}
 .nudge-install{background:#eef4f7;color:#2c4654}
 .nudge-backup{background:#fbf2e6;color:#6b4d28}
 .nudge-risk{background:#fbeaea;color:#7a2e2e}
 .integrity-row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
-.integrity-label{font-size:0.8125rem;font-weight:600;color:#3d3730}
-.integrity-val{font-size:0.8125rem;font-weight:600}
+.integrity-label{font-size:0.9375rem;font-weight:600;color:#3d3730}
+.integrity-val{font-size:0.9375rem;font-weight:600}
 .integrity-val.ok{color:#5e8a4e}
 .integrity-val.bad{color:#b04434}
 .integrity-val.muted{color:#9a948c}
 .recovery-code-box{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:1.125rem;font-weight:700;letter-spacing:1px;text-align:center;background:#f3efe8;border:2px dashed #c9bfa9;border-radius:10px;padding:16px 10px;margin-top:10px;color:#3d3730;word-break:break-all}
-.mini-btn{font-size:0.8125rem;font-weight:600;padding:6px 12px;border:1px solid #d8d2c6;border-radius:8px;background:#fff;color:#5a544c;cursor:pointer}
+.mini-btn{font-size:0.9375rem;font-weight:600;padding:6px 12px;border:1px solid #d8d2c6;border-radius:8px;background:#fff;color:#5a544c;cursor:pointer}
 .mini-btn:hover{background:#f3efe8}.mini-btn:disabled{opacity:.5;cursor:not-allowed}
 .link-btn{color:#3d7d9c;cursor:pointer;text-decoration:underline}
-.confirm-check{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:0.8125rem;color:#5a544c;cursor:pointer}.confirm-check input{width:16px;height:16px}
+.confirm-check{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:0.9375rem;color:#5a544c;cursor:pointer}.confirm-check input{width:16px;height:16px}
 .nudge-icon{font-size:1.4375rem;flex-shrink:0;line-height:1.2}
 .nudge-body{flex:1}
 .nudge-x{background:none;border:none;font-size:1.25rem;line-height:1;cursor:pointer;color:inherit;opacity:.55;padding:0 2px;flex-shrink:0}
 .nudge-x:hover{opacity:1}
-.nudge-act{background:#bc6c25;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:0.8125rem;font-weight:600;cursor:pointer;flex-shrink:0;font-family:inherit}
-.backup-status{display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:8px;margin-top:10px;font-size:0.8125rem}
+.nudge-act{background:#bc6c25;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:0.9375rem;font-weight:600;cursor:pointer;flex-shrink:0;font-family:inherit}
+.backup-status{display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:8px;margin-top:10px;font-size:0.9375rem}
 .backup-active{background:#eef5ee;border:1px solid #c2d6bd}
 .backup-paused{background:#fbf2e6;border:1px solid #e6d3b3}
 .backup-status-body{flex:1;color:#3d3730;line-height:1.4}
-.backup-status-body code{background:rgba(0,0,0,.06);padding:1px 5px;border-radius:4px;font-size:0.8125rem}
-.backup-when{display:block;font-size:0.8125rem;color:#8a847c;margin-top:2px}
+.backup-status-body code{background:rgba(0,0,0,.06);padding:1px 5px;border-radius:4px;font-size:0.9375rem}
+.backup-when{display:block;font-size:0.9375rem;color:#8a847c;margin-top:2px}
 .backup-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
 .backup-active .backup-dot{background:#5e8a4e;box-shadow:0 0 0 3px rgba(94,138,78,.2)}
 .backup-paused .backup-dot{background:#bc6c25;box-shadow:0 0 0 3px rgba(188,108,37,.2)}
-.backup-btn{background:#bc6c25;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:0.8125rem;font-weight:600;cursor:pointer;flex-shrink:0;font-family:inherit}
-.backup-link{background:none;border:none;color:#8a847c;font-size:0.8125rem;cursor:pointer;text-decoration:underline;flex-shrink:0;font-family:inherit}
+.backup-btn{background:#bc6c25;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:0.9375rem;font-weight:600;cursor:pointer;flex-shrink:0;font-family:inherit}
+.backup-link{background:none;border:none;color:#8a847c;font-size:0.9375rem;cursor:pointer;text-decoration:underline;flex-shrink:0;font-family:inherit}
 .shell{display:flex;min-height:100vh;font-family:'Source Sans 3',sans-serif;color:#3d3730;background:#f6f4f0;color-scheme:light dark}
 button,input,select,textarea{color:inherit;font-family:inherit}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.25);z-index:90}
@@ -6339,15 +8507,15 @@ button,input,select,textarea{color:inherit;font-family:inherit}
 .sidebar-open{transform:translateX(0)!important}
 .side-header{display:flex;align-items:center;gap:10px;padding:20px 20px 16px;border-bottom:1px solid #ede8df}
 .side-header-text{font-family:'Libre Baskerville',serif;font-weight:700;font-size:1rem;color:#3d3730}
-.side-item{display:flex;align-items:center;gap:10px;padding:11px 20px;border:none;background:transparent;font-size:0.875rem;color:#6b6560;text-align:left;width:100%;border-left:3px solid transparent;transition:background .12s}
+.side-item{display:flex;align-items:center;gap:10px;padding:11px 20px;border:none;background:transparent;font-size:0.9375rem;color:#6b6560;text-align:left;width:100%;border-left:3px solid transparent;transition:background .12s}
 .side-item:hover{background:#f6f4f0}.side-active{background:#f6f4f0!important;color:#3d3730;font-weight:600;border-left-color:#6d6875}
-.side-icon{font-size:1.3125rem;width:29px;text-align:center;flex-shrink:0}.side-badge{font-size:0.8125rem;font-weight:700;padding:2px 7px;border-radius:10px;background:#eef0f3;color:#8d99ae}
-.side-lock{margin:8px 16px 0;padding:10px;border:1px solid #e5e1db;border-radius:8px;background:transparent;font-size:0.8125rem;color:#6b6560}
-.client-badge{font-size:0.8125rem;font-weight:600;background:#fdf0d5;color:#bc6c25;padding:2px 8px;border-radius:8px;white-space:nowrap}
+.side-icon{font-size:1.3125rem;width:29px;text-align:center;flex-shrink:0}.side-badge{font-size:0.9375rem;font-weight:700;padding:2px 7px;border-radius:10px;background:#eef0f3;color:#8d99ae}
+.side-lock{margin:8px 16px 0;padding:10px;border:1px solid #e5e1db;border-radius:8px;background:transparent;font-size:0.9375rem;color:#6b6560}
+.client-badge{font-size:0.9375rem;font-weight:600;background:#fdf0d5;color:#bc6c25;padding:2px 8px;border-radius:8px;white-space:nowrap}
 .top-bar{display:flex;align-items:center;gap:12px;padding:14px 24px;border-bottom:1px solid #e8e4de;background:rgba(255,255,255,.85);backdrop-filter:blur(8px);position:sticky;top:0;z-index:50}
 .hamburger{background:none;border:none;font-size:1.375rem;color:#6b6560;padding:4px 8px;display:block}
-.breadcrumbs{display:flex;align-items:center;gap:8px;flex:1}.crumb{background:none;border:none;font-size:0.84375rem;color:#8d99ae;padding:0;text-decoration:underline;text-underline-offset:3px}
-.crumb-sep{color:#c5c0b8;font-size:0.875rem}.crumb-current{font-size:0.84375rem;font-weight:600}.top-lock{background:none;border:none;font-size:1rem;opacity:.5}
+.breadcrumbs{display:flex;align-items:center;gap:8px;flex:1}.crumb{background:none;border:none;font-size:0.9375rem;color:#8d99ae;padding:0;text-decoration:underline;text-underline-offset:3px}
+.crumb-sep{color:#c5c0b8;font-size:0.9375rem}.crumb-current{font-size:0.9375rem;font-weight:600}.top-lock{background:none;border:none;font-size:1rem;opacity:.5}
 
 /* universal search */
 .search-btn{background:none;border:none;font-size:1rem;cursor:pointer;padding:4px 8px;color:#8d99ae}
@@ -6359,18 +8527,18 @@ button,input,select,textarea{color:inherit;font-family:inherit}
 .search-input::placeholder{color:#c5c0b8}
 .search-close{background:none;border:none;font-size:1.375rem;color:#8d99ae;cursor:pointer;padding:0 4px}
 .search-results{overflow-y:auto;padding:8px 0}
-.search-cat{font-size:0.8125rem;font-weight:600;color:#8d99ae;text-transform:uppercase;letter-spacing:.4px;padding:10px 16px 4px}
+.search-cat{font-size:0.9375rem;font-weight:600;color:#8d99ae;text-transform:uppercase;letter-spacing:.4px;padding:10px 16px 4px}
 .search-result{display:flex;align-items:center;gap:10px;width:100%;padding:10px 16px;border:none;background:none;cursor:pointer;text-align:left;font-family:inherit;color:#3d3730;transition:background .1s}
 .search-result:hover{background:#f6f4f0}
 .search-result-icon{font-size:1.3125rem;width:31px;text-align:center;flex-shrink:0}
 .search-result-body{flex:1;min-width:0;display:flex;flex-direction:column}
-.search-result-text{font-size:0.8125rem;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.search-result-sub{font-size:0.8125rem;color:#8d99ae;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.search-result-date{font-size:0.8125rem;color:#a09a92;flex-shrink:0;margin-left:auto}
+.search-result-text{font-size:0.9375rem;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.search-result-sub{font-size:0.9375rem;color:#8d99ae;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.search-result-date{font-size:0.9375rem;color:#a09a92;flex-shrink:0;margin-left:auto}
 .search-result-arrow{color:#c5c0b8;font-size:1rem;flex-shrink:0;margin-left:4px}
-.search-empty{padding:24px 16px;text-align:center;color:#8d99ae;font-size:0.8125rem}
-.search-hint{padding:24px 16px;text-align:center;color:#c5c0b8;font-size:0.8125rem}
-.main-area{flex:1;margin-left:0;display:flex;flex-direction:column;min-height:100vh}.content{flex:1;padding:28px 32px 40px;max-width:960px}
+.search-empty{padding:24px 16px;text-align:center;color:#8d99ae;font-size:0.9375rem}
+.search-hint{padding:24px 16px;text-align:center;color:#c5c0b8;font-size:0.9375rem}
+.main-area{flex:1;margin-left:0;display:flex;flex-direction:column;min-height:100vh}.content{flex:1;padding:28px 32px 40px;max-width:min(1400px,100%);margin-inline:auto;width:100%}
 
 /* hub navigation v2 */
 .main-area-v2{flex:1;min-height:100vh;display:flex;flex-direction:column}
@@ -6379,15 +8547,15 @@ button,input,select,textarea{color:inherit;font-family:inherit}
 .hub-back{background:none;border:none;cursor:pointer;font-size:1.125rem;color:#457b9d;padding:4px 8px 4px 0;display:flex;align-items:center}
 .hub-topbar-text{flex:1}
 .hub-topbar-title{font-size:1rem;font-weight:700;font-family:'Libre Baskerville',serif;color:#3d3730}
-.hub-topbar-crumb{font-size:0.8125rem;color:#8d99ae;display:block}
+.hub-topbar-crumb{font-size:0.9375rem;color:#8d99ae;display:block}
 .hub-bar{display:flex;position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid #e8e4de;z-index:20;padding-bottom:env(safe-area-inset-bottom)}
-.hub-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 4px 6px;border:none;background:transparent;cursor:pointer;color:#a09a92;font-size:0.8125rem;transition:color .12s}
+.hub-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 4px 6px;border:none;background:transparent;cursor:pointer;color:#a09a92;font-size:0.9375rem;transition:color .12s}
 .hub-btn-icon{font-size:1.625rem;line-height:1;color:inherit}
 .hub-btn-label{font-weight:600;color:inherit}
 .hub-active{color:#457b9d}
 .hub-welcome{font-family:'Libre Baskerville',serif;font-size:1.25rem;font-weight:700;color:#3d3730;padding:8px 0 2px}
-.hub-client{font-size:0.8125rem;color:#6b6560;margin:0 0 16px}
-.hub-section-label{font-size:0.8125rem;font-weight:600;color:#8d99ae;text-transform:uppercase;letter-spacing:.4px;padding:14px 0 6px}
+.hub-client{font-size:0.9375rem;color:#6b6560;margin:0 0 16px}
+.hub-section-label{font-size:0.9375rem;font-weight:600;color:#8d99ae;text-transform:uppercase;letter-spacing:.4px;padding:14px 0 6px}
 .hub-card{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:12px;border:1px solid #e8e4de;margin-bottom:8px;cursor:pointer;background:#fff;transition:all .12s}
 .hub-card:hover{border-color:#457b9d;background:#fafcfe}
 .hub-card-urgent{border-left:3px solid #b56576}
@@ -6395,34 +8563,34 @@ button,input,select,textarea{color:inherit;font-family:inherit}
 .hub-card-ok:hover{border-color:#e8e4de;background:#fff}
 .hub-card-icon{width:47px;height:47px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.3125rem;flex-shrink:0}
 .hub-card-body{flex:1;min-width:0}
-.hub-card-title{font-size:0.84375rem;font-weight:600;color:#3d3730}
-.hub-card-sub{font-size:0.8125rem;color:#8d99ae;margin-top:1px}
+.hub-card-title{font-size:0.9375rem;font-weight:600;color:#3d3730}
+.hub-card-sub{font-size:0.9375rem;color:#8d99ae;margin-top:1px}
 .hub-card-arr{color:#c5c0b8;font-size:1.125rem;flex-shrink:0;font-weight:300}
-.pill{display:inline-block;padding:1px 7px;border-radius:10px;font-size:0.8125rem;font-weight:600;margin-left:4px}
+.pill{display:inline-block;padding:1px 7px;border-radius:10px;font-size:0.9375rem;font-weight:600;margin-left:4px}
 .pill-r{background:#fde2e8;color:#8b0000}
 .pill-a{background:#fdf0d5;color:#8b6914}
 .pill-g{background:#e8f0df;color:#3d5a20}
 .pill-b{background:#eef4f8;color:#457b9d}
 
 /* emergency info card */
-.ecard{border:2px solid #b56576;border-radius:12px;padding:20px;background:#fff;font-size:0.8125rem;line-height:1.6}
+.ecard{border:2px solid #b56576;border-radius:12px;padding:20px;background:#fff;font-size:0.9375rem;line-height:1.6}
 .ecard-header{font-size:1rem;font-weight:700;color:#b56576;text-align:center;border-bottom:2px solid #b56576;padding-bottom:10px;margin-bottom:12px;letter-spacing:.5px}
 .ecard-row{display:flex;gap:8px;padding:4px 0}
 .ecard-label{font-weight:700;min-width:70px;color:#3d3730}
-.ecard-section{font-size:0.8125rem;font-weight:700;color:#457b9d;text-transform:uppercase;letter-spacing:.5px;margin-top:12px;border-top:1px solid #e8e4de;padding-top:8px}
+.ecard-section{font-size:0.9375rem;font-weight:700;color:#457b9d;text-transform:uppercase;letter-spacing:.5px;margin-top:12px;border-top:1px solid #e8e4de;padding-top:8px}
 .ecard-body{color:#3d3730;padding:4px 0}
 
 /* pattern charts */
 .pattern-bars{display:flex;flex-direction:column;gap:6px}
 .pattern-bar-row{display:flex;align-items:center;gap:8px}
-.pattern-bar-label{font-size:0.8125rem;color:#6b6560;min-width:80px;text-align:right}
+.pattern-bar-label{font-size:0.9375rem;color:#6b6560;min-width:80px;text-align:right}
 .pattern-bar-track{flex:1;height:18px;background:#f6f4f0;border-radius:4px;overflow:hidden}
 .pattern-bar-fill{height:100%;border-radius:4px;transition:width .3s}
-.pattern-bar-val{font-size:0.8125rem;font-weight:600;color:#3d3730;min-width:20px}
+.pattern-bar-val{font-size:0.9375rem;font-weight:600;color:#3d3730;min-width:20px}
 .hour-chart{display:flex;align-items:flex-end;gap:2px;height:100px;padding:8px 0}
 .hour-col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%}
 .hour-bar{width:100%;background:#b56576;border-radius:2px 2px 0 0;min-height:1px;transition:height .3s}
-.hour-label{font-size:0.8125rem;color:#8d99ae;margin-top:4px}
+.hour-label{font-size:0.9375rem;color:#8d99ae;margin-top:4px}
 
 /* strategic grid */
 .strat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;margin-bottom:16px}
@@ -6430,38 +8598,38 @@ button,input,select,textarea{color:inherit;font-family:inherit}
 .strat-card:hover{border-color:#457b9d}
 .strat-icon{font-size:1.8125rem;margin-bottom:4px}
 .strat-pct{font-size:1.375rem;font-weight:700}
-.strat-label{font-size:0.8125rem;font-weight:600;color:#6b6560}
-.strat-pulse{font-size:0.8125rem;margin-top:2px}
+.strat-label{font-size:0.9375rem;font-weight:600;color:#6b6560}
+.strat-pulse{font-size:0.9375rem;margin-top:2px}
 
 /* capacity documentation */
 .cap-grid{display:flex;flex-direction:column;gap:8px}
 .cap-row{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid #f0ede8}
-.cap-label{font-size:0.8125rem;font-weight:500;min-width:140px;color:#3d3730;padding-top:4px}
+.cap-label{font-size:0.9375rem;font-weight:500;min-width:140px;color:#3d3730;padding-top:4px}
 .cap-btns{display:flex;gap:4px;flex-wrap:wrap;flex:1}
-.cap-btn{padding:5px 10px;border-radius:6px;border:1px solid #e8e4de;background:#fff;font-size:0.8125rem;color:#6b6560;cursor:pointer;transition:all .1s;white-space:nowrap}
+.cap-btn{padding:5px 10px;border-radius:6px;border:1px solid #e8e4de;background:#fff;font-size:0.9375rem;color:#6b6560;cursor:pointer;transition:all .1s;white-space:nowrap}
 .cap-btn:hover{border-color:#457b9d}
 .cap-btn-active{background:#eef4f8;border-color:#457b9d;color:#457b9d;font-weight:600}
 .cap-entry{padding:14px;border-radius:10px;border:1px solid #e8e4de;margin-bottom:8px;background:#fff}
-.cap-entry-head{font-size:0.8125rem;color:#3d3730;margin-bottom:8px}
+.cap-entry-head{font-size:0.9375rem;color:#3d3730;margin-bottom:8px}
 .cap-assessor{color:#8d99ae;font-weight:400}
 .cap-entry-grid{display:flex;flex-wrap:wrap;gap:6px}
 .cap-entry-item{display:flex;align-items:center;gap:4px}
-.cap-entry-area{font-size:0.8125rem;color:#6b6560}
-.cap-entry-notes{font-size:0.8125rem;color:#6b6560;margin-top:8px;font-style:italic}
+.cap-entry-area{font-size:0.9375rem;color:#6b6560}
+.cap-entry-notes{font-size:0.9375rem;color:#6b6560;margin-top:8px;font-style:italic}
 
 /* binder preview */
-.binder-preview{background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:20px;font-size:0.8125rem;line-height:1.6;white-space:pre-wrap;color:#3d3730;max-height:600px;overflow-y:auto;font-family:'Source Sans 3',monospace}
+.binder-preview{background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:20px;font-size:0.9375rem;line-height:1.6;white-space:pre-wrap;color:#3d3730;max-height:600px;overflow-y:auto;font-family:'Source Sans 3',monospace}
 
 /* POA decision log */
 .poa-form{padding:16px;border:1px solid #e8e4de;border-radius:12px;background:#fff;margin-bottom:16px}
 .poa-entry{padding:16px;border:1px solid #e8e4de;border-left:4px solid #457b9d;border-radius:10px;margin-bottom:10px;background:#fff}
 .poa-entry-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
-.poa-entry-type{font-size:0.875rem;font-weight:600;color:#3d3730}
-.poa-entry-date{font-size:0.8125rem;color:#8d99ae;margin-left:auto}
-.poa-entry-desc{font-size:0.8125rem;color:#3d3730;line-height:1.5;margin-bottom:8px}
-.poa-entry-field{font-size:0.8125rem;color:#6b6560;line-height:1.5;margin-bottom:4px}
+.poa-entry-type{font-size:0.9375rem;font-weight:600;color:#3d3730}
+.poa-entry-date{font-size:0.9375rem;color:#8d99ae;margin-left:auto}
+.poa-entry-desc{font-size:0.9375rem;color:#3d3730;line-height:1.5;margin-bottom:8px}
+.poa-entry-field{font-size:0.9375rem;color:#6b6560;line-height:1.5;margin-bottom:4px}
 .poa-field-label{font-weight:600;color:#457b9d}
-.poa-entry-agent{font-size:0.8125rem;color:#a09a92;margin-top:8px;padding-top:8px;border-top:1px solid #f0ede8;font-style:italic}
+.poa-entry-agent{font-size:0.9375rem;color:#a09a92;margin-top:8px;padding-top:8px;border-top:1px solid #f0ede8;font-style:italic}
 
 /* care schedule */
 .shift-card{padding:14px;border:1px solid #e8e4de;border-radius:10px;margin-bottom:10px;background:#fff;border-left:4px solid #8d99ae}
@@ -6469,26 +8637,26 @@ button,input,select,textarea{color:inherit;font-family:inherit}
 .shift-assigned{border-left-color:#718355}
 .shift-pending{border-left-color:#bc6c25}
 .shift-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
-.shift-date{font-size:0.875rem;font-weight:600;color:#3d3730}
-.shift-assignee{font-size:0.8125rem;color:#6b6560;margin-left:auto}
-.shift-modby{font-size:0.8125rem;color:#a09a92;width:100%;text-align:right;font-style:italic}
-.shift-careplan{font-size:0.8125rem;color:#6b6560;line-height:1.5;margin:6px 0;padding:8px;background:#f6f4f0;border-radius:6px}
+.shift-date{font-size:0.9375rem;font-weight:600;color:#3d3730}
+.shift-assignee{font-size:0.9375rem;color:#6b6560;margin-left:auto}
+.shift-modby{font-size:0.9375rem;color:#a09a92;width:100%;text-align:right;font-style:italic}
+.shift-careplan{font-size:0.9375rem;color:#6b6560;line-height:1.5;margin:6px 0;padding:8px;background:#f6f4f0;border-radius:6px}
 .shift-tasks{margin:8px 0}
-.shift-task-check{font-size:0.8125rem;color:#3d3730;padding:3px 0}
-.shift-task-row{display:flex;justify-content:space-between;align-items:center;font-size:0.8125rem;color:#3d3730;padding:2px 0}
+.shift-task-check{font-size:0.9375rem;color:#3d3730;padding:3px 0}
+.shift-task-row{display:flex;justify-content:space-between;align-items:center;font-size:0.9375rem;color:#3d3730;padding:2px 0}
 .shift-visit{margin:8px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .shift-approvals{margin-top:8px;padding-top:8px;border-top:1px solid #f0ede8}
-.shift-approval-row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:0.8125rem}
+.shift-approval-row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:0.9375rem}
 
 /* availability grid */
 .avail-grid{display:grid;grid-template-columns:60px repeat(4,1fr);gap:4px;margin-top:8px}
 .avail-corner{}
-.avail-slot-head{font-size:0.8125rem;font-weight:600;text-align:center;color:#6b6560;padding:4px;text-transform:uppercase;letter-spacing:.3px}
-.avail-day{font-size:0.8125rem;font-weight:600;color:#3d3730;display:flex;align-items:center;justify-content:flex-end;padding-right:6px}
-.avail-cell{height:36px;border:1px solid #e8e4de;border-radius:6px;background:#fff;cursor:pointer;font-size:0.875rem;color:#718355;transition:all .1s}
+.avail-slot-head{font-size:0.9375rem;font-weight:600;text-align:center;color:#6b6560;padding:4px;text-transform:uppercase;letter-spacing:.3px}
+.avail-day{font-size:0.9375rem;font-weight:600;color:#3d3730;display:flex;align-items:center;justify-content:flex-end;padding-right:6px}
+.avail-cell{height:36px;border:1px solid #e8e4de;border-radius:6px;background:#fff;cursor:pointer;font-size:0.9375rem;color:#718355;transition:all .1s}
 .avail-cell:hover{border-color:#457b9d}
 .avail-on{background:#e8f0df;border-color:#718355;font-weight:700}
-.avail-summary{font-size:0.8125rem;color:#3d3730;padding:6px 0;border-bottom:1px solid #f0ede8;line-height:1.5}
+.avail-summary{font-size:0.9375rem;color:#3d3730;padding:6px 0;border-bottom:1px solid #f0ede8;line-height:1.5}
 
 /* photo attachments */
 .photo-attach-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
@@ -6496,24 +8664,24 @@ button,input,select,textarea{color:inherit;font-family:inherit}
 .photo-thumb{position:relative;width:72px;height:72px;border-radius:8px;overflow:hidden;border:1px solid #e8e4de}
 .photo-thumb img{width:100%;height:100%;object-fit:cover}
 .photo-loading{width:100%;height:100%;background:repeating-linear-gradient(45deg,#efeae1,#efeae1 6px,#e6e0d5 6px,#e6e0d5 12px)}
-.photo-remove{position:absolute;top:2px;right:2px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;border:none;font-size:0.8125rem;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1}
+.photo-remove{position:absolute;top:2px;right:2px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;border:none;font-size:0.9375rem;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1}
 .page-title{font-family:'Libre Baskerville',serif;font-size:1.375rem;font-weight:700;margin:0 0 6px;color:#3d3730}
-.page-sub{font-size:0.875rem;color:#8d99ae;margin:0 0 24px;line-height:1.5}
+.page-sub{font-size:0.9375rem;color:#8d99ae;margin:0 0 24px;line-height:1.5}
 .o-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:18px}
 .o-card{border-radius:14px;padding:22px 22px 18px;border:none;border-left:5px solid;text-align:left;box-shadow:0 2px 10px rgba(0,0,0,.04);display:block;width:100%;transition:transform .12s,box-shadow .12s}
 .o-card:hover{transform:translateY(-2px);box-shadow:0 4px 16px rgba(0,0,0,.08)}
 .o-card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-.o-badge{font-size:0.8125rem;font-weight:600;padding:3px 9px;border-radius:20px}
+.o-badge{font-size:0.9375rem;font-weight:600;padding:3px 9px;border-radius:20px}
 .o-card-title-row{display:flex;align-items:center;gap:6px}
 .o-card-title{font-size:1.0625rem;font-weight:700;margin:0 0 4px;color:#3d3730;font-family:'Libre Baskerville',serif}
-.o-card-desc{font-size:0.8125rem;color:#6b6560;line-height:1.45;margin:0 0 12px}
+.o-card-desc{font-size:0.9375rem;color:#6b6560;line-height:1.45;margin:0 0 12px}
 .prog-row{display:flex;align-items:center;gap:10px}.prog-track{flex:1;height:6px;border-radius:3px;background:rgba(0,0,0,.07);overflow:hidden}
-.prog-fill{height:100%;border-radius:3px;transition:width .3s ease}.prog-label{font-size:0.8125rem;color:#8d99ae;white-space:nowrap}
-.o-card-time{font-size:0.8125rem;color:#b5b0a8;margin-top:10px}
+.prog-fill{height:100%;border-radius:3px;transition:width .3s ease}.prog-label{font-size:0.9375rem;color:#8d99ae;white-space:nowrap}
+.o-card-time{font-size:0.9375rem;color:#b5b0a8;margin-top:10px}
 .log-wrap{margin-top:28px;background:#fff;border-radius:14px;padding:18px 22px;box-shadow:0 2px 10px rgba(0,0,0,.04)}
 .log-title{font-size:0.9375rem;font-weight:700;margin:0 0 12px;font-family:'Libre Baskerville',serif}
-.log-row{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #f0ece4;font-size:0.8125rem}
-.log-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}.log-text{flex:1;line-height:1.4}.log-time{font-size:0.8125rem;color:#b5b0a8;white-space:nowrap}
+.log-row{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #f0ece4;font-size:0.9375rem}
+.log-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}.log-text{flex:1;line-height:1.4}.log-time{font-size:0.9375rem;color:#b5b0a8;white-space:nowrap}
 .domain-header{border-radius:14px;padding:22px 24px;border-left:5px solid;margin-bottom:28px}
 .domain-header-top{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
 .domain-title-row{display:flex;align-items:center;gap:8px}
@@ -6525,69 +8693,69 @@ button,input,select,textarea{color:inherit;font-family:inherit}
 .settings-group-summary::-webkit-details-marker{display:none}
 .settings-group-summary::marker{content:""}
 .settings-group-summary:hover{background:#faf8f5}
-.sg-chev{font-size:0.8125rem;color:#8d99ae;transition:transform .2s;flex-shrink:0}
+.sg-chev{font-size:0.9375rem;color:#8d99ae;transition:transform .2s;flex-shrink:0}
 .settings-group[open] .sg-chev{transform:rotate(180deg)}
 .settings-group-body{padding:2px 18px 8px}
 .settings-group-body .section{margin:0;padding:16px 0;border-top:1px solid #f0ece6}
 .settings-group-body .section:first-child{border-top:none;padding-top:8px}
-.hint{font-size:0.8125rem;color:#8d99ae;font-style:italic;margin:-4px 0 16px;line-height:1.5}
+.hint{font-size:0.9375rem;color:#8d99ae;font-style:italic;margin:-4px 0 16px;line-height:1.5}
 /* status removed — computed from Foundation + Care Pulse */
 .goals-wrap{display:flex;flex-direction:column;gap:10px}
 .goal-card{border-radius:12px;border:1px solid #e8e4de;border-left:4px solid;overflow:hidden}
 .goal-head{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer}
 .goal-check{width:20px;height:20px;accent-color:#718355;flex-shrink:0;cursor:pointer}
-.goal-title{font-size:0.90625rem;font-weight:600;line-height:1.35}.chevron{font-size:1rem;color:#a09a92;transition:transform .2s;flex-shrink:0;user-select:none}
+.goal-title{font-size:0.9375rem;font-weight:600;line-height:1.35}.chevron{font-size:1rem;color:#a09a92;transition:transform .2s;flex-shrink:0;user-select:none}
 .sub-prog-row{display:flex;align-items:center;gap:8px;margin-top:5px}
 .sub-prog-track{width:80px;height:4px;border-radius:2px;background:rgba(0,0,0,.07);overflow:hidden}
-.sub-prog-fill{height:100%;border-radius:2px;transition:width .25s ease}.sub-prog-label{font-size:0.8125rem;color:#a09a92}
+.sub-prog-fill{height:100%;border-radius:2px;transition:width .25s ease}.sub-prog-label{font-size:0.9375rem;color:#a09a92}
 .subs-wrap{padding:0 16px 14px 48px;display:flex;flex-direction:column;gap:6px;animation:fadeIn .2s ease}
 @keyframes fadeIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
 .sub-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;border:1px solid #e8e4de;cursor:pointer;transition:background .12s}
 .sub-typed{cursor:default;align-items:flex-start}
 .sub-done{background:#f5f9f0!important}
 .sub-overdue{background:#fdf6ee!important;border-color:#f0d5a0}
-.sub-type-badge{font-size:0.875rem;width:18px;text-align:center;flex-shrink:0;font-weight:700;line-height:1.3}
-.sub-attend-btn{width:22px;height:22px;border-radius:6px;border:1.5px solid #e5e1db;background:transparent;font-size:0.8125rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .12s;color:#718355;font-weight:700}
+.sub-type-badge{font-size:0.9375rem;width:18px;text-align:center;flex-shrink:0;font-weight:700;line-height:1.3}
+.sub-attend-btn{width:22px;height:22px;border-radius:6px;border:1.5px solid #e5e1db;background:transparent;font-size:0.9375rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .12s;color:#718355;font-weight:700}
 .sub-attend-btn:hover{background:#e8f0df;border-color:#718355}
-.sub-recency{font-size:0.8125rem;margin-top:2px;font-weight:500}
-.sub-type-select{width:auto;padding:2px 4px;border:1px solid transparent;border-radius:4px;font-size:0.8125rem;color:#a09a92;background:transparent;cursor:pointer;flex-shrink:0;outline:none}
+.sub-recency{font-size:0.9375rem;margin-top:2px;font-weight:500}
+.sub-type-select{width:auto;padding:2px 4px;border:1px solid transparent;border-radius:4px;font-size:0.9375rem;color:#a09a92;background:transparent;cursor:pointer;flex-shrink:0;outline:none}
 .sub-type-select:hover{border-color:#e5e1db;color:#6b6560}
 .sub-removed{opacity:.6;background:#f6f4f0!important;border-style:dashed}
 .removed-subs-details{margin-top:6px}
-.removed-subs-summary{font-size:0.8125rem;color:#a09a92;cursor:pointer;padding:4px 0}
+.removed-subs-summary{font-size:0.9375rem;color:#a09a92;cursor:pointer;padding:4px 0}
 .removed-subs-summary:hover{color:#6b6560}
 .removed-subs-list{display:flex;flex-direction:column;gap:4px;margin-top:4px}
-.type-legend{display:flex;gap:14px;margin-top:10px;font-size:0.8125rem;color:#8d99ae}
+.type-legend{display:flex;gap:14px;margin-top:10px;font-size:0.9375rem;color:#8d99ae}
 .type-legend-item{display:flex;align-items:center;gap:4px}
 .dual-track{display:flex;flex-direction:column;gap:6px}
 .dual-track-row{display:flex;align-items:center;gap:8px}
-.dual-track-label{font-size:0.8125rem;font-weight:600;width:90px;flex-shrink:0}
+.dual-track-label{font-size:0.9375rem;font-weight:600;width:90px;flex-shrink:0}
 .sub-custom{border-style:dashed}.sub-check{width:16px;height:16px;accent-color:#718355;flex-shrink:0;cursor:pointer}
-.sub-text{font-size:0.84375rem;line-height:1.4}.remove-sub{background:none;border:none;font-size:1.125rem;color:#c5c0b8;padding:0 4px;line-height:1}.remove-sub:hover{color:#b56576}
-.add-sub-trigger{background:none;border:1px dashed #d5d0c8;border-radius:8px;padding:8px 12px;font-size:0.8125rem;color:#8d99ae;text-align:left;width:100%}
+.sub-text{font-size:0.9375rem;line-height:1.4}.remove-sub{background:none;border:none;font-size:1.125rem;color:#c5c0b8;padding:0 4px;line-height:1}.remove-sub:hover{color:#b56576}
+.add-sub-trigger{background:none;border:1px dashed #d5d0c8;border-radius:8px;padding:8px 12px;font-size:0.9375rem;color:#8d99ae;text-align:left;width:100%}
 .add-sub-row{display:flex;gap:8px;align-items:center}
-.add-sub-input{flex:1;padding:8px 12px;font-size:0.84375rem;border-radius:8px;border:1px solid #d5d0c8;outline:none}.add-sub-input:focus{border-color:#718355}
-.add-sub-btn{padding:8px 14px;font-size:0.8125rem;font-weight:600;border-radius:8px;border:none;background:#718355;color:#fff;white-space:nowrap}
-.add-sub-cancel{padding:8px 12px;font-size:0.8125rem;border-radius:8px;border:1px solid #d5d0c8;background:transparent;color:#6b6560}
+.add-sub-input{flex:1;padding:8px 12px;font-size:0.9375rem;border-radius:8px;border:1px solid #d5d0c8;outline:none}.add-sub-input:focus{border-color:#718355}
+.add-sub-btn{padding:8px 14px;font-size:0.9375rem;font-weight:600;border-radius:8px;border:none;background:#718355;color:#fff;white-space:nowrap}
+.add-sub-cancel{padding:8px 12px;font-size:0.9375rem;border-radius:8px;border:1px solid #d5d0c8;background:transparent;color:#6b6560}
 .goal-title-row{display:flex;align-items:flex-start;gap:6px}.goal-title-row .goal-title{flex:1}
 .edit-icon{background:none;border:none;font-size:1.125rem;color:#c5c0b8;padding:2px 4px;line-height:1;flex-shrink:0;opacity:0;transition:opacity .15s}
 .edit-icon-visible{opacity:.6!important}.goal-head:hover .edit-icon,.sub-item:hover .edit-icon,.o-card:hover .edit-icon{opacity:1}.edit-icon:hover{color:#6d6875!important;opacity:1}
 .inline-edit{display:flex;align-items:center;gap:6px;flex:1;min-width:0}
-.inline-edit-input{flex:1;padding:5px 8px;font-size:0.84375rem;border-radius:6px;border:1.5px solid #718355;outline:none;min-width:0}
+.inline-edit-input{flex:1;padding:5px 8px;font-size:0.9375rem;border-radius:6px;border:1.5px solid #718355;outline:none;min-width:0}
 .inline-edit-save{background:none;border:none;font-size:1rem;color:#718355;padding:2px 4px;font-weight:700}
-.inline-edit-cancel{background:none;border:none;font-size:0.875rem;color:#a09a92;padding:2px 4px}
-.notes-ta{width:100%;padding:13px 16px;font-size:0.875rem;border-radius:10px;border:2px solid #d5d0c8;line-height:1.6;resize:vertical;outline:none;color:#3d3730}.notes-ta:focus{border-color:#718355}
+.inline-edit-cancel{background:none;border:none;font-size:0.9375rem;color:#a09a92;padding:2px 4px}
+.notes-ta{width:100%;padding:13px 16px;font-size:0.9375rem;border-radius:10px;border:2px solid #d5d0c8;line-height:1.6;resize:vertical;outline:none;color:#3d3730}.notes-ta:focus{border-color:#718355}
 .notes-actions{display:flex;gap:8px;margin-top:10px}
-.save-btn{padding:9px 22px;font-size:0.84375rem;font-weight:700;border-radius:10px;border:none;background:#457b9d;color:#fff;cursor:pointer}
-.cancel-btn{padding:9px 18px;font-size:0.84375rem;border-radius:10px;border:1px solid #d5d0c8;background:#fff;color:#6b6560;cursor:pointer}
-.edit-btn{padding:9px 18px;font-size:0.84375rem;border-radius:10px;border:1px solid #d5d0c8;background:#fff;color:#6b6560;margin-top:8px;cursor:pointer}
-.notes-display{font-size:0.875rem;color:#6b6560;line-height:1.6;background:#fff;padding:13px 16px;border-radius:10px;border:1px solid #e5e1db;white-space:pre-wrap}
-.last-up{font-size:0.8125rem;color:#b5b0a8;font-style:italic;margin-top:16px}
-.app-footer{text-align:center;font-size:0.8125rem;color:#a09a92;padding:18px 24px;border-top:1px solid #e8e4de;margin-top:auto}
+.save-btn{padding:9px 22px;font-size:0.9375rem;font-weight:700;border-radius:10px;border:none;background:#457b9d;color:#fff;cursor:pointer}
+.cancel-btn{padding:9px 18px;font-size:0.9375rem;border-radius:10px;border:1px solid #d5d0c8;background:#fff;color:#6b6560;cursor:pointer}
+.edit-btn{padding:9px 18px;font-size:0.9375rem;border-radius:10px;border:1px solid #d5d0c8;background:#fff;color:#6b6560;margin-top:8px;cursor:pointer}
+.notes-display{font-size:0.9375rem;color:#6b6560;line-height:1.6;background:#fff;padding:13px 16px;border-radius:10px;border:1px solid #e5e1db;white-space:pre-wrap}
+.last-up{font-size:0.9375rem;color:#b5b0a8;font-style:italic;margin-top:16px}
+.app-footer{text-align:center;font-size:0.9375rem;color:#a09a92;padding:18px 24px;border-top:1px solid #e8e4de;margin-top:auto}
 .tab-bar{display:flex;flex-wrap:wrap;gap:0;border-bottom:2px solid #e8e4de;background:#fff;padding:0 4px}
-.tab-item{display:flex;flex-direction:column;align-items:center;gap:1px;padding:6px 8px 5px;border:none;background:transparent;font-size:0.8125rem;color:#8d99ae;white-space:nowrap;border-bottom:3px solid transparent;transition:all .15s}
+.tab-item{display:flex;flex-direction:column;align-items:center;gap:1px;padding:6px 8px 5px;border:none;background:transparent;font-size:0.9375rem;color:#8d99ae;white-space:nowrap;border-bottom:3px solid transparent;transition:all .15s}
 .tab-item:hover{color:#3d3730;background:#faf9f7}.tab-active{color:#3d3730!important;font-weight:600;border-bottom-color:#6d6875}
-.tab-icon{font-size:1.25rem;line-height:1}.tab-label{font-size:0.8125rem;line-height:1.2}
+.tab-icon{font-size:1.25rem;line-height:1}.tab-label{font-size:0.9375rem;line-height:1.2}
 
 /* tab order editor */
 
@@ -6600,58 +8768,58 @@ button,input,select,textarea{color:inherit;font-family:inherit}
 .pn-btn{display:flex;flex-direction:column;gap:2px;padding:14px 18px;border:1px solid #e5e1db;border-radius:12px;background:#fff;text-align:left;min-width:100px;transition:all .15s}
 .pn-btn:hover{background:#faf9f7;box-shadow:0 2px 8px rgba(0,0,0,.05)}
 .pn-btn-next{text-align:right;align-items:flex-end}.pn-arrow{font-size:1.125rem;color:#8d99ae;line-height:1}
-.pn-dir{font-size:0.8125rem;color:#a09a92;text-transform:uppercase;letter-spacing:.5px}.pn-name{font-size:0.875rem;font-weight:600;color:#3d3730}
+.pn-dir{font-size:0.9375rem;color:#a09a92;text-transform:uppercase;letter-spacing:.5px}.pn-name{font-size:0.9375rem;font-weight:600;color:#3d3730}
 .contacts-header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:20px;flex-wrap:wrap}
 .contacts-header-actions{display:flex;gap:8px;flex-shrink:0;align-items:center;flex-wrap:wrap}
-.import-toast{background:#e8f0df;color:#4a6232;padding:10px 16px;border-radius:10px;font-size:0.84375rem;font-weight:600;margin-bottom:16px;animation:fadeIn .3s ease}
+.import-toast{background:#e8f0df;color:#4a6232;padding:10px 16px;border-radius:10px;font-size:0.9375rem;font-weight:600;margin-bottom:16px;animation:fadeIn .3s ease}
 .contacts-controls{display:flex;flex-direction:column;gap:10px;margin-bottom:24px}
 .cc-group{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.cc-label{font-size:0.8125rem;font-weight:600;color:#8d99ae;text-transform:uppercase;letter-spacing:.5px;margin-right:4px}
-.cc-btn{padding:5px 12px;border-radius:20px;border:1.5px solid #e5e1db;background:#fff;font-size:0.8125rem;color:#6b6560;transition:all .12s;white-space:nowrap}
+.cc-label{font-size:0.9375rem;font-weight:600;color:#8d99ae;text-transform:uppercase;letter-spacing:.5px;margin-right:4px}
+.cc-btn{padding:5px 12px;border-radius:20px;border:1.5px solid #e5e1db;background:#fff;font-size:0.9375rem;color:#6b6560;transition:all .12s;white-space:nowrap}
 .cc-active{background:#f0ece4!important;border-color:#8d99ae!important;color:#3d3730;font-weight:600}
-.contacts-empty{text-align:center;padding:40px 20px;color:#a09a92;font-size:0.875rem;line-height:1.6}
+.contacts-empty{text-align:center;padding:40px 20px;color:#a09a92;font-size:0.9375rem;line-height:1.6}
 .contacts-list{display:flex;flex-direction:column;gap:6px}
 .contact-group{margin-bottom:20px}
 .contact-group-title{font-family:'Libre Baskerville',serif;font-size:0.9375rem;font-weight:700;margin:0 0 10px;padding-bottom:6px;border-bottom:1px solid #ede8df}
 .contact-row{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid #e8e4de;border-radius:10px;background:#fff;width:100%;text-align:left;transition:all .12s}
 .contact-row:hover{background:#faf9f7;box-shadow:0 2px 8px rgba(0,0,0,.04)}
 .contact-avatar{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:1rem;font-family:'Libre Baskerville',serif;flex-shrink:0}
-.contact-info{flex:1;min-width:0}.contact-name{font-size:0.90625rem;font-weight:600;color:#3d3730;line-height:1.3}
-.contact-role{font-size:0.8125rem;color:#8d99ae;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.contact-info{flex:1;min-width:0}.contact-name{font-size:0.9375rem;font-weight:600;color:#3d3730;line-height:1.3}
+.contact-role{font-size:0.9375rem;color:#8d99ae;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .contact-arrow{font-size:1.25rem;color:#c5c0b8;flex-shrink:0}
-.back-link{background:none;border:none;font-size:0.875rem;color:#8d99ae;padding:0;margin-bottom:16px;text-decoration:underline;text-underline-offset:3px;display:block}
+.back-link{background:none;border:none;font-size:0.9375rem;color:#8d99ae;padding:0;margin-bottom:16px;text-decoration:underline;text-underline-offset:3px;display:block}
 .cd-header{display:flex;align-items:center;gap:16px;padding:20px 24px;border-radius:14px;border-left:5px solid;background:#faf9f7;margin-bottom:24px}
-.cd-avatar{width:52px;height:52px;font-size:1.375rem}.cd-meta{font-size:0.875rem;color:#6b6560;margin:4px 0 8px}
+.cd-avatar{width:52px;height:52px;font-size:1.375rem}.cd-meta{font-size:0.9375rem;color:#6b6560;margin:4px 0 8px}
 .cd-info-grid{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:20px}
 .cd-info-item{background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:12px 16px;min-width:200px;flex:1}
-.cd-info-label{font-size:0.8125rem;text-transform:uppercase;letter-spacing:.5px;color:#8d99ae;display:block;margin-bottom:4px}
+.cd-info-label{font-size:0.9375rem;text-transform:uppercase;letter-spacing:.5px;color:#8d99ae;display:block;margin-bottom:4px}
 .cd-info-value{font-size:0.9375rem;color:#3d3730;font-weight:500;word-break:break-all}
 .cd-actions{display:flex;gap:8px;margin-bottom:28px}
-.cd-delete-btn{padding:9px 18px;font-size:0.84375rem;border-radius:10px;border:1px solid #e5c5c5;background:#fff;color:#b56576}
+.cd-delete-btn{padding:9px 18px;font-size:0.9375rem;border-radius:10px;border:1px solid #e5c5c5;background:#fff;color:#b56576}
 .cd-note-add{margin-bottom:20px}.cd-notes-list{display:flex;flex-direction:column;gap:8px}
 .cd-note-card{background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:12px 16px}
 .cd-note-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
-.cd-note-date{font-size:0.8125rem;color:#a09a92}.cd-note-text{font-size:0.875rem;color:#3d3730;line-height:1.55;white-space:pre-wrap}
+.cd-note-date{font-size:0.9375rem;color:#a09a92}.cd-note-text{font-size:0.9375rem;color:#3d3730;line-height:1.55;white-space:pre-wrap}
 .cf-overlay{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px}
 .cf-modal{background:#fff;border-radius:16px;padding:28px 28px 24px;max-width:520px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 12px 40px rgba(0,0,0,.12)}
 .cf-title{font-family:'Libre Baskerville',serif;font-size:1.125rem;font-weight:700;margin:0 0 20px;color:#3d3730}
 .cf-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px}
-.cf-label{font-size:0.8125rem;font-weight:600;color:#6b6560;display:flex;flex-direction:column;gap:5px}
-.cf-input{padding:10px 12px;font-size:0.875rem;border-radius:8px;border:1.5px solid #d5d0c8;outline:none;color:#3d3730}.cf-input:focus{border-color:#457b9d}
+.cf-label{font-size:0.9375rem;font-weight:600;color:#6b6560;display:flex;flex-direction:column;gap:5px}
+.cf-input{padding:10px 12px;font-size:0.9375rem;border-radius:8px;border:1.5px solid #d5d0c8;outline:none;color:#3d3730}.cf-input:focus{border-color:#457b9d}
 select.cf-input{background:#fff}.cf-actions{display:flex;gap:8px;margin-top:4px}
-.cf-custom-section{margin-bottom:16px}.cf-custom-title{font-size:0.8125rem;font-weight:600;color:#6b6560;margin:0 0 10px;text-transform:uppercase;letter-spacing:.3px}
+.cf-custom-section{margin-bottom:16px}.cf-custom-title{font-size:0.9375rem;font-weight:600;color:#6b6560;margin:0 0 10px;text-transform:uppercase;letter-spacing:.3px}
 .cf-custom-row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
-.cf-custom-label{width:140px;flex-shrink:0;font-size:0.8125rem!important;padding:8px 10px!important}
-.cf-custom-value{flex:1;font-size:0.8125rem!important;padding:8px 10px!important}
+.cf-custom-label{width:140px;flex-shrink:0;font-size:0.9375rem!important;padding:8px 10px!important}
+.cf-custom-value{flex:1;font-size:0.9375rem!important;padding:8px 10px!important}
 .cf-add-field-row{display:flex;gap:8px;align-items:center;margin-bottom:18px;padding-top:4px;border-top:1px dashed #e5e1db}
 /* calendar */
 .cal-nav{display:flex;align-items:center;justify-content:center;gap:16px;margin-bottom:16px}
 .cal-nav-btn{background:none;border:1px solid #e5e1db;border-radius:8px;width:36px;height:36px;font-size:1.25rem;color:#6b6560;display:flex;align-items:center;justify-content:center}
 .cal-month{font-family:'Libre Baskerville',serif;font-size:1.0625rem;font-weight:700;min-width:180px;text-align:center}
 .cal-grid{max-width:500px}.cal-header{display:grid;grid-template-columns:repeat(7,1fr);text-align:center}
-.cal-dow{font-size:0.8125rem;font-weight:600;color:#8d99ae;padding:6px 0;text-transform:uppercase}
+.cal-dow{font-size:0.9375rem;font-weight:600;color:#8d99ae;padding:6px 0;text-transform:uppercase}
 .cal-body{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
-.cal-cell{border:none;background:#fff;border-radius:8px;padding:8px 4px;min-height:48px;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:0.875rem;transition:all .12s}
+.cal-cell{border:none;background:#fff;border-radius:8px;padding:8px 4px;min-height:48px;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:0.9375rem;transition:all .12s}
 .cal-cell:hover{background:#f0ece4}.cal-empty{background:transparent;cursor:default}
 .cal-sel{background:#eef4f8!important;outline:2px solid #457b9d;outline-offset:-2px}
 .cal-today{font-weight:700;color:#457b9d}
@@ -6659,55 +8827,107 @@ select.cf-input{background:#fff}.cf-actions{display:flex;gap:8px;margin-top:4px}
 .cal-dot{width:5px;height:5px;border-radius:50%;background:#b56576}
 .cal-detail{margin-top:20px}
 .cal-appt-card{background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:12px 16px;margin-bottom:8px}
-.cal-appt-head{display:flex;align-items:center;gap:8px;font-size:0.875rem}
-.cal-appt-notes{font-size:0.8125rem;color:#6b6560;margin-top:6px;line-height:1.45}
+.cal-appt-head{display:flex;align-items:center;gap:8px;font-size:0.9375rem}
+.cal-appt-notes{font-size:0.9375rem;color:#6b6560;margin-top:6px;line-height:1.45}
 /* messages */
 .msg-compose{display:flex;gap:8px;align-items:center;margin-bottom:20px;flex-wrap:wrap}
 .msg-sender{display:flex;align-items:center;gap:8px;padding:4px 12px 4px 4px;background:#eef4f8;border-radius:20px;flex-shrink:0}
-.msg-sender-name{font-size:0.8125rem;font-weight:600;color:#3d3730}
+.msg-sender-name{font-size:0.9375rem;font-weight:600;color:#3d3730}
 .msg-sender-role{font-weight:400;color:#8d99ae}
 .msg-self{background:#eef4f8!important;border-color:#b0cfe0!important}
-.msg-role{font-size:0.8125rem;color:#8d99ae;margin-left:4px;font-weight:400}
+.msg-role{font-size:0.9375rem;color:#8d99ae;margin-left:4px;font-weight:400}
 .msg-meta{display:flex;align-items:center;gap:6px}
 .msg-list{display:flex;flex-direction:column;gap:8px}
 .msg-bubble{background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:12px 16px}
 .msg-meta{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
-.msg-time{font-size:0.8125rem;color:#a09a92}.msg-text{font-size:0.875rem;color:#3d3730;line-height:1.5;white-space:pre-wrap}
+.msg-time{font-size:0.9375rem;color:#a09a92}.msg-text{font-size:0.9375rem;color:#3d3730;line-height:1.5;white-space:pre-wrap}
 /* settings */
 /* documents */
-.doc-processing{display:flex;align-items:center;gap:12px;padding:20px;background:#fdf6ee;border-radius:12px;color:#bc6c25;font-size:0.875rem;font-weight:600;margin-bottom:20px}
+.doc-processing{display:flex;align-items:center;gap:12px;padding:20px;background:#fdf6ee;border-radius:12px;color:#bc6c25;font-size:0.9375rem;font-weight:600;margin-bottom:20px}
 .doc-spinner{width:20px;height:20px;border:3px solid #f0e0c8;border-top-color:#bc6c25;border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.doc-type-badge{display:inline-flex;align-items:center;gap:8px;padding:8px 16px;background:#fff;border:1px solid #e8e4de;border-radius:20px;font-size:0.84375rem;color:#6b6560;margin-bottom:24px}
+.doc-type-badge{display:inline-flex;align-items:center;gap:8px;padding:8px 16px;background:#fff;border:1px solid #e8e4de;border-radius:20px;font-size:0.9375rem;color:#6b6560;margin-bottom:24px}
 .doc-table-wrap{overflow-x:auto;margin-bottom:12px;border:1px solid #e8e4de;border-radius:10px}
-.doc-table{width:100%;border-collapse:collapse;font-size:0.84375rem}
-.doc-table th{text-align:left;padding:10px 12px;background:#f6f4f0;color:#6b6560;font-weight:600;font-size:0.8125rem;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap;border-bottom:2px solid #e8e4de}
+.doc-table{width:100%;border-collapse:collapse;font-size:0.9375rem}
+.doc-table th{text-align:left;padding:10px 12px;background:#f6f4f0;color:#6b6560;font-weight:600;font-size:0.9375rem;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap;border-bottom:2px solid #e8e4de}
 .doc-table td{padding:6px 8px;border-bottom:1px solid #f0ece4;vertical-align:middle}
 .doc-table tr:last-child td{border-bottom:none}
 .doc-flagged{background:#fde2e8}
-.doc-cell-input{width:100%;padding:5px 8px;border:1px solid transparent;border-radius:4px;font-size:0.8125rem;outline:none;background:transparent;color:#3d3730;transition:border-color .15s}
+.doc-cell-input{width:100%;padding:5px 8px;border:1px solid transparent;border-radius:4px;font-size:0.9375rem;outline:none;background:transparent;color:#3d3730;transition:border-color .15s}
 .doc-cell-input:hover{border-color:#e5e1db}.doc-cell-input:focus{border-color:#457b9d;background:#fff}
 .doc-cell-sm{max-width:100px}.doc-cell-xs{max-width:60px}
 .doc-table-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
 .doc-section-card{background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:14px 18px;margin-bottom:10px}
-.doc-section-title{font-size:0.875rem;font-weight:700;color:#457b9d;margin:0 0 8px;font-family:'Libre Baskerville',serif}
-.doc-section-body{font-size:0.84375rem;color:#3d3730;line-height:1.55;white-space:pre-wrap;margin:0}
-.doc-raw-text{font-size:0.8125rem;line-height:1.5;color:#6b6560;background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:14px 16px;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto;font-family:'Source Sans 3',monospace}
-.doc-raw-details{margin-top:16px}.doc-raw-summary{font-size:0.8125rem;color:#8d99ae;cursor:pointer;padding:8px 0}
+.doc-section-title{font-size:0.9375rem;font-weight:700;color:#457b9d;margin:0 0 8px;font-family:'Libre Baskerville',serif}
+.doc-section-body{font-size:0.9375rem;color:#3d3730;line-height:1.55;white-space:pre-wrap;margin:0}
+.med-view-toggle{display:flex;gap:6px;margin:10px 0 4px}
+.mvt-btn{flex:1;padding:8px 12px;border:1px solid #e0dbd3;background:#fff;border-radius:10px;font:inherit;font-size:0.9375rem;cursor:pointer;color:#6b6560}
+.mvt-on{background:#3d3a36;color:#fff;border-color:#3d3a36;font-weight:600}
+.med-cal-filters{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0}
+.mc-chip{padding:5px 11px;border:1px solid #e0dbd3;background:#fff;border-radius:999px;font:inherit;font-size:0.9375rem;cursor:pointer;color:#6b6560}
+.mc-chip-on{background:#5b7553;color:#fff;border-color:#5b7553}
+.med-adh-stats{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+.mas-card{flex:1;min-width:92px;background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:10px 12px}
+.mas-num{font-size:1.5rem;font-weight:700;color:#3d3a36;line-height:1.1}
+.mas-of{font-size:0.9375rem;font-weight:400;color:#8d99ae}
+.mas-lbl{font-size:0.9375rem;color:#8d99ae;margin-top:2px}
+.mas-delta{margin-left:6px;font-weight:600}.mas-delta.up{color:#5b7553}.mas-delta.down{color:#b56576}
+.mas-warn{border-color:#e8d9b8;background:#fdf8ee}
+.med-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin:8px 0}
+.mc-dow{text-align:center;font-size:0.9375rem;color:#8d99ae;padding-bottom:2px}
+.mc-cell{aspect-ratio:1;border:1px solid transparent;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;font:inherit;cursor:pointer;padding:0;gap:1px}
+.mc-blank{background:transparent;border:none;cursor:default}
+.mc-day{font-size:0.9375rem;font-weight:600}
+.mc-frac{font-size:0.9375rem;opacity:0.75}
+.mc-full{background:#5b7553;color:#fff}
+.mc-partial{background:#d9a441;color:#3d3a36}
+.mc-missed{background:#b56576;color:#fff}
+.mc-unrecorded{background:repeating-linear-gradient(45deg,#f0ece5,#f0ece5 3px,#e2ddd4 3px,#e2ddd4 6px);color:#8d7f70}
+.mc-none{background:#f7f5f1;color:#b8b2a8}
+.mc-future{background:#fcfbf9;color:#d5cfc5}
+.mc-sel{outline:2px solid #3d3a36;outline-offset:1px}
+.mc-today{border-color:#3d3a36}
+.med-cal-legend{display:flex;flex-wrap:wrap;gap:12px;font-size:0.9375rem;color:#6b6560;margin:6px 0 4px}
+.med-cal-legend span{display:flex;align-items:center;gap:5px}
+.mc-key{width:12px;height:12px;border-radius:3px;display:inline-block;flex:none}
+.mc-slots{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.mc-slot{font-size:0.9375rem;padding:3px 8px;border-radius:999px;background:#f2efea;color:#6b6560}
+.mc-slot-given{background:#e4ebe0;color:#4a6142}.mc-slot-missed{background:#f6e3e6;color:#8d4a58}
+.mc-slot-refused{background:#f6ecdf;color:#8a6534}.mc-slot-unrecorded{background:#f2efea;color:#9a948b}
+.mc-slot-prn{background:#eef1f5;color:#5e6b7d}
+.med-strip-row{margin-bottom:12px}
+.med-strip-head{display:flex;justify-content:space-between;align-items:baseline;font-size:0.9375rem;margin-bottom:4px}
+.med-strip-pct{color:#6b6560;font-weight:600}.med-strip-pct.low{color:#b56576}
+.med-strip{display:flex;gap:2px;flex-wrap:wrap}
+.med-strip .mc-key{width:9px;height:14px;border-radius:2px}
+.drug-suggest{border:1px solid #e0dbd3;border-radius:10px;background:#fff;overflow:hidden;margin-bottom:10px;max-height:230px;overflow-y:auto}
+.drug-opt{display:flex;flex-direction:column;align-items:flex-start;gap:1px;width:100%;text-align:left;padding:8px 11px;background:none;border:none;border-bottom:1px solid #f1ede7;font:inherit;cursor:pointer}
+.drug-opt:last-child{border-bottom:none}.drug-opt:hover{background:#f7f5f1}
+.drug-opt-name{font-weight:600;color:#3d3a36;font-size:0.9375rem}
+.drug-opt-brand{font-size:0.9375rem;color:#8d99ae}
+.drug-opt-str{font-size:0.9375rem;color:#6b6560}
+.drug-strengths{margin:2px 0 10px}
+.drug-str-row{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}
+.drug-str{padding:4px 10px;border:1px solid #e0dbd3;background:#fff;border-radius:999px;font:inherit;font-size:0.9375rem;cursor:pointer;color:#6b6560}
+.drug-str-on{background:#5b7553;color:#fff;border-color:#5b7553}
+.drug-ok{font-size:0.9375rem;color:#4a6142;margin:0 0 8px}
+.drug-warn{font-size:0.9375rem;color:#8a6534;background:#fdf8ee;border:1px solid #e8d9b8;border-radius:8px;padding:7px 10px;margin:0 0 4px}
+.doc-raw-text{font-size:0.9375rem;line-height:1.5;color:#6b6560;background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:14px 16px;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto;font-family:'Source Sans 3',monospace}
+.doc-raw-details{margin-top:16px}.doc-raw-summary{font-size:0.9375rem;color:#8d99ae;cursor:pointer;padding:8px 0}
 
 /* incidents */
 .incident-card{background:#fff;border:1px solid #e8e4de;border-left:4px solid;border-radius:10px;padding:14px 18px;margin-bottom:10px}
 .incident-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
-.incident-type{font-weight:600;font-size:0.875rem;color:#3d3730}
-.incident-datetime{font-size:0.8125rem;color:#8d99ae;margin-left:auto}
-.incident-desc{font-size:0.875rem;color:#3d3730;line-height:1.5;margin:0 0 6px}
-.incident-response{font-size:0.8125rem;color:#6b6560;line-height:1.45;margin:0 0 6px}
-.incident-meta{display:flex;gap:16px;font-size:0.8125rem;color:#8d99ae;flex-wrap:wrap}
+.incident-type{font-weight:600;font-size:0.9375rem;color:#3d3730}
+.incident-datetime{font-size:0.9375rem;color:#8d99ae;margin-left:auto}
+.incident-desc{font-size:0.9375rem;color:#3d3730;line-height:1.5;margin:0 0 6px}
+.incident-response{font-size:0.9375rem;color:#6b6560;line-height:1.45;margin:0 0 6px}
+.incident-meta{display:flex;gap:16px;font-size:0.9375rem;color:#8d99ae;flex-wrap:wrap}
 
 /* med admin */
 .med-date-nav{display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap}
 .med-day-stats{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap}
-.med-stat{font-size:0.8125rem;font-weight:600;padding:4px 12px;border-radius:8px}
+.med-stat{font-size:0.9375rem;font-weight:600;padding:4px 12px;border-radius:8px}
 .med-stat-given{background:#e8f0df;color:#718355}
 .med-stat-missed{background:#fde2e8;color:#b56576}
 .med-stat-refused{background:#fdf0d5;color:#bc6c25}
@@ -6715,18 +8935,18 @@ select.cf-input{background:#fff}.cf-actions{display:flex;gap:8px;margin-top:4px}
 .med-table td,.med-table th{text-align:center;padding:8px 6px}
 .med-table td:first-child,.med-table th:first-child{text-align:left;min-width:140px}
 .med-table td:nth-child(2),.med-table th:nth-child(2){text-align:left}
-.med-slot-th{font-size:0.8125rem!important;min-width:60px}
+.med-slot-th{font-size:0.9375rem!important;min-width:60px}
 .med-cell{min-width:54px;transition:background .12s}
 .med-check{font-size:1rem;font-weight:700;display:inline-block;width:24px;height:24px;line-height:24px;text-align:center;border-radius:6px}
 .med-check.given{color:#718355;background:#d4e8c4}.med-check.missed{color:#b56576;background:#f8d0d8}
 .med-check.refused{color:#bc6c25;background:#f8e4c4}.med-check.pending{color:#c5c0b8}.med-check.na{color:#e5e1db}
-.med-note{font-size:0.8125rem;color:#8d99ae;margin-top:2px}
+.med-note{font-size:0.9375rem;color:#8d99ae;margin-top:2px}
 .med-slot-row{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
 
 /* expenses */
 .expense-summary{display:flex;gap:14px;margin-bottom:20px;flex-wrap:wrap}
 .expense-summary-item{background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:12px 18px;min-width:140px;flex:1}
-.expense-summary-label{font-size:0.8125rem;text-transform:uppercase;letter-spacing:.5px;color:#8d99ae;display:block;margin-bottom:4px}
+.expense-summary-label{font-size:0.9375rem;text-transform:uppercase;letter-spacing:.5px;color:#8d99ae;display:block;margin-bottom:4px}
 .expense-summary-value{font-size:1.25rem;font-weight:700;color:#3d3730;font-family:'Libre Baskerville',serif}
 
 .settings-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
@@ -6736,48 +8956,48 @@ select.cf-input{background:#fff}.cf-actions{display:flex;gap:8px;margin-top:4px}
 .emergency-card{background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:18px 20px;border-left:4px solid #8b0000}
 .emergency-title{font-family:'Libre Baskerville',serif;font-size:1rem;font-weight:700;margin:0 0 12px;color:#8b0000}
 .emergency-steps{margin:0;padding:0 0 0 20px;display:flex;flex-direction:column;gap:6px}
-.emergency-step{display:flex;align-items:center;gap:8px;font-size:0.84375rem;line-height:1.45;color:#3d3730}
-.emergency-step-input{flex:1;padding:6px 10px;border:1px solid transparent;border-radius:6px;font-size:0.84375rem;outline:none;background:transparent;color:#3d3730}
+.emergency-step{display:flex;align-items:center;gap:8px;font-size:0.9375rem;line-height:1.45;color:#3d3730}
+.emergency-step-input{flex:1;padding:6px 10px;border:1px solid transparent;border-radius:6px;font-size:0.9375rem;outline:none;background:transparent;color:#3d3730}
 .emergency-step-input:hover{border-color:#e5e1db}.emergency-step-input:focus{border-color:#8b0000;background:#fff}
 
 /* shifts */
-.shift-table td,.shift-table th{text-align:center;padding:6px 4px;font-size:0.8125rem}
-.shift-slot-label{text-align:left!important;font-weight:600;font-size:0.8125rem;color:#6b6560;white-space:nowrap;min-width:80px}
+.shift-table td,.shift-table th{text-align:center;padding:6px 4px;font-size:0.9375rem}
+.shift-slot-label{text-align:left!important;font-weight:600;font-size:0.9375rem;color:#6b6560;white-space:nowrap;min-width:80px}
 .shift-cell{min-width:70px}.shift-empty{background:#fdf0f2!important}
-.shift-input{width:100%;padding:4px 6px;border:1px solid transparent;border-radius:4px;font-size:0.8125rem;text-align:center;outline:none;background:transparent}
+.shift-input{width:100%;padding:4px 6px;border:1px solid transparent;border-radius:4px;font-size:0.9375rem;text-align:center;outline:none;background:transparent}
 .shift-input:hover{border-color:#e5e1db}.shift-input:focus{border-color:#457b9d;background:#fff}
-.shift-name{font-size:0.8125rem}
+.shift-name{font-size:0.9375rem}
 
 /* triggers */
-.trigger-alert{padding:14px 18px;border-radius:10px;font-size:0.875rem;font-weight:600;margin-bottom:20px}
+.trigger-alert{padding:14px 18px;border-radius:10px;font-size:0.9375rem;font-weight:600;margin-bottom:20px}
 .trigger-list{display:flex;flex-direction:column;gap:8px}
 .trigger-item{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;border-radius:10px;border:1px solid #e8e4de;background:#fff;cursor:pointer;transition:all .12s}
 .trigger-active{background:#fdf0d5!important;border-color:#f0d5a0}
-.trigger-label{font-size:0.90625rem;font-weight:600;color:#3d3730}.trigger-desc{font-size:0.8125rem;color:#8d99ae;margin-top:2px}
+.trigger-label{font-size:0.9375rem;font-weight:600;color:#3d3730}.trigger-desc{font-size:0.9375rem;color:#8d99ae;margin-top:2px}
 
 /* visit summary */
-.visit-summary{font-size:0.8125rem;line-height:1.6;color:#3d3730;background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:18px 20px;white-space:pre-wrap;word-break:break-word;max-height:70vh;overflow-y:auto;font-family:'Source Sans 3',monospace}
+.visit-summary{font-size:0.9375rem;line-height:1.6;color:#3d3730;background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:18px 20px;white-space:pre-wrap;word-break:break-word;max-height:70vh;overflow-y:auto;font-family:'Source Sans 3',monospace}
 
 /* help */
-.help-toc{background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:14px 18px;margin-bottom:24px;font-size:0.8125rem;line-height:2;color:#6b6560}
+.help-toc{background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:14px 18px;margin-bottom:24px;font-size:0.9375rem;line-height:2;color:#6b6560}
 .help-link{color:#457b9d;text-decoration:none}.help-link:hover{text-decoration:underline}
 .help-section{margin-bottom:24px;padding-bottom:20px;border-bottom:1px solid #f0ece4}
-.help-body{font-size:0.875rem;color:#3d3730;line-height:1.65}
+.help-body{font-size:0.9375rem;color:#3d3730;line-height:1.65}
 
 /* merge preview */
 .merge-modal{max-width:520px;max-height:80vh;overflow-y:auto}
 .sr-protected{position:absolute;top:8px;right:8px;font-size:1.0625rem;opacity:.7}
-.flood-warn{background:#fbeee6;border:1px solid #d8a384;color:#8a4a22;border-radius:10px;padding:10px 12px;margin:8px 0;font-size:0.8125rem;line-height:1.45}
-.merge-source{font-size:0.84375rem;color:#6b6560;margin:0 0 16px;background:#faf9f7;padding:8px 14px;border-radius:8px}
+.flood-warn{background:#fbeee6;border:1px solid #d8a384;color:#8a4a22;border-radius:10px;padding:10px 12px;margin:8px 0;font-size:0.9375rem;line-height:1.45}
+.merge-source{font-size:0.9375rem;color:#6b6560;margin:0 0 16px;background:#faf9f7;padding:8px 14px;border-radius:8px}
 .merge-section{margin-bottom:16px}
-.merge-section-title{font-size:0.8125rem;font-weight:700;margin:0 0 6px}
-.merge-item{font-size:0.8125rem;padding:5px 10px;margin-bottom:3px;border-radius:6px;line-height:1.4}
+.merge-section-title{font-size:0.9375rem;font-weight:700;margin:0 0 6px}
+.merge-item{font-size:0.9375rem;padding:5px 10px;margin-bottom:3px;border-radius:6px;line-height:1.4}
 .merge-added{background:#e8f0df;color:#3d3730}
 .merge-updated{background:#fdf0d5;color:#3d3730}
 .merge-kept{background:#f6f4f0;color:#a09a92}
 
 /* sync */
-.sync-status{padding:12px 18px;border-radius:10px;font-size:0.875rem;font-weight:500;margin-bottom:20px}
+.sync-status{padding:12px 18px;border-radius:10px;font-size:0.9375rem;font-weight:500;margin-bottom:20px}
 .sync-status-success{background:#e8f0df;color:#3d5a20}
 .sync-status-error{background:#fde2e8;color:#8b0000}
 .sync-methods{display:flex;flex-direction:column;gap:10px;margin:12px 0}
@@ -6786,82 +9006,82 @@ select.cf-input{background:#fff}.cf-actions{display:flex;gap:8px;margin-top:4px}
 .sync-method-card:active{transform:scale(.98)}
 .sync-method-icon{font-size:2.25rem;width:52px;text-align:center;flex-shrink:0}
 .sync-method-info{display:flex;flex-direction:column;gap:2px}
-.sync-method-info strong{font-size:0.90625rem;color:#3d3730}
-.sync-method-info span{font-size:0.8125rem;color:#8d99ae}
+.sync-method-info strong{font-size:0.9375rem;color:#3d3730}
+.sync-method-info span{font-size:0.9375rem;color:#8d99ae}
 .sync-url-row{display:flex;align-items:center;gap:8px;margin-top:12px}
-.sync-loading{padding:10px;text-align:center;color:#457b9d;font-size:0.8125rem;font-weight:600}
+.sync-loading{padding:10px;text-align:center;color:#457b9d;font-size:0.9375rem;font-weight:600}
 .sync-paste-details{margin-top:20px;padding-top:16px;border-top:1px solid #e8e4de}
-.sync-paste-summary{font-size:0.8125rem;color:#8d99ae;cursor:pointer;padding:8px 0}
+.sync-paste-summary{font-size:0.9375rem;color:#8d99ae;cursor:pointer;padding:8px 0}
 .sync-paste-summary:hover{color:#6b6560}
 
 /* cloud sync */
 .cloud-setup-steps{display:flex;flex-direction:column;gap:8px;margin:14px 0}
-.cloud-step{display:flex;align-items:center;gap:12px;font-size:0.875rem;color:#3d3730}
-.cloud-step-num{width:28px;height:28px;border-radius:50%;background:#457b9d;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.8125rem;flex-shrink:0}
+.cloud-step{display:flex;align-items:center;gap:12px;font-size:0.9375rem;color:#3d3730}
+.cloud-step-num{width:28px;height:28px;border-radius:50%;background:#457b9d;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.9375rem;flex-shrink:0}
 .cloud-connected-info{display:flex;align-items:center;gap:14px;padding:16px 18px;background:#e8f0df;border:1.5px solid #b8d4a0;border-radius:12px}
 .cloud-connected-icon{font-size:2.625rem}
 .cloud-connected-details{flex:1}
 .cloud-connected-file{font-size:0.9375rem;font-weight:700;color:#3d3730}
-.cloud-connected-meta{font-size:0.8125rem;color:#718355;margin-top:2px}
+.cloud-connected-meta{font-size:0.9375rem;color:#718355;margin-top:2px}
 .sync-main-action{text-align:center;padding:24px 0}
 .cloud-sync-btn{display:inline-flex;align-items:center;gap:10px;padding:18px 48px;font-size:1.125rem;font-weight:700;border:none;border-radius:14px;background:linear-gradient(135deg,#457b9d,#3d6a87);color:#fff;cursor:pointer;transition:all .15s;box-shadow:0 4px 16px rgba(69,123,157,.3)}
 .cloud-sync-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 6px 20px rgba(69,123,157,.4)}
 .cloud-sync-btn:active{transform:translateY(0)}
 .cloud-sync-btn:disabled{opacity:.5;cursor:default}
 .sync-advanced{margin-top:24px;border-top:1px solid #e8e4de;padding-top:4px}
-.sync-advanced-summary{font-size:0.8125rem;color:#8d99ae;cursor:pointer;padding:12px 0;font-weight:600}
+.sync-advanced-summary{font-size:0.9375rem;color:#8d99ae;cursor:pointer;padding:12px 0;font-weight:600}
 .sync-advanced-summary:hover{color:#6b6560}
 .sync-advanced-content{padding-top:8px}
-.sync-sub-title{font-size:0.8125rem;font-weight:700;color:#6b6560;margin:16px 0 8px}
+.sync-sub-title{font-size:0.9375rem;font-weight:700;color:#6b6560;margin:16px 0 8px}
 .sync-method-tabs{display:flex;gap:8px;margin-bottom:16px}
 
 /* team */
 .team-form{margin-top:12px;display:flex;flex-direction:column;gap:8px;max-width:400px}
 .team-header{margin-bottom:16px}
 .team-name{font-size:1.125rem;font-weight:700;color:#3d3730;font-family:'Libre Baskerville',serif}
-.team-client{font-size:0.875rem;color:#6b6560;margin-top:2px}
+.team-client{font-size:0.9375rem;color:#6b6560;margin-top:2px}
 .team-roster{display:flex;flex-direction:column;gap:8px;margin-bottom:16px}
 .team-member{display:flex;align-items:center;gap:12px;padding:12px 16px;background:#fff;border:1px solid #e8e4de;border-radius:10px}
 .team-member-self{background:#eef4f8;border-color:#b0cfe0}
 .team-member-avatar{width:36px;height:36px;border-radius:50%;background:#457b9d;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1rem;flex-shrink:0}
 .team-member-info{flex:1;min-width:0}
-.team-member-name{font-size:0.875rem;font-weight:600;color:#3d3730}
-.team-member-you{font-size:0.8125rem;color:#457b9d;font-weight:400}
-.team-member-role{font-size:0.8125rem;color:#8d99ae}
-.team-member-sync{font-size:0.8125rem;color:#a09a92;text-align:right;flex-shrink:0}
+.team-member-name{font-size:0.9375rem;font-weight:600;color:#3d3730}
+.team-member-you{font-size:0.9375rem;color:#457b9d;font-weight:400}
+.team-member-role{font-size:0.9375rem;color:#8d99ae}
+.team-member-sync{font-size:0.9375rem;color:#a09a92;text-align:right;flex-shrink:0}
 .team-invite-details{margin-top:8px;padding-top:8px;border-top:1px solid #e8e4de}
-.team-invite-code{font-family:monospace;font-size:0.8125rem;padding:10px 14px;background:#fff;border:1px solid #e8e4de;border-radius:8px;word-break:break-all;cursor:pointer;color:#457b9d;transition:background .12s;line-height:1.5}
+.team-invite-code{font-family:monospace;font-size:0.9375rem;padding:10px 14px;background:#fff;border:1px solid #e8e4de;border-radius:8px;word-break:break-all;cursor:pointer;color:#457b9d;transition:background .12s;line-height:1.5}
 .team-invite-code:hover{background:#eef4f8}
 .client-tier-section{margin-top:16px;padding-top:16px;border-top:1px solid #e8e4de}
 .client-tier-toggle{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
 .client-tier-toggle .state-btn{flex:1;min-width:180px;text-align:left;display:flex;flex-direction:column;gap:2px;padding:12px 16px}
-.tier-desc{font-size:0.8125rem;font-weight:400;opacity:.7;display:block}
-.role-badge{font-size:0.8125rem;padding:2px 6px;border-radius:4px;background:#eef4f8;color:#457b9d;font-weight:600;margin-left:4px}
+.tier-desc{font-size:0.9375rem;font-weight:400;opacity:.7;display:block}
+.role-badge{font-size:0.9375rem;padding:2px 6px;border-radius:4px;background:#eef4f8;color:#457b9d;font-weight:600;margin-left:4px}
 
 /* state selector */
 .state-selector{display:flex;gap:8px;flex-wrap:wrap}
-.state-btn{padding:10px 18px;border:2px solid #e5e1db;border-radius:10px;background:#fff;font-size:0.875rem;color:#6b6560;cursor:pointer;transition:all .12s;font-weight:500}
+.state-btn{padding:10px 18px;border:2px solid #e5e1db;border-radius:10px;background:#fff;font-size:0.9375rem;color:#6b6560;cursor:pointer;transition:all .12s;font-weight:500}
 .state-btn:hover{border-color:#457b9d;color:#3d3730}
 .state-btn-active{background:#eef4f8;border-color:#457b9d;color:#457b9d;font-weight:700}
 
 /* self reports */
 .sr-form{background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:20px}
 .sr-mood-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
-.sr-mood-btn{padding:8px 14px;border:1.5px solid #e5e1db;border-radius:10px;background:#fff;font-size:0.84375rem;color:#6b6560;cursor:pointer;transition:all .12s}
+.sr-mood-btn{padding:8px 14px;border:1.5px solid #e5e1db;border-radius:10px;background:#fff;font-size:0.9375rem;color:#6b6560;cursor:pointer;transition:all .12s}
 .sr-mood-active{background:#e8f0df!important;border-color:#718355;color:#3d3730;font-weight:600}
 .sr-audio-row{display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}
-.sr-record-btn{padding:10px 18px;border-radius:10px;border:2px solid #b56576;background:#fff;color:#b56576;font-weight:600;font-size:0.875rem;cursor:pointer;transition:all .15s}
+.sr-record-btn{padding:10px 18px;border-radius:10px;border:2px solid #b56576;background:#fff;color:#b56576;font-weight:600;font-size:0.9375rem;cursor:pointer;transition:all .15s}
 .sr-recording{background:#fde2e8;animation:pulse 1s ease infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
 .sr-audio-preview{display:flex;align-items:center;gap:8px}
 .sr-list{display:flex;flex-direction:column;gap:10px}
 .sr-card{background:#fff;border:1px solid #e8e4de;border-left:4px solid #718355;border-radius:10px;padding:14px 18px;position:relative}
 .sr-card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
-.sr-card-type{font-weight:600;font-size:0.84375rem;color:#3d3730}
-.sr-card-time{font-size:0.8125rem;color:#a09a92}
+.sr-card-type{font-weight:600;font-size:0.9375rem;color:#3d3730}
+.sr-card-time{font-size:0.9375rem;color:#a09a92}
 .sr-card-mood{font-size:0.9375rem;margin-bottom:4px}
-.sr-card-text{font-size:0.875rem;color:#3d3730;line-height:1.5;white-space:pre-wrap;margin:0}
-.sr-err{font-size:0.8125rem;color:#b56576;margin:8px 0 0;padding:0}
+.sr-card-text{font-size:0.9375rem;color:#3d3730;line-height:1.5;white-space:pre-wrap;margin:0}
+.sr-err{font-size:0.9375rem;color:#b56576;margin:8px 0 0;padding:0}
 
 /* doc library */
 .doc-type-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:20px}
@@ -6880,34 +9100,59 @@ select.cf-input{background:#fff}.cf-actions{display:flex;gap:8px;margin-top:4px}
 }
 
 @media(min-width:1024px){.sidebar{transform:translateX(0)}.main-area{margin-left:260px!important}.hamburger{display:none!important}.tab-bar{display:none}}
-@media(max-width:480px){.content{padding:16px 12px 28px}.add-sub-row,.cf-add-field-row,.msg-compose,.settings-row,.doc-table-actions{flex-wrap:wrap}.pn-btn{min-width:0;padding:12px 14px}.domain-pct{font-size:1.5rem}.edit-icon{opacity:.5!important}.cf-grid{grid-template-columns:1fr}.cd-header{flex-direction:column;align-items:flex-start}.cd-info-item{min-width:0}.cf-custom-label{width:100px}.doc-table{font-size:0.8125rem}.doc-cell-input{font-size:0.8125rem;padding:4px 6px}}
+/* ── Bias toward using the screen (the user base trends older) ──────────────────────────────
+   Previous attempt scaled about a dozen named classes at 1024px, which left the other ~380 font declarations
+   untouched — so the app still read as phone-sized on a laptop. This scales the ROOT instead, so every rem-based
+   size in the app grows together, and it MULTIPLIES the user's own text-size setting rather than replacing it
+   (130% chosen by the user × 1.15 desktop boost = 149.5%).
+   Separately, every font-size below 11pt has been raised to a 15px floor — 292 of 399 declarations were under it,
+   which no amount of container widening could have fixed. */
+@media(min-width:1024px){
+  :root{--screen-boost:1.10}
+  .content{padding:36px 44px 56px}
+  .onb-body,.page-sub{max-width:64ch;margin-inline:auto}
+}
+@media(min-width:1500px){
+  :root{--screen-boost:1.20}
+  .content{padding:44px 60px 68px}
+}
+@media(min-width:1900px){
+  :root{--screen-boost:1.28}
+}
+/* Cards and grids should use the width rather than stretching into single tall columns. */
+@media(min-width:1180px){
+  .sync-methods,.storage-choice{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+  .med-adh-stats{gap:14px}
+  .cf-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:480px){.content{padding:16px 12px 28px}.add-sub-row,.cf-add-field-row,.msg-compose,.settings-row,.doc-table-actions{flex-wrap:wrap}.pn-btn{min-width:0;padding:12px 14px}.domain-pct{font-size:1.5rem}.edit-icon{opacity:.5!important}.cf-grid{grid-template-columns:1fr}.cd-header{flex-direction:column;align-items:flex-start}.cd-info-item{min-width:0}.cf-custom-label{width:100px}.doc-table{font-size:0.9375rem}.doc-cell-input{font-size:0.9375rem;padding:4px 6px}}
 
 /* ===== Readability layer: comfortable, scalable type + roomier task rows ===== */
 .sub-text{font-size:1rem;line-height:1.4}
 .sub-type-badge{font-size:1rem;width:1.3rem}
-.sub-recency{font-size:0.8125rem;margin-top:.18rem;display:flex;align-items:center;gap:.4rem;line-height:1.3}
+.sub-recency{font-size:0.9375rem;margin-top:.18rem;display:flex;align-items:center;gap:.4rem;line-height:1.3}
 .sub-recency::before{content:"";width:.55em;height:.55em;border-radius:50%;background:currentColor;flex-shrink:0;opacity:.9}
-.sub-prog-label{font-size:0.8125rem}
-.tier-desc{font-size:0.8125rem}
-.hint{font-size:0.875rem}
+.sub-prog-label{font-size:0.9375rem}
+.tier-desc{font-size:0.9375rem}
+.hint{font-size:0.9375rem}
 .page-sub{font-size:0.9375rem}
-.integrity-label{font-size:0.875rem}
-.nudge-banner{font-size:0.875rem}
+.integrity-label{font-size:0.9375rem}
+.nudge-banner{font-size:0.9375rem}
 .sub-attend-btn{width:2.75rem;height:2.75rem;font-size:1rem}
 .sub-check{width:1.5rem;height:1.5rem;accent-color:#718355;cursor:pointer;flex-shrink:0}
 .subs-wrap{padding-left:.85rem;border-left:2px solid #ece8e1;margin-left:.35rem}
 .sub-typed{align-items:flex-start;gap:.55rem;padding:.55rem 0;min-height:2.75rem}
-.sub-type-select{font-size:0.8125rem;padding:.15rem .3rem}
+.sub-type-select{font-size:0.9375rem;padding:.15rem .3rem}
 .textsize-btns{display:flex;gap:.5rem;flex-wrap:wrap}
 .textsize-btn{flex:1;min-width:4.5rem;padding:.7rem .5rem;border:1.5px solid #d5d0c8;border-radius:.6rem;background:#fff;font-weight:600;cursor:pointer;color:#3d3730}
 .textsize-btn.textsize-active{border-color:#457b9d;background:#eef4f8;color:#457b9d}
-.textsize-btn:nth-child(1){font-size:0.8125rem}.textsize-btn:nth-child(2){font-size:0.9375rem}.textsize-btn:nth-child(3){font-size:1.0625rem}.textsize-btn:nth-child(4){font-size:1.1875rem}
+.textsize-btn:nth-child(1){font-size:0.9375rem}.textsize-btn:nth-child(2){font-size:0.9375rem}.textsize-btn:nth-child(3){font-size:1.0625rem}.textsize-btn:nth-child(4){font-size:1.1875rem}
 .disp-toggle{display:flex;align-items:center;gap:.6rem;cursor:pointer;font-size:0.9375rem;margin-top:.3rem}
 .disp-toggle input{width:1.4rem;height:1.4rem;accent-color:#457b9d;flex-shrink:0}
 /* E: Large print & roomy spacing — one switch for bigger text + more breathing room + larger targets */
 .comfortable .sub-typed{padding:.85rem 0}
 .comfortable .sub-text{line-height:1.5}
-.comfortable .sub-recency{font-size:0.875rem}
+.comfortable .sub-recency{font-size:0.9375rem}
 .comfortable .hint{font-size:0.9375rem}
 .comfortable .page-sub{font-size:1rem}
 .comfortable .sub-attend-btn{width:3rem;height:3rem}.comfortable .sub-typed{min-height:3rem}
@@ -6917,112 +9162,112 @@ select.cf-input{background:#fff}.cf-actions{display:flex;gap:8px;margin-top:4px}
 /* Three Steps to Protect Your Data */
 .protect-steps{border:1.5px solid #e0d8c8;border-radius:1rem;background:#fffdf8;padding:1rem 1rem .4rem;margin-bottom:1rem}
 .protect-title{font-family:'Libre Baskerville',serif;font-size:1.1rem;margin:0 0 .15rem}
-.protect-sub{font-size:.8rem;color:#8a857d;margin:0 0 .7rem}
+.protect-sub{font-size:0.9375rem;color:#8a857d;margin:0 0 .7rem}
 .protect-step{display:flex;align-items:flex-start;gap:.75rem;padding:.8rem 0;border-top:1px solid #efe8da}
 .protect-step:first-of-type{border-top:none}
-.protect-num{width:1.65rem;height:1.65rem;border-radius:50%;background:#eef1ec;color:#6f7a63;font-weight:700;font-size:.9rem;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:'Libre Baskerville',serif}
+.protect-num{width:1.65rem;height:1.65rem;border-radius:50%;background:#eef1ec;color:#6f7a63;font-weight:700;font-size:0.9375rem;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:'Libre Baskerville',serif}
 .protect-main{flex:1;min-width:0}
 .protect-text{font-size:.95rem;line-height:1.45}
 .protect-foot{display:flex;align-items:center;gap:.6rem;margin-top:.5rem;flex-wrap:wrap}
-.protect-badge{font-size:.78rem;font-weight:700;padding:.18rem .6rem;border-radius:1.2rem}
+.protect-badge{font-size:0.9375rem;font-weight:700;padding:.18rem .6rem;border-radius:1.2rem}
 .protect-badge.done{background:#e8efe3;color:#4a7350}
 .protect-badge.not{background:#f7ede0;color:#9a6a2a}
-.protect-btn{font-size:.85rem;font-weight:600;color:#fff;background:#457b9d;border-radius:.55rem;padding:.5rem .85rem;border:none}
-.protect-ios{font-size:.8rem;color:#73706a}
+.protect-btn{font-size:0.9375rem;font-weight:600;color:#fff;background:#457b9d;border-radius:.55rem;padding:.5rem .85rem;border:none}
+.protect-ios{font-size:0.9375rem;color:#73706a}
 /* Share your records */
 .share-card{background:#f7f9fa;border:1px solid #dde7ec;border-radius:.7rem;padding:.75rem;margin-top:.4rem}
-.share-q{font-size:.82rem;font-weight:600;margin:.5rem 0 .4rem}.share-q:first-child{margin-top:0}
+.share-q{font-size:0.9375rem;font-weight:600;margin:.5rem 0 .4rem}.share-q:first-child{margin-top:0}
 .share-chips{display:flex;gap:.4rem;flex-wrap:wrap}
-.share-chip{font-size:.82rem;padding:.35rem .7rem;border-radius:1.2rem;border:1.5px solid #d5d0c8;background:#fff;color:#5a554e}
+.share-chip{font-size:0.9375rem;padding:.35rem .7rem;border-radius:1.2rem;border:1.5px solid #d5d0c8;background:#fff;color:#5a554e}
 .share-chip.on{border-color:#457b9d;background:#eef4f8;color:#457b9d;font-weight:600}
 .share-fmts{display:flex;flex-direction:column;gap:.45rem}
 .share-fmt{display:flex;gap:.6rem;align-items:flex-start;border:1.5px solid #d5d0c8;border-radius:.6rem;padding:.6rem .7rem;background:#fff;text-align:left;width:100%}
 .share-fmt:hover{border-color:#457b9d;background:#fbfdfe}
 .share-fi{font-size:1.15rem;flex-shrink:0}
-.share-ft strong{font-size:.9rem}.share-ft span{font-size:.78rem;color:#73706a;display:block;margin-top:.05rem}
-.share-warn{font-size:.8rem;color:#9a5a2a;background:#fbf0e3;border-radius:.5rem;padding:.5rem .7rem;margin-top:.6rem;line-height:1.45}
+.share-ft strong{font-size:0.9375rem}.share-ft span{font-size:0.9375rem;color:#73706a;display:block;margin-top:.05rem}
+.share-warn{font-size:0.9375rem;color:#9a5a2a;background:#fbf0e3;border-radius:.5rem;padding:.5rem .7rem;margin-top:.6rem;line-height:1.45}
 /* Care-program: standing indicator */
 .prog-indicator{display:flex;align-items:center;gap:.7rem;background:#fffdf6;border:1.5px solid #e6dcc0;border-radius:.75rem;padding:.7rem .75rem;margin-bottom:1rem;cursor:pointer}
 .prog-eye{font-size:1.25rem;flex-shrink:0}
-.prog-ind-main{flex:1;min-width:0;font-size:.9rem}
-.prog-ind-sub{font-size:.75rem;color:#8a857d;margin-top:.1rem}
-.prog-ind-act{font-size:.82rem;font-weight:600;color:#457b9d;white-space:nowrap}
+.prog-ind-main{flex:1;min-width:0;font-size:0.9375rem}
+.prog-ind-sub{font-size:0.9375rem;color:#8a857d;margin-top:.1rem}
+.prog-ind-act{font-size:0.9375rem;font-weight:600;color:#457b9d;white-space:nowrap}
 .prog-active{display:flex;gap:.65rem;align-items:flex-start;margin-bottom:.5rem}
-.prog-active-main{flex:1;min-width:0;font-size:.9rem}
-.prog-upd{font-size:.76rem;color:#8a857d;margin-top:.1rem}
+.prog-active-main{flex:1;min-width:0;font-size:0.9375rem}
+.prog-upd{font-size:0.9375rem;color:#8a857d;margin-top:.1rem}
 .prog-actions{display:flex;gap:.5rem;flex-wrap:wrap}
-.prog-stop{font-size:.85rem;font-weight:600;color:#b0463c;background:#fbecea;border:1px solid #eecbc6;border-radius:.55rem;padding:.5rem .8rem}
-.prog-cancel{display:block;width:100%;margin-top:.5rem;background:none;border:none;color:#8a857d;font-size:.85rem}
+.prog-stop{font-size:0.9375rem;font-weight:600;color:#b0463c;background:#fbecea;border:1px solid #eecbc6;border-radius:.55rem;padding:.5rem .8rem}
+.prog-cancel{display:block;width:100%;margin-top:.5rem;background:none;border:none;color:#8a857d;font-size:0.9375rem}
 /* Care-program: consent flow */
-.consent-card .consent-who{background:#eef4f8;border:1px solid #d4e3ec;border-radius:.7rem;padding:.7rem;margin-bottom:.7rem;font-size:.92rem}
+.consent-card .consent-who{background:#eef4f8;border:1px solid #d4e3ec;border-radius:.7rem;padding:.7rem;margin-bottom:.7rem;font-size:0.9375rem}
 .consent-fp{margin-top:.55rem;background:#fff;border:1px dashed #b9c9d3;border-radius:.5rem;padding:.5rem .65rem}
 .consent-fp-code{font-family:ui-monospace,Menlo,monospace;font-size:1rem;letter-spacing:.06em;color:#2a4d63;font-weight:600}
-.consent-fp-q{font-size:.74rem;color:#73706a;margin-top:.2rem}
-.consent-fp-match{display:flex;align-items:center;gap:.45rem;font-size:.82rem;font-weight:600;color:#4a7350;margin-top:.45rem}
+.consent-fp-q{font-size:0.9375rem;color:#73706a;margin-top:.2rem}
+.consent-fp-match{display:flex;align-items:center;gap:.45rem;font-size:0.9375rem;font-weight:600;color:#4a7350;margin-top:.45rem}
 .consent-blk{margin:.8rem 0}
-.consent-blk h4{font-size:.8rem;font-weight:700;color:#5a554e;margin-bottom:.45rem}
+.consent-blk h4{font-size:0.9375rem;font-weight:700;color:#5a554e;margin-bottom:.45rem}
 .consent-mut{font-weight:400;color:#9a948b}
-.consent-row{display:flex;align-items:center;justify-content:space-between;padding:.5rem 0;border-bottom:1px solid #efe9df;font-size:.9rem}
+.consent-row{display:flex;align-items:center;justify-content:space-between;padding:.5rem 0;border-bottom:1px solid #efe9df;font-size:0.9375rem}
 .consent-row:last-child{border-bottom:none}
 .consent-excl{background:#f3f6f1;border-left:3px solid #718355;border-radius:0 .5rem .5rem 0;padding:.55rem .75rem}
-.consent-x{font-size:.85rem;color:#5a554e;padding:.18rem 0}
-.consent-plain{font-size:.82rem;color:#6b6560;background:#faf8f4;border-radius:.5rem;padding:.55rem .7rem;margin-top:.6rem;line-height:1.5}
-.consent-attest{display:flex;gap:.55rem;align-items:flex-start;font-size:.82rem;color:#5a554e;margin:.7rem 0}
-.grant-ta{width:100%;border:1px solid #d5d0c8;border-radius:.55rem;padding:.6rem;font-size:.85rem;font-family:ui-monospace,Menlo,monospace;resize:vertical;margin:.4rem 0}
-.grant-date{border:1px solid #d5d0c8;border-radius:.55rem;padding:.55rem;font-size:.9rem;margin:.3rem 0;width:100%;max-width:100%}
+.consent-x{font-size:0.9375rem;color:#5a554e;padding:.18rem 0}
+.consent-plain{font-size:0.9375rem;color:#6b6560;background:#faf8f4;border-radius:.5rem;padding:.55rem .7rem;margin-top:.6rem;line-height:1.5}
+.consent-attest{display:flex;gap:.55rem;align-items:flex-start;font-size:0.9375rem;color:#5a554e;margin:.7rem 0}
+.grant-ta{width:100%;border:1px solid #d5d0c8;border-radius:.55rem;padding:.6rem;font-size:0.9375rem;font-family:ui-monospace,Menlo,monospace;resize:vertical;margin:.4rem 0}
+.grant-date{border:1px solid #d5d0c8;border-radius:.55rem;padding:.55rem;font-size:0.9375rem;margin:.3rem 0;width:100%;max-width:100%}
 /* Reviewer mode */
 .rv-wrap{max-width:560px;margin:0 auto;padding:1rem;min-height:100vh}
 .rv-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem}
-.rv-exit{font-size:.85rem;color:#8a857d;background:#f0ece6;border:none;border-radius:.5rem;padding:.4rem .8rem}
-.rv-err{color:#b3422f;font-size:.82rem;margin:.4rem 0 0}
+.rv-exit{font-size:0.9375rem;color:#8a857d;background:#f0ece6;border:none;border-radius:.5rem;padding:.4rem .8rem}
+.rv-err{color:#b3422f;font-size:0.9375rem;margin:.4rem 0 0}
 .rv-actions{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.6rem}
-.rv-ghost{font-size:.85rem;font-weight:600;color:#457b9d;background:#eef4f7;border:1px solid #d4e3ea;border-radius:.5rem;padding:.55rem .9rem;cursor:pointer}
+.rv-ghost{font-size:0.9375rem;font-weight:600;color:#457b9d;background:#eef4f7;border:1px solid #d4e3ea;border-radius:.5rem;padding:.55rem .9rem;cursor:pointer}
 .rv-link{background:none;border:none;color:#457b9d;font-weight:600;padding:0;cursor:pointer;text-decoration:underline}
 .rv-details{margin-top:.5rem}
-.rv-details summary{font-size:.85rem;font-weight:600;color:#457b9d;cursor:pointer}
+.rv-details summary{font-size:0.9375rem;font-weight:600;color:#457b9d;cursor:pointer}
 .rv-details .grant-date{margin-top:.5rem}
 .rv-card{background:#fff;border:1px solid #e5e1db;border-radius:.85rem;padding:1rem;margin-bottom:1rem}
 .rv-enroll{margin-top:.7rem}
-.rv-enroll-h{font-size:.82rem;font-weight:700;color:#5a554e;margin-bottom:.2rem}
+.rv-enroll-h{font-size:0.9375rem;font-weight:700;color:#5a554e;margin-bottom:.2rem}
 .rv-view{background:#f7faf7;border-color:#d6e4d6}
-.rv-asof{font-size:.78rem;color:#73706a;margin:.2rem 0 .6rem}
-.rv-excl{font-size:.78rem;color:#9a5a2a;margin-top:.7rem;font-style:italic}
+.rv-asof{font-size:0.9375rem;color:#73706a;margin:.2rem 0 .6rem}
+.rv-excl{font-size:0.9375rem;color:#9a5a2a;margin-top:.7rem;font-style:italic}
 .rv-proj{margin-top:.3rem}
-.rv-h4{font-size:.82rem;font-weight:700;color:#2a4d63;margin:.7rem 0 .3rem;border-bottom:1px solid #e6ece9;padding-bottom:.2rem}
-.rv-row{display:flex;justify-content:space-between;gap:1rem;font-size:.88rem;padding:.3rem 0;border-bottom:1px solid #f0ece6}
+.rv-h4{font-size:0.9375rem;font-weight:700;color:#2a4d63;margin:.7rem 0 .3rem;border-bottom:1px solid #e6ece9;padding-bottom:.2rem}
+.rv-row{display:flex;justify-content:space-between;gap:1rem;font-size:0.9375rem;padding:.3rem 0;border-bottom:1px solid #f0ece6}
 .rv-row span{color:#5a554e}
-.rv-concern{font-size:.85rem;padding:.4rem 0;border-bottom:1px solid #f0ece6}
+.rv-concern{font-size:0.9375rem;padding:.4rem 0;border-bottom:1px solid #f0ece6}
 .rv-concern div{color:#6b6560;margin-top:.15rem}
-.rv-empty{font-size:.82rem;color:#9a948b;font-style:italic;padding:.3rem 0}
-.rv-flash{position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:#3d3730;color:#fff;padding:.6rem 1rem;border-radius:.6rem;font-size:.85rem;max-width:90%;z-index:50}
-.rv-entry-link{display:block;width:100%;margin-top:1rem;background:none;border:none;color:#8d99ae;font-size:.8rem;text-decoration:underline}
+.rv-empty{font-size:0.9375rem;color:#9a948b;font-style:italic;padding:.3rem 0}
+.rv-flash{position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:#3d3730;color:#fff;padding:.6rem 1rem;border-radius:.6rem;font-size:0.9375rem;max-width:90%;z-index:50}
+.rv-entry-link{display:block;width:100%;margin-top:1rem;background:none;border:none;color:#8d99ae;font-size:0.9375rem;text-decoration:underline}
 /* live-intake additions */
-.consent-choice{display:flex;gap:.6rem;align-items:flex-start;border:1.5px solid #e0dccf;border-radius:.6rem;padding:.6rem;margin-bottom:.45rem;font-size:.85rem;background:#fff}
+.consent-choice{display:flex;gap:.6rem;align-items:flex-start;border:1.5px solid #e0dccf;border-radius:.6rem;padding:.6rem;margin-bottom:.45rem;font-size:0.9375rem;background:#fff}
 .consent-choice.sel{border-color:#457b9d;background:#eef4f8}
 .consent-choice input{margin-top:.15rem;flex-shrink:0}
-.prog-pill{display:inline-block;margin-top:.4rem;font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.03em;padding:.12rem .5rem;border-radius:.55rem;background:#efeae0;color:#7a6a3f}
+.prog-pill{display:inline-block;margin-top:.4rem;font-size:0.9375rem;font-weight:700;text-transform:uppercase;letter-spacing:.03em;padding:.12rem .5rem;border-radius:.55rem;background:#efeae0;color:#7a6a3f}
 .prog-pill.on{background:#e3efe4;color:#3f6b45}
-.prog-toggle{font-size:.85rem;font-weight:600;color:#457b9d;background:#eef4f8;border:1px solid #d4e3ec;border-radius:.55rem;padding:.5rem .8rem}
-.rv-conn{font-size:.72rem;color:#4a7350;font-weight:600}
+.prog-toggle{font-size:0.9375rem;font-weight:600;color:#457b9d;background:#eef4f8;border:1px solid #d4e3ec;border-radius:.55rem;padding:.5rem .8rem}
+.rv-conn{font-size:0.9375rem;color:#4a7350;font-weight:600}
 .rv-actions{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:.5rem}
 .rv-roster{margin-top:.3rem}
 .rv-rrow{display:flex;align-items:center;gap:.7rem;padding:.6rem;border:1px solid #e5e1db;border-radius:.6rem;margin-bottom:.45rem;background:#fff}
-.rv-ravatar{width:30px;height:30px;border-radius:50%;background:#e7efe7;display:flex;align-items:center;justify-content:center;font-size:.9rem;flex-shrink:0}
-.rv-rmain{flex:1;min-width:0;font-size:.85rem;overflow:hidden}
-.rv-rmain strong{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.8rem;font-family:ui-monospace,Menlo,monospace}
-.rv-rmeta{font-size:.74rem;color:#8a857d;margin-top:.1rem}
+.rv-ravatar{width:30px;height:30px;border-radius:50%;background:#e7efe7;display:flex;align-items:center;justify-content:center;font-size:0.9375rem;flex-shrink:0}
+.rv-rmain{flex:1;min-width:0;font-size:0.9375rem;overflow:hidden}
+.rv-rmain strong{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:0.9375rem;font-family:ui-monospace,Menlo,monospace}
+.rv-rmeta{font-size:0.9375rem;color:#8a857d;margin-top:.1rem}
 .rv-rmeta.stale{color:#c9962f;font-weight:600}
-.rv-ropen{font-size:.82rem;font-weight:600;color:#457b9d;background:none;border:none;white-space:nowrap}
+.rv-ropen{font-size:0.9375rem;font-weight:600;color:#457b9d;background:none;border:none;white-space:nowrap}
 .rv-shared-head{display:flex;align-items:center;justify-content:space-between;gap:.6rem;margin-bottom:.4rem}
-.rv-chip{font-size:.72rem;font-weight:700;padding:.18rem .6rem;border-radius:.6rem;white-space:nowrap}
+.rv-chip{font-size:0.9375rem;font-weight:700;padding:.18rem .6rem;border-radius:.6rem;white-space:nowrap}
 .rv-chip-ok{background:#e3efe4;color:#3f6b45}
 .rv-chip-bad{background:#f7e4e1;color:#b3422f}
 .rv-chip-warn{background:#fdf3df;color:#9a7a2e}
 .rv-timeline{margin-top:.5rem}
 .rv-tl-row{display:flex;gap:.6rem;align-items:flex-start;padding:.5rem 0;border-top:1px solid #eee}
-.rv-tl-seq{font-family:ui-monospace,Menlo,monospace;font-size:.72rem;color:#8d99ae;background:#f2f4f6;border-radius:.4rem;padding:.1rem .4rem;flex-shrink:0;margin-top:.1rem}
-.rv-tl-main{flex:1;min-width:0;font-size:.85rem}
-.rv-tl-meta{font-size:.72rem;color:#8a857d;margin-top:.1rem}
+.rv-tl-seq{font-family:ui-monospace,Menlo,monospace;font-size:0.9375rem;color:#8d99ae;background:#f2f4f6;border-radius:.4rem;padding:.1rem .4rem;flex-shrink:0;margin-top:.1rem}
+.rv-tl-main{flex:1;min-width:0;font-size:0.9375rem}
+.rv-tl-meta{font-size:0.9375rem;color:#8a857d;margin-top:.1rem}
 @media(prefers-color-scheme:dark){
 /* base */
 body,.app{background:#1a1a1e!important;color:#e0ddd8}
@@ -7198,7 +9443,7 @@ body,.app{background:#1a1a1e!important;color:#e0ddd8}
 
 /* merge modal */
 .merge-modal{background:#242428}
-.flood-warn{background:#fbeee6;border:1px solid #d8a384;color:#8a4a22;border-radius:10px;padding:10px 12px;margin:8px 0;font-size:0.8125rem;line-height:1.45}
+.flood-warn{background:#fbeee6;border:1px solid #d8a384;color:#8a4a22;border-radius:10px;padding:10px 12px;margin:8px 0;font-size:0.9375rem;line-height:1.45}
 .merge-source{background:#1e1e22;color:#b0aca6}
 .merge-added{background:#1e2a1e;color:#a0d080}
 .merge-updated{background:#2e2818;color:#d0b060}
@@ -7239,6 +9484,20 @@ body,.app{background:#1a1a1e!important;color:#e0ddd8}
 .doc-section-card{background:#242428;border-color:#3a3a3e}
 .doc-section-title{color:#f5f3f0}
 .doc-section-body{color:#b0aca6}
+.mvt-btn{background:#26262b;border-color:#3a3a3e;color:#b8b2a8}.mvt-on{background:#e8e4de;color:#1a1a1e;border-color:#e8e4de}
+.mc-chip{background:#26262b;border-color:#3a3a3e;color:#b8b2a8}
+.mas-card{background:#26262b;border-color:#3a3a3e}.mas-num{color:#e8e4de}
+.mc-none{background:#232327;color:#5a5650}.mc-future{background:#1e1e22;color:#3a3a3e}
+.mc-unrecorded{background:repeating-linear-gradient(45deg,#2a2a2f,#2a2a2f 3px,#333338 3px,#333338 6px);color:#8d867c}
+.mc-slot{background:#2a2a2f;color:#b8b2a8}.mc-today{border-color:#e8e4de}.mc-sel{outline-color:#e8e4de}
+.drug-suggest{background:#26262b;border-color:#3a3a3e}.drug-opt{border-bottom-color:#2f2f34}.drug-opt:hover{background:#2f2f34}
+.drug-opt-name{color:#e8e4de}.drug-str{background:#26262b;border-color:#3a3a3e;color:#b8b2a8}
+.drug-warn{background:#2b2519;border-color:#4a4130;color:#d9b877}
+.storage-opt{background:#26262b;border-color:#3a3a3e}.storage-opt-title{color:#e8e4de}.storage-gate,.storage-nudge{background:#2b2519;border-color:#4a4130}
+.storage-fail{background:#26262b;border-color:#3a3a3e}.storage-fail-alarm{background:#2b2519;border-color:#4a4130}.storage-fail-title{color:#e8e4de}
+.med-by{color:#b8b2a8}.med-dash{color:#3a3a3e}
+.rv-flash-bad{background:#2b1d20;border-color:#4a3036;color:#e8a9b4}
+.storage-state{background:#26262b;border-color:#3a3a3e}.storage-state-row{color:#e8e4de}
 .doc-raw-text{background:#1a1a1e;color:#9aa5b8;border-color:#3a3a3e}
 
 /* cc buttons (category filters, report types) */
@@ -7325,4 +9584,9 @@ body,.app{background:#1a1a1e!important;color:#e0ddd8}
 }
 
 @media print{body,.app,.content,.content-v2{background:#fff!important;color:#000!important}.hub-bar,.hub-topbar{display:none!important}}
+.hub-sec-today>.settings-group-summary{padding:18px 16px}.hub-sec-today .hub-sec-t-title{font-size:1.25rem;font-weight:800}
+.hub-sec-lt>.settings-group-summary span:first-child{font-size:1rem}
+.help-btn{width:30px;height:30px;border-radius:50%;border:1.5px solid var(--color-border,#d8d2c8);background:transparent;color:inherit;opacity:.75;font-weight:700;cursor:pointer;margin-right:6px;flex:none}
+.help-context{border:1px solid var(--color-border,#cfe3d8);background:var(--color-background-info,#eef6f1);border-radius:10px;padding:12px 14px;margin-bottom:14px}
+.help-context-title{font-weight:700;margin-bottom:4px}
 `;

@@ -1,0 +1,53 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Care Guardian — Menu Map v3 (Three Areas)</title>
+<style>
+body{font-family:Georgia,serif;background:#faf8f5;color:#2e2a25;max-width:880px;margin:2rem auto;padding:0 1.25rem;line-height:1.5}
+h1{font-size:1.5rem}h2{font-size:1.1rem;margin-top:1.6rem;border-bottom:2px solid #e4ded4;padding-bottom:.3rem}
+.area{background:#fff;border:1px solid #e4ded4;border-radius:12px;padding:1rem 1.25rem;margin:1rem 0}
+.sub{margin:.6rem 0 .2rem;font-weight:700}
+ul{margin:.3rem 0 .6rem;padding-left:1.3rem}li{margin:.18rem 0}
+.tag{font-size:.72rem;background:#eee8dd;border-radius:999px;padding:.08rem .5rem;margin-left:.4rem;color:#6d675f}
+.hidden{color:#a09a92;font-style:italic}
+.note{font-size:.85rem;color:#6d675f}
+</style></head><body>
+<h1>🛡 Care Guardian — Menu Map v3</h1>
+<p class="note">Three areas replace the previous four hubs. Every module was retained; only placement changed. Bottom-bar labels: <strong>Care · Documents · Settings</strong>. Each non-hub screen carries a <strong>?</strong> button linking to context-specific Help (content forthcoming). Dual entries marked <span class="tag">also in …</span>.</p>
+
+<div class="area"><h2>♥ Care Management</h2>
+<div class="sub">☀ Today <span class="tag">expandable · open by default · visually dominant</span></div>
+<ul>
+<li>Alerts &amp; reminders (missed meds, due meds, appointments, overdue tasks, all-clear)</li>
+<li>Medicine Management</li><li>Incident Log <span class="tag">also in Documents &amp; Data</span></li>
+<li>Appointments &amp; Calendar <span class="tag">also in Documents &amp; Data</span></li>
+<li>Messages</li><li>Shift Handoff</li><li>Emergency Plans</li><li>Emergency Info Card</li>
+<li class="hidden">Caregiver Check-in — hidden behind SHOW_CAREGIVER_CHECKIN flag (David deciding)</li>
+</ul>
+<div class="sub">🌱 Long Term <span class="tag">expandable · compact</span></div>
+<ul>
+<li>Five care-plan domains: Physical · Cognitive · Wellness · Legal · Financial (progress grid + cards)</li>
+<li>Monitoring: Escalation Triggers · Longitudinal Tracking · Visit Prep · Incident Patterns</li>
+<li>Documentation: POA Decisions · Capacity Observations · Care Plan Binder</li>
+<li>End-of-Life Planning <span class="tag">bottom, by design</span></li>
+</ul></div>
+
+<div class="area"><h2>📁 Documents &amp; Data</h2>
+<ul>
+<li>Active care-program indicator (when grants exist)</li>
+<li>Self-Reports</li>
+<li>Records In &amp; Out <span class="tag">new screen</span> — Bring records in (FHIR/scan) · Share as PDF/FHIR · Status update (no health info)</li>
+<li>Contacts</li><li>Incident Log</li><li>Calendar</li><li>Documents (scanner · library · import/export)</li>
+<li>Share with a Care Provider (scoped, consented program access)</li><li>Expenses</li>
+</ul></div>
+
+<div class="area"><h2>⚙ Settings</h2>
+<div class="sub">🛡 Protect Your Data <span class="tag">open by default</span></div>
+<ul><li>Three Steps to Protect Your Data</li><li>Keep your records safe: storage durability · automatic backups · .care save/restore</li></ul>
+<div class="sub">🔒 Security &amp; Integrity</div>
+<ul><li>Passcodes</li><li>Security &amp; integrity card (audit chain, storage, client scoping, client-voice chain, MFA/passkey)</li><li>Diagnostics &amp; data card</li></ul>
+<div class="sub">👥 Team Management</div>
+<ul><li>My Circle</li><li>Sync (team, passcode, connection)</li><li>Care Schedule</li><li>Weekly Grid</li><li>My Availability</li><li>Device Identity &amp; Sync</li></ul>
+<div class="sub">🔆 Display &amp; Customization</div>
+<ul><li>Text size</li><li>Large print &amp; roomy spacing</li><li>State / Region packs</li></ul>
+<ul><li>Help (feature guide)</li></ul></div>
+
+<p class="note">Infra added this pass: <code>VIEW_AREA</code> (every view → owning area; drives breadcrumbs and bottom-bar highlight from inside <code>nav()</code>), <code>HELP_TOPICS</code> (every view → help topic; ? button in each screen header opens Help anchored to that topic with a placeholder until content lands).</p>
+</body></html>

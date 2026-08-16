@@ -2,11 +2,15 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
+// Zero-egress build: fonts and pdf.js are bundled locally; no runtime caching of any external origin.
 export default defineConfig({
   plugins: [
     react(),
     VitePWA({
       registerType: 'autoUpdate',
+      // Inline the service-worker registration as a module script. Vite 7+/8 refuses to bundle the default
+      // external <script src="/registerSW.js"> because it lacks type="module"; inlining avoids that tag entirely.
+      injectRegister: 'inline',
       includeAssets: ['favicon.svg'],
       manifest: {
         name: 'Care Guardian',
@@ -25,30 +29,8 @@ export default defineConfig({
           { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
       },
-      workbox: {
-        globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
-        runtimeCaching: [
-          {
-            urlPattern: /^https:\/\/fonts\.googleapis\.com/,
-            handler: 'CacheFirst',
-            options: { cacheName: 'google-fonts-stylesheets', expiration: { maxEntries: 5, maxAgeSeconds: 60 * 60 * 24 * 365 } },
-          },
-          {
-            urlPattern: /^https:\/\/fonts\.gstatic\.com/,
-            handler: 'CacheFirst',
-            options: { cacheName: 'google-fonts-webfonts', expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 365 } },
-          },
-          {
-            urlPattern: /^https:\/\/cdnjs\.cloudflare\.com/,
-            handler: 'CacheFirst',
-            options: { cacheName: 'cdnjs-libs', expiration: { maxEntries: 10, maxAgeSeconds: 60 * 60 * 24 * 30 } },
-          },
-        ],
-      },
+      workbox: { globPatterns: ['**/*.{js,mjs,css,html,svg,png,woff2}'], maximumFileSizeToCacheInBytes: 4*1024*1024 },
     }),
   ],
-  build: {
-    outDir: 'dist',
-    sourcemap: false,
-  },
+  build: { outDir: 'dist', sourcemap: false },
 });

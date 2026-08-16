@@ -1,0 +1,28 @@
+# Care Guardian CI — build + proof suites
+# Action versions current as of June 2026 (all run on Node 24):
+#   checkout@v5 (Node 24; needs runner >= 2.327.1 — only relevant for self-hosted)
+#   upload-artifact@v7 (NOTE: v5 still defaulted to Node 20 — do not "upgrade" to v5)
+name: build
+on:
+  push: { branches: [main] }
+  pull_request:
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run proof suites
+        run: |
+          set -e
+          for t in tests/*.mjs; do echo "== $t =="; node "$t"; done
+          node tests/wal-sim.cjs
+          node tests/wal-test.cjs
+      - name: Build
+        run: |
+          npm install   # switch to `npm ci` once a package-lock.json is committed
+          npx vite build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: care-guardian-dist
+          path: dist/
+          retention-days: 14

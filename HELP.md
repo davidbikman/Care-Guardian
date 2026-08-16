@@ -53,6 +53,30 @@ From then on, every change is saved to that file automatically and encrypted. A 
 
 iPhone and iPad don't support this automatic feature yet — on those devices, use the manual backup above and add the app to your home screen.
 
+### The Three Steps to Protect Your Data
+
+At the top of **Team → Settings** you'll see a short checklist. Do these once and you're covered:
+
+1. **Protect your data from deletion by your browser.** Browsers can clear stored data to free up space. One tap on the **Protect my data** button asks your browser to keep Care Guardian's data safe. (On iPhone/iPad, this protection comes from adding the app to your Home Screen instead.)
+2. **Back up your data in a .care file.** So you can recover everything after a crash or a lost device — set up automatic backups or save a file manually (both above).
+3. **Establish a Team.** Only if you're caregiving with others. A Team lets everyone see each other's changes, and it keeps your own phone and laptop in sync. See the Team view.
+
+Each step shows a check once it's set.
+
+### Sharing Your Records with a Doctor or Family
+
+When a new doctor, a pharmacist, or a family member needs your parent's information, use **Team → Settings → Bring records in, share records out → Share your records**:
+
+1. **Pick what to include** — medications, conditions & notes, providers, appointments, incidents, care-plan status. Tap to toggle each on or off.
+2. **Pick a format:**
+   - **PDF** — opens a clean printout you can save as a PDF or print, for a person to read. (Use your browser's Print, then "Save as PDF.")
+   - **Structured file (FHIR)** — a data file another clinic's records system can load directly.
+3. Send it.
+
+**A note on safety:** a PDF or FHIR file is **not encrypted** — that's deliberate, so the person you're sharing with can open it. Treat it like any medical record and only send it to someone you trust. If you instead need a secure copy that *another Care Guardian* can open, use **Save or restore a .care file** under "Keep your records safe" — that file stays encrypted.
+
+There's also **Send a status update (no health info)** for when you only need to show progress to a funder or relative — it includes no names, notes, or health details.
+
 ### If You See "Your local data was cleared"
 
 Phone and tablet browsers sometimes delete a website's stored data when the device runs low on space — this is the browser's doing, not a bug in Care Guardian. If it happens, you'll see a recovery screen rather than losing access silently.
@@ -238,6 +262,30 @@ Summary of activity since last sync: incidents logged, medications still due, re
 
 ### 📇 Contacts
 Name, phone, email, organization, role, category, custom fields, notes. vCard import.
+
+---
+
+## Care Program Access
+
+### 🤝 Share with a Care Program
+If a care program — such as a CMS GUIDE care navigator — is helping you, you can grant them a **scoped, consented, revocable** view of your situation. Find it under Settings → "Share with a care program."
+
+How it works: the program gives you an **enrollment code**. You paste it, then see a consent screen that shows exactly *who* is asking (with a short fingerprint you confirm against their paperwork), *what* they'll be able to see (each category has a switch you can turn off), *what they will never see* (your parent's private words, your finances, your documents), and *how long* the view lasts. Nothing is shared until you tap Grant.
+
+When you grant a view, the app seals an encrypted file that only that program can open and downloads it for you to send them (by their secure folder or hand-off). It updates only when you choose to send a new one — the program sees a snapshot as of your last file, never a live feed.
+
+If the program supports it, you can instead choose **"Automatically when I sync"** at the consent step. Then an encrypted update is sent to them each time you sync your team — never silently in the background, always encrypted so only they can open it, and you can switch back to manual or stop entirely at any time from the indicator at the top of Settings. Manual sending is the default; automatic is always your explicit choice.
+
+While a view is active, a reminder sits at the top of Settings so you always know who can see what. You can **stop sharing** anytime with one tap. Stopping means they get no further updates — though, as with anything you've ever shared, what they've already seen can't be pulled back. Every grant, update, and stop is written to your private audit log.
+
+There are two kinds of view. A **care navigator** view shares care details (care-plan status, recent incidents, a medication summary, upcoming appointments, concerns you've flagged). A **program reviewer** view shares *no health information at all* — only that the app is in use and how your care plan is progressing — for programs that just need to confirm you're being supported.
+
+Your parent's own recorded words are never included in either view.
+
+### 🩺 Reviewer Mode (for care programs)
+If *you* are the care program, open reviewer mode from the small link at the bottom of the first-run screen. Create your program's keys once; the app gives you enrollment codes to hand to families (print the shown fingerprint on your paperwork so families can verify it). When a family sends you their sealed file, paste it into "Open a shared view" — it decrypts on your device with your private key and shows only the scope that family consented to. Keeping your device and key secure is your program's responsibility.
+
+For families who chose automatic sending, you can **connect your intake storage** in reviewer mode: enter your storage's read credential once, then "Refresh shared views" lists the families who granted a view, with how fresh each one is, and Open pulls their latest update — the storage holds ciphertext only, and only your program key opens it. Anything that doesn't verify is skipped, and stale views are flagged.
 
 ---
 

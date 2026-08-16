@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Care Guardian — live intake (design sketch)</title>
+<style>
+  :root{--sage:#718355;--blue:#457b9d;--cream:#f6f4f0;--ink:#3d3730;--muted:#8d99ae;--amber:#c9962f;--red:#c0594f;--green:#4a7350;}
+  *{box-sizing:border-box;margin:0;-webkit-tap-highlight-color:transparent;}
+  body{background:#ece8e1;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;line-height:1.5;padding:16px;max-width:760px;margin:0 auto;}
+  h1{font-family:Georgia,serif;font-size:21px;margin-bottom:4px;}
+  .lead{color:#6b6560;font-size:14px;margin-bottom:18px;}
+  .lead b{color:var(--ink);}
+  .kick{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:22px 0 9px;}
+  .phone{background:var(--cream);border:1.5px solid #ddd5c7;border-radius:18px;padding:16px;max-width:390px;margin:0 auto 8px;box-shadow:0 1px 3px rgba(0,0,0,.05);}
+  .ptitle{font-family:Georgia,serif;font-size:17px;margin-bottom:2px;}
+  .psub{font-size:12.5px;color:#8a857d;margin-bottom:12px;}
+  .note{font-size:12.5px;color:#8a857d;margin:8px auto 0;max-width:390px;line-height:1.5;}
+
+  /* auto-push choice */
+  .blk h4{font-size:12.5px;font-weight:700;color:#5a554e;margin:13px 0 7px;}
+  .choice{display:flex;gap:10px;align-items:flex-start;border:1.5px solid #e0dccf;border-radius:11px;padding:11px;margin-bottom:8px;background:#fff;}
+  .choice.sel{border-color:var(--blue);background:#eef4f8;}
+  .radio{width:19px;height:19px;border-radius:50%;border:2px solid var(--blue);flex-shrink:0;margin-top:1px;position:relative;}
+  .choice.sel .radio::after{content:"";position:absolute;width:9px;height:9px;border-radius:50%;background:var(--blue);top:3px;left:3px;}
+  .choice .ct b{font-size:13.5px;}
+  .choice .ct div{font-size:12px;color:#73706a;margin-top:2px;}
+  .plain{font-size:12.5px;color:#6b6560;background:#faf8f4;border-radius:8px;padding:9px 11px;margin-top:8px;line-height:1.5;}
+
+  /* push-status indicator */
+  .indicator{display:flex;align-items:center;gap:11px;background:#fffdf6;border:1.5px solid #e6dcc0;border-radius:12px;padding:12px 13px;}
+  .eye{font-size:20px;}
+  .ind-main{flex:1;min-width:0;}
+  .ind-main b{font-size:13.5px;}
+  .ind-main .upd{font-size:11.5px;color:#8a857d;margin-top:1px;}
+  .ind-pill{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;padding:2px 7px;border-radius:9px;background:#e3efe4;color:#3f6b45;margin-top:5px;display:inline-block;}
+  .ind-actions{display:flex;gap:8px;margin-top:10px;}
+  .mini{font-size:12px;font-weight:600;border:none;border-radius:8px;padding:7px 11px;}
+  .mini.b{background:var(--blue);color:#fff;}
+  .mini.g{background:#f0ece6;color:#5a554e;}
+
+  /* reviewer roster */
+  .rhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+  .rconn{font-size:11.5px;color:var(--green);font-weight:600;}
+  .rrow{display:flex;align-items:center;gap:11px;padding:11px;border:1px solid #e5e1db;border-radius:11px;background:#fff;margin-bottom:8px;}
+  .ravatar{width:34px;height:34px;border-radius:50%;background:#e7efe7;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;}
+  .rmain{flex:1;min-width:0;}
+  .rmain b{font-size:13.5px;}
+  .rmain .meta{font-size:11.5px;color:#8a857d;margin-top:1px;}
+  .rarch{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;padding:2px 7px;border-radius:9px;}
+  .rarch.nav{background:#e6eef4;color:#2f5f7d;}
+  .rarch.rev{background:#efeae0;color:#7a6a3f;}
+  .rstale{color:var(--amber)!important;font-weight:600;}
+  .ropen{font-size:12px;font-weight:600;color:var(--blue);white-space:nowrap;}
+</style>
+</head>
+<body>
+  <h1>Live cloud-intake — design sketch</h1>
+  <p class="lead">The two genuinely new surfaces from <b>TRANSPORT-INTAKE-DESIGN.md</b>. Not built. Everything else (crypto, projection, consent screen) is unchanged.</p>
+
+  <div class="kick">1 · Family — choosing how updates are sent (added to the consent screen)</div>
+  <div class="phone">
+    <div class="ptitle">How should updates reach them?</div>
+    <div class="psub">Part of granting a view to Willamette Vital Health</div>
+    <div class="blk">
+      <div class="choice"><span class="radio"></span><div class="ct"><b>Only when I choose</b><div>Nothing is sent until you tap "Send update." A file you control. <em>(default)</em></div></div></div>
+      <div class="choice sel"><span class="radio"></span><div class="ct"><b>Automatically when I sync</b><div>An encrypted update is sent to the program each time you sync your team. You can switch this off anytime.</div></div></div>
+    </div>
+    <div class="plain">Either way it's encrypted so only the program can open it, it's sent only when you sync (never silently in the background), and you can stop anytime.</div>
+  </div>
+  <p class="note">↑ The privacy posture is explicit: auto-push is opt-in, fires on your sync action (not a background timer), and the manual choice never goes away.</p>
+
+  <div class="kick">2 · Family — the standing indicator now shows push status</div>
+  <div class="phone" style="padding:14px;">
+    <div class="indicator">
+      <span class="eye">👁</span>
+      <div class="ind-main"><b>Willamette Vital Health</b> — care navigator view.<div class="upd">Last sent 2 hours ago · ends Dec 31, 2026</div><span class="ind-pill">Auto-send on</span>
+        <div class="ind-actions"><button class="mini b">Send now</button><button class="mini g">Switch to manual</button><button class="mini g">Stop sharing</button></div>
+      </div>
+    </div>
+  </div>
+  <p class="note">↑ Always visible while active: when the last update went out, that auto-send is on, and one tap to send now, go manual, or stop.</p>
+
+  <div class="kick">3 · Reviewer mode — connected intake roster (replaces pasting files one by one)</div>
+  <div class="phone">
+    <div class="rhead"><div class="ptitle" style="margin:0">Shared views</div><span class="rconn">● Intake connected</span></div>
+    <div class="rrow"><div class="ravatar">👤</div><div class="rmain"><b>Mrs. R. (g-7af2)</b><div class="meta">Updated 2h ago</div></div><span class="rarch nav">Navigator</span><span class="ropen">Open ›</span></div>
+    <div class="rrow"><div class="ravatar">👤</div><div class="rmain"><b>Mr. T. (g-1c90)</b><div class="meta rstale">No update in 9 days</div></div><span class="rarch nav">Navigator</span><span class="ropen">Open ›</span></div>
+    <div class="rrow"><div class="ravatar">👤</div><div class="rmain"><b>Ms. L. (g-44e1)</b><div class="meta">Updated yesterday</div></div><span class="rarch rev">Reviewer</span><span class="ropen">Open ›</span></div>
+  </div>
+  <p class="note">↑ The institution sees a list of the families who granted a view and how fresh each is. Opening one runs the same decrypt-and-render as today — only the latest <em>valid</em> object is shown, stale ones are flagged, and anything that doesn't verify is skipped. The bucket itself holds only ciphertext.</p>
+</body>
+</html>
