@@ -1476,6 +1476,138 @@ function getMonthDays(y,m) { return new Date(y,m+1,0).getDate(); }
 function getFirstDow(y,m) { return new Date(y,m,1).getDay(); }
 function fmtDate(y,m,d) { return `${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`; }
 
+/* ═══════════════ MODAL / FORM COMPONENTS ═══════════════
+   These are defined at module scope on purpose. Defining a component inside
+   App()'s body gives it a new function identity on every parent render, which
+   makes React unmount and remount it — wiping the local useState that holds
+   whatever the user has typed or attached. Keep them out here. */
+
+const ContactFormUI=({contactForm,setContactForm,saveContact})=>{const[f,setF]=useState({...contactForm.contact,customFields:[...(contactForm.contact.customFields||[])]});const[nfl,setNfl]=useState("");const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
+  <div className="cf-overlay" onClick={()=>setContactForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()}>
+    <h2 className="cf-title">{contactForm.mode==="edit"?"Edit Contact":"Add Contact"}</h2>
+    <div className="cf-grid">
+      <label className="cf-label">Name *<input value={f.name} onChange={e=>upd("name",e.target.value)} className="cf-input"/></label>
+      <label className="cf-label">Role / Title<input value={f.role} onChange={e=>upd("role",e.target.value)} className="cf-input"/></label>
+      <label className="cf-label">Organization<input value={f.org} onChange={e=>upd("org",e.target.value)} className="cf-input"/></label>
+      <label className="cf-label">Category<select value={f.category} onChange={e=>upd("category",e.target.value)} className="cf-input">{CONTACT_CATS.map(c=><option key={c.key} value={c.key}>{c.icon} {c.label}</option>)}</select></label>
+      <label className="cf-label">Phone<input value={f.phone} onChange={e=>upd("phone",e.target.value)} className="cf-input" type="tel"/></label>
+      <label className="cf-label">Email<input value={f.email} onChange={e=>upd("email",e.target.value)} className="cf-input" type="email"/></label>
+    </div>
+    {f.customFields.length>0&&<div className="cf-custom-section"><h4 className="cf-custom-title">Custom Fields</h4>
+      {f.customFields.map((cf,i)=>(<div key={i} className="cf-custom-row"><input value={cf.label} onChange={e=>{const c=[...f.customFields];c[i]={...c[i],label:e.target.value};setF(p=>({...p,customFields:c}))}} className="cf-input cf-custom-label" placeholder="Field name"/><input value={cf.value} onChange={e=>{const c=[...f.customFields];c[i]={...c[i],value:e.target.value};setF(p=>({...p,customFields:c}))}} className="cf-input cf-custom-value" placeholder="Value"/><button onClick={()=>setF(p=>({...p,customFields:p.customFields.filter((_,j)=>j!==i)}))} className="remove-sub">×</button></div>))}
+    </div>}
+    <div className="cf-add-field-row"><input value={nfl} onChange={e=>setNfl(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&nfl.trim()){setF(p=>({...p,customFields:[...p.customFields,{label:nfl.trim(),value:""}]}));setNfl("")}}} className="cf-input" placeholder="New field name" style={{flex:1}}/><button onClick={()=>{if(nfl.trim()){setF(p=>({...p,customFields:[...p.customFields,{label:nfl.trim(),value:""}]}));setNfl("")}}} className="add-sub-btn">+ Field</button></div>
+    <div className="cf-actions"><button disabled={!f.name.trim()} onClick={()=>saveContact(f,contactForm.id)} className="save-btn" style={{opacity:f.name.trim()?1:.4}}>{contactForm.mode==="edit"?"Save":"Add Contact"}</button><button onClick={()=>setContactForm(null)} className="cancel-btn">Cancel</button></div>
+  </div></div>)};
+
+const ApptFormUI=({apptForm,setApptForm,saveAppt,deleteAppt})=>{const[f,setF]=useState(apptForm.appt);const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
+  <div className="cf-overlay" onClick={()=>setApptForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
+    <h2 className="cf-title">{apptForm.mode==="edit"?"Edit Appointment":"Add Appointment"}</h2>
+    <label className="cf-label" style={{marginBottom:12}}>Title *<input value={f.title} onChange={e=>upd("title",e.target.value)} className="cf-input" placeholder="Dr. visit, Lab work, etc."/></label>
+    <div className="cf-grid">
+      <label className="cf-label">Date<input type="date" value={f.date} onChange={e=>upd("date",e.target.value)} className="cf-input"/></label>
+      <label className="cf-label">Time<input type="time" value={f.time} onChange={e=>upd("time",e.target.value)} className="cf-input"/></label>
+    </div>
+    <label className="cf-label" style={{marginTop:12,marginBottom:12}}>Notes<textarea value={f.notes} onChange={e=>upd("notes",e.target.value)} className="notes-ta" rows={2}/></label>
+    <div className="cf-actions">
+      <button disabled={!f.title.trim()||!f.date} onClick={()=>saveAppt(f,apptForm.id)} className="save-btn" style={{opacity:f.title.trim()&&f.date?1:.4}}>Save</button>
+      {apptForm.mode==="edit"&&<button onClick={()=>deleteAppt(apptForm.id)} className="cd-delete-btn">Delete</button>}
+      <button onClick={()=>setApptForm(null)} className="cancel-btn">Cancel</button>
+    </div>
+  </div></div>)};
+
+const DomainEditModal=({editingDomain,setEditingDomain,setData,addLog})=>{const[l,setL]=useState(editingDomain.label);const[d,setD]=useState(editingDomain.desc);
+  const doSave=()=>{if(!l.trim())return;setData(p=>addLog({...p,domainOverrides:{...(p.domainOverrides||{}),[editingDomain.key]:{label:l.trim(),desc:d.trim()}}},editingDomain.key,`Renamed to "${l.trim()}"`));setEditingDomain(null)};
+  return(<div className="cf-overlay" onClick={()=>setEditingDomain(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
+    <h2 className="cf-title">Edit Category</h2>
+    <label className="cf-label" style={{marginBottom:14}}>Name<input value={l} onChange={e=>setL(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doSave()} className="cf-input"/></label>
+    <label className="cf-label" style={{marginBottom:20}}>Description<textarea value={d} onChange={e=>setD(e.target.value)} className="notes-ta" rows={2}/></label>
+    <div className="cf-actions"><button disabled={!l.trim()} onClick={doSave} className="save-btn">Save</button><button onClick={()=>setEditingDomain(null)} className="cancel-btn">Cancel</button></div>
+  </div></div>)};
+
+const IncidentFormUI=({incidentForm,setIncidentForm,saveIncident,deleteIncident,incidentPhotoRef,handlePhotoCapture})=>{const[f,setF]=useState(incidentForm.incident);const[incPhotos,setIncPhotos]=useState(incidentForm.incident.photos||[]);const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
+  <div className="cf-overlay" onClick={()=>setIncidentForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()}>
+    <h2 className="cf-title">{incidentForm.mode==="edit"?"Edit Incident":"Log Incident"}</h2>
+    <div className="cf-grid">
+      <label className="cf-label">Type<select value={f.type} onChange={e=>upd("type",e.target.value)} className="cf-input">{INCIDENT_TYPES.map(t=><option key={t.key} value={t.key}>{t.icon} {t.label}</option>)}</select></label>
+      <label className="cf-label">Severity<select value={f.severity} onChange={e=>upd("severity",e.target.value)} className="cf-input">{SEVERITY_LEVELS.map(s=><option key={s.key} value={s.key}>{s.label}</option>)}</select></label>
+      <label className="cf-label">Date<input type="date" value={f.date} onChange={e=>upd("date",e.target.value)} className="cf-input"/></label>
+      <label className="cf-label">Time<input type="time" value={f.time} onChange={e=>upd("time",e.target.value)} className="cf-input"/></label>
+    </div>
+    <label className="cf-label" style={{marginBottom:10}}>What happened<textarea value={f.description} onChange={e=>upd("description",e.target.value)} className="notes-ta" rows={3} placeholder="Describe the incident…"/></label>
+    <label className="cf-label" style={{marginBottom:10}}>Response / Action taken<textarea value={f.response} onChange={e=>upd("response",e.target.value)} className="notes-ta" rows={2} placeholder="What was done in response?"/></label>
+    <div className="cf-grid">
+      <label className="cf-label">Injuries (if any)<input value={f.injuries} onChange={e=>upd("injuries",e.target.value)} className="cf-input" placeholder="None, bruise, laceration…"/></label>
+      <label className="cf-label">Provider notified<input value={f.providerNotified} onChange={e=>upd("providerNotified",e.target.value)} className="cf-input" placeholder="Dr. name, 911, none…"/></label>
+    </div>
+    <label className="cf-label">Photos</label>
+    <div className="photo-attach-row">
+      <button onClick={()=>incidentPhotoRef.current&&incidentPhotoRef.current.click()} type="button" className="edit-btn" style={{marginTop:0,fontSize:12}}>📷 Add photo{incPhotos.length>0?" ("+incPhotos.length+")":""}</button>
+      <input ref={incidentPhotoRef} type="file" accept="image/*" capture="environment" multiple style={{display:"none"}} onChange={e=>handlePhotoCapture(e,setIncPhotos)}/>
+      {incPhotos.length>0&&<button onClick={()=>setIncPhotos([])} type="button" className="cancel-btn" style={{fontSize:11,padding:"4px 10px"}}>Clear</button>}
+    </div>
+    {incPhotos.length>0&&<div className="photo-preview-row" style={{marginBottom:8}}>{incPhotos.map((p,i)=>(<div key={i} className="photo-thumb"><img src={p} alt={"Photo "+(i+1)}/><button onClick={()=>setIncPhotos(prev=>prev.filter((_,j)=>j!==i))} className="photo-remove">×</button></div>))}</div>}
+    <div className="cf-actions" style={{marginTop:12}}>
+      <button disabled={!f.description.trim()} onClick={()=>{f.photos=incPhotos;saveIncident(f,incidentForm.id)}} className="save-btn" style={{opacity:f.description.trim()?1:.4}}>Save</button>
+      {incidentForm.mode==="edit"&&<button onClick={()=>deleteIncident(incidentForm.id)} className="cd-delete-btn">Delete</button>}
+      <button onClick={()=>setIncidentForm(null)} className="cancel-btn">Cancel</button>
+    </div>
+  </div></div>)};
+
+const ExpenseFormUI=({expenseForm,setExpenseForm,saveExpense,deleteExpense})=>{const[f,setF]=useState(expenseForm.expense);const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
+  <div className="cf-overlay" onClick={()=>setExpenseForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
+    <h2 className="cf-title">{expenseForm.mode==="edit"?"Edit Expense":"Add Expense"}</h2>
+    <div className="cf-grid">
+      <label className="cf-label">Date<input type="date" value={f.date} onChange={e=>upd("date",e.target.value)} className="cf-input"/></label>
+      <label className="cf-label">Amount ($)<input type="number" step="0.01" min="0" value={f.amount} onChange={e=>upd("amount",e.target.value)} className="cf-input" placeholder="0.00"/></label>
+    </div>
+    <label className="cf-label" style={{marginBottom:10}}>Category<select value={f.category} onChange={e=>upd("category",e.target.value)} className="cf-input">{EXPENSE_CATS.map(c=><option key={c.key} value={c.key}>{c.label}</option>)}</select></label>
+    <label className="cf-label" style={{marginBottom:10}}>Description<input value={f.description} onChange={e=>upd("description",e.target.value)} className="cf-input" placeholder="Pharmacy copay, aide hours, etc."/></label>
+    <label className="cf-label" style={{marginBottom:10}}>Payee / Vendor<input value={f.payee} onChange={e=>upd("payee",e.target.value)} className="cf-input" placeholder="Walgreens, Home Instead, etc."/></label>
+    <label className="cf-label" style={{marginBottom:10}}>Receipt / Reference<input value={f.receipt} onChange={e=>upd("receipt",e.target.value)} className="cf-input" placeholder="Receipt #, check #, confirmation…"/></label>
+    <div className="cf-actions">
+      <button disabled={!f.amount||!f.date} onClick={()=>saveExpense(f,expenseForm.id)} className="save-btn" style={{opacity:f.amount&&f.date?1:.4}}>Save</button>
+      {expenseForm.mode==="edit"&&<button onClick={()=>deleteExpense(expenseForm.id)} className="cd-delete-btn">Delete</button>}
+      <button onClick={()=>setExpenseForm(null)} className="cancel-btn">Cancel</button>
+    </div>
+  </div></div>)};
+
+const MedFormUI=({medForm,setMedForm,addMedToSchedule,editMedInSchedule,removeMedFromSchedule})=>{const[f,setF]=useState(medForm.med);const toggleSlot=(s)=>setF(p=>({...p,timeSlots:p.timeSlots.includes(s)?p.timeSlots.filter(x=>x!==s):[...p.timeSlots,s]}));return(
+  <div className="cf-overlay" onClick={()=>setMedForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
+    <h2 className="cf-title">{medForm.mode==="edit"?"Edit Medication":"Add Medication to Schedule"}</h2>
+    <label className="cf-label" style={{marginBottom:10}}>Medication Name<input value={f.name} onChange={e=>setF(p=>({...p,name:e.target.value}))} className="cf-input" placeholder="Donepezil"/></label>
+    <label className="cf-label" style={{marginBottom:10}}>Dosage<input value={f.dosage} onChange={e=>setF(p=>({...p,dosage:e.target.value}))} className="cf-input" placeholder="10 mg"/></label>
+    <label className="cf-label" style={{marginBottom:10}}>Time Slots</label>
+    <div className="med-slot-row">{MED_TIME_SLOTS.map(s=>(<button key={s} onClick={()=>toggleSlot(s)} className={`cc-btn ${f.timeSlots.includes(s)?"cc-active":""}`}>{s}</button>))}</div>
+    <label className="cf-label" style={{marginTop:12,marginBottom:10}}>Notes<input value={f.notes||""} onChange={e=>setF(p=>({...p,notes:e.target.value}))} className="cf-input" placeholder="Take with food, etc."/></label>
+    <div className="cf-actions" style={{marginTop:8}}>
+      <button disabled={!f.name.trim()||!f.timeSlots.length} onClick={()=>medForm.mode==="edit"?editMedInSchedule(f,medForm.id):addMedToSchedule(f)} className="save-btn" style={{opacity:f.name.trim()&&f.timeSlots.length?1:.4}}>Save</button>
+      {medForm.mode==="edit"&&<button onClick={()=>{removeMedFromSchedule(medForm.id);setMedForm(null)}} className="cd-delete-btn">Remove</button>}
+      <button onClick={()=>setMedForm(null)} className="cancel-btn">Cancel</button>
+    </div>
+  </div></div>)};
+
+const CreateTeamForm=({data,flash,createTeam,setTeamSetupMode})=>{const[tn,setTn]=useState("");const[cn,setCn]=useState("");const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[mr,setMr]=useState("Primary Caregiver");return(
+  <div className="team-form">
+    <h4 className="sync-sub-title">Create Your Care Team</h4>
+    <label className="cf-label">Team name<input value={tn} onChange={e=>setTn(e.target.value)} className="cf-input" placeholder="e.g., Mom's Care Team"/></label>
+    <label className="cf-label">Who are you caring for?<input value={cn} onChange={e=>setCn(e.target.value)} className="cf-input" placeholder="e.g., Margaret Johnson"/></label>
+    <label className="cf-label">Your name<input value={mn} onChange={e=>setMn(e.target.value)} className="cf-input" placeholder="e.g., David"/></label>
+    <label className="cf-label">Your role<input value={mr} onChange={e=>setMr(e.target.value)} className="cf-input" placeholder="e.g., Primary Caregiver, Daughter, Aide"/></label>
+    <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!tn.trim()||!cn.trim()||!mn.trim()){flash("Please fill in all fields.");return}createTeam(tn,cn,mn,mr)}} className="save-btn">Create Team</button><button onClick={()=>setTeamSetupMode(null)} className="cancel-btn">Cancel</button></div>
+  </div>)};
+
+const JoinTeamForm=({data,joinCode,setJoinCode,parseInviteCode,flash,joinTeamFromCode,setTeamSetupMode})=>{const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[mr,setMr]=useState("");const[rk,setRk]=useState("family");return(
+  <div className="team-form">
+    <h4 className="sync-sub-title">Join an Existing Team</h4>
+    <label className="cf-label">Invite code<input value={joinCode} onChange={e=>setJoinCode(e.target.value)} className="cf-input" placeholder="Paste the code from your team member" style={{fontFamily:"monospace",fontSize:12}}/></label>
+    {joinCode&&parseInviteCode(joinCode)&&<p className="hint" style={{color:"#718355"}}>✓ Team: <strong>{parseInviteCode(joinCode).teamName}</strong> · Caring for: <strong>{parseInviteCode(joinCode).clientName}</strong></p>}
+    <label className="cf-label">Your name<input value={mn} onChange={e=>setMn(e.target.value)} className="cf-input" placeholder="e.g., Sarah"/></label>
+    <label className="cf-label">Your role title<input value={mr} onChange={e=>setMr(e.target.value)} className="cf-input" placeholder="e.g., Weekend Caregiver, Son, Home Health Aide"/></label>
+    <label className="cf-label">Access level<select value={rk} onChange={e=>setRk(e.target.value)} className="cf-select">{ROLES.filter(r=>r.key!=="admin"&&!r.key.startsWith("client")).map(r=>(<option key={r.key} value={r.key}>{r.icon} {r.label} — {r.desc}</option>))}</select></label>
+    <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!joinCode.trim()||!mn.trim()){flash("Please enter the invite code and your name.");return}joinTeamFromCode(joinCode,mn,mr,rk)}} className="save-btn">Join Team</button><button onClick={()=>{setTeamSetupMode(null);setJoinCode("")}} className="cancel-btn">Cancel</button></div>
+  </div>)};
+
 /* ═══════════════ COMPONENT ═══════════════ */
 export default function App() {
   const [authed,setAuthed]=useState(false);
@@ -3568,131 +3700,6 @@ export default function App() {
     </div></div>
   </>);
 
-  /* ══════════ MODALS ══════════ */
-  const ContactFormUI=()=>{const[f,setF]=useState({...contactForm.contact,customFields:[...(contactForm.contact.customFields||[])]});const[nfl,setNfl]=useState("");const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
-    <div className="cf-overlay" onClick={()=>setContactForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()}>
-      <h2 className="cf-title">{contactForm.mode==="edit"?"Edit Contact":"Add Contact"}</h2>
-      <div className="cf-grid">
-        <label className="cf-label">Name *<input value={f.name} onChange={e=>upd("name",e.target.value)} className="cf-input"/></label>
-        <label className="cf-label">Role / Title<input value={f.role} onChange={e=>upd("role",e.target.value)} className="cf-input"/></label>
-        <label className="cf-label">Organization<input value={f.org} onChange={e=>upd("org",e.target.value)} className="cf-input"/></label>
-        <label className="cf-label">Category<select value={f.category} onChange={e=>upd("category",e.target.value)} className="cf-input">{CONTACT_CATS.map(c=><option key={c.key} value={c.key}>{c.icon} {c.label}</option>)}</select></label>
-        <label className="cf-label">Phone<input value={f.phone} onChange={e=>upd("phone",e.target.value)} className="cf-input" type="tel"/></label>
-        <label className="cf-label">Email<input value={f.email} onChange={e=>upd("email",e.target.value)} className="cf-input" type="email"/></label>
-      </div>
-      {f.customFields.length>0&&<div className="cf-custom-section"><h4 className="cf-custom-title">Custom Fields</h4>
-        {f.customFields.map((cf,i)=>(<div key={i} className="cf-custom-row"><input value={cf.label} onChange={e=>{const c=[...f.customFields];c[i]={...c[i],label:e.target.value};setF(p=>({...p,customFields:c}))}} className="cf-input cf-custom-label" placeholder="Field name"/><input value={cf.value} onChange={e=>{const c=[...f.customFields];c[i]={...c[i],value:e.target.value};setF(p=>({...p,customFields:c}))}} className="cf-input cf-custom-value" placeholder="Value"/><button onClick={()=>setF(p=>({...p,customFields:p.customFields.filter((_,j)=>j!==i)}))} className="remove-sub">×</button></div>))}
-      </div>}
-      <div className="cf-add-field-row"><input value={nfl} onChange={e=>setNfl(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&nfl.trim()){setF(p=>({...p,customFields:[...p.customFields,{label:nfl.trim(),value:""}]}));setNfl("")}}} className="cf-input" placeholder="New field name" style={{flex:1}}/><button onClick={()=>{if(nfl.trim()){setF(p=>({...p,customFields:[...p.customFields,{label:nfl.trim(),value:""}]}));setNfl("")}}} className="add-sub-btn">+ Field</button></div>
-      <div className="cf-actions"><button disabled={!f.name.trim()} onClick={()=>saveContact(f,contactForm.id)} className="save-btn" style={{opacity:f.name.trim()?1:.4}}>{contactForm.mode==="edit"?"Save":"Add Contact"}</button><button onClick={()=>setContactForm(null)} className="cancel-btn">Cancel</button></div>
-    </div></div>)};
-
-  const ApptFormUI=()=>{const[f,setF]=useState(apptForm.appt);const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
-    <div className="cf-overlay" onClick={()=>setApptForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
-      <h2 className="cf-title">{apptForm.mode==="edit"?"Edit Appointment":"Add Appointment"}</h2>
-      <label className="cf-label" style={{marginBottom:12}}>Title *<input value={f.title} onChange={e=>upd("title",e.target.value)} className="cf-input" placeholder="Dr. visit, Lab work, etc."/></label>
-      <div className="cf-grid">
-        <label className="cf-label">Date<input type="date" value={f.date} onChange={e=>upd("date",e.target.value)} className="cf-input"/></label>
-        <label className="cf-label">Time<input type="time" value={f.time} onChange={e=>upd("time",e.target.value)} className="cf-input"/></label>
-      </div>
-      <label className="cf-label" style={{marginTop:12,marginBottom:12}}>Notes<textarea value={f.notes} onChange={e=>upd("notes",e.target.value)} className="notes-ta" rows={2}/></label>
-      <div className="cf-actions">
-        <button disabled={!f.title.trim()||!f.date} onClick={()=>saveAppt(f,apptForm.id)} className="save-btn" style={{opacity:f.title.trim()&&f.date?1:.4}}>Save</button>
-        {apptForm.mode==="edit"&&<button onClick={()=>deleteAppt(apptForm.id)} className="cd-delete-btn">Delete</button>}
-        <button onClick={()=>setApptForm(null)} className="cancel-btn">Cancel</button>
-      </div>
-    </div></div>)};
-
-  const DomainEditModal=()=>{const[l,setL]=useState(editingDomain.label);const[d,setD]=useState(editingDomain.desc);
-    const doSave=()=>{if(!l.trim())return;setData(p=>addLog({...p,domainOverrides:{...(p.domainOverrides||{}),[editingDomain.key]:{label:l.trim(),desc:d.trim()}}},editingDomain.key,`Renamed to "${l.trim()}"`));setEditingDomain(null)};
-    return(<div className="cf-overlay" onClick={()=>setEditingDomain(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
-      <h2 className="cf-title">Edit Category</h2>
-      <label className="cf-label" style={{marginBottom:14}}>Name<input value={l} onChange={e=>setL(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doSave()} className="cf-input"/></label>
-      <label className="cf-label" style={{marginBottom:20}}>Description<textarea value={d} onChange={e=>setD(e.target.value)} className="notes-ta" rows={2}/></label>
-      <div className="cf-actions"><button disabled={!l.trim()} onClick={doSave} className="save-btn">Save</button><button onClick={()=>setEditingDomain(null)} className="cancel-btn">Cancel</button></div>
-    </div></div>)};
-
-  const IncidentFormUI=()=>{const[f,setF]=useState(incidentForm.incident);const[incPhotos,setIncPhotos]=useState(incidentForm.incident.photos||[]);const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
-    <div className="cf-overlay" onClick={()=>setIncidentForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()}>
-      <h2 className="cf-title">{incidentForm.mode==="edit"?"Edit Incident":"Log Incident"}</h2>
-      <div className="cf-grid">
-        <label className="cf-label">Type<select value={f.type} onChange={e=>upd("type",e.target.value)} className="cf-input">{INCIDENT_TYPES.map(t=><option key={t.key} value={t.key}>{t.icon} {t.label}</option>)}</select></label>
-        <label className="cf-label">Severity<select value={f.severity} onChange={e=>upd("severity",e.target.value)} className="cf-input">{SEVERITY_LEVELS.map(s=><option key={s.key} value={s.key}>{s.label}</option>)}</select></label>
-        <label className="cf-label">Date<input type="date" value={f.date} onChange={e=>upd("date",e.target.value)} className="cf-input"/></label>
-        <label className="cf-label">Time<input type="time" value={f.time} onChange={e=>upd("time",e.target.value)} className="cf-input"/></label>
-      </div>
-      <label className="cf-label" style={{marginBottom:10}}>What happened<textarea value={f.description} onChange={e=>upd("description",e.target.value)} className="notes-ta" rows={3} placeholder="Describe the incident…"/></label>
-      <label className="cf-label" style={{marginBottom:10}}>Response / Action taken<textarea value={f.response} onChange={e=>upd("response",e.target.value)} className="notes-ta" rows={2} placeholder="What was done in response?"/></label>
-      <div className="cf-grid">
-        <label className="cf-label">Injuries (if any)<input value={f.injuries} onChange={e=>upd("injuries",e.target.value)} className="cf-input" placeholder="None, bruise, laceration…"/></label>
-        <label className="cf-label">Provider notified<input value={f.providerNotified} onChange={e=>upd("providerNotified",e.target.value)} className="cf-input" placeholder="Dr. name, 911, none…"/></label>
-      </div>
-      <label className="cf-label">Photos</label>
-      <div className="photo-attach-row">
-        <button onClick={()=>incidentPhotoRef.current&&incidentPhotoRef.current.click()} type="button" className="edit-btn" style={{marginTop:0,fontSize:12}}>📷 Add photo{incPhotos.length>0?" ("+incPhotos.length+")":""}</button>
-        <input ref={incidentPhotoRef} type="file" accept="image/*" capture="environment" multiple style={{display:"none"}} onChange={e=>handlePhotoCapture(e,setIncPhotos)}/>
-        {incPhotos.length>0&&<button onClick={()=>setIncPhotos([])} type="button" className="cancel-btn" style={{fontSize:11,padding:"4px 10px"}}>Clear</button>}
-      </div>
-      {incPhotos.length>0&&<div className="photo-preview-row" style={{marginBottom:8}}>{incPhotos.map((p,i)=>(<div key={i} className="photo-thumb"><img src={p} alt={"Photo "+(i+1)}/><button onClick={()=>setIncPhotos(prev=>prev.filter((_,j)=>j!==i))} className="photo-remove">×</button></div>))}</div>}
-      <div className="cf-actions" style={{marginTop:12}}>
-        <button disabled={!f.description.trim()} onClick={()=>{f.photos=incPhotos;saveIncident(f,incidentForm.id)}} className="save-btn" style={{opacity:f.description.trim()?1:.4}}>Save</button>
-        {incidentForm.mode==="edit"&&<button onClick={()=>deleteIncident(incidentForm.id)} className="cd-delete-btn">Delete</button>}
-        <button onClick={()=>setIncidentForm(null)} className="cancel-btn">Cancel</button>
-      </div>
-    </div></div>)};
-
-  const ExpenseFormUI=()=>{const[f,setF]=useState(expenseForm.expense);const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
-    <div className="cf-overlay" onClick={()=>setExpenseForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
-      <h2 className="cf-title">{expenseForm.mode==="edit"?"Edit Expense":"Add Expense"}</h2>
-      <div className="cf-grid">
-        <label className="cf-label">Date<input type="date" value={f.date} onChange={e=>upd("date",e.target.value)} className="cf-input"/></label>
-        <label className="cf-label">Amount ($)<input type="number" step="0.01" min="0" value={f.amount} onChange={e=>upd("amount",e.target.value)} className="cf-input" placeholder="0.00"/></label>
-      </div>
-      <label className="cf-label" style={{marginBottom:10}}>Category<select value={f.category} onChange={e=>upd("category",e.target.value)} className="cf-input">{EXPENSE_CATS.map(c=><option key={c.key} value={c.key}>{c.label}</option>)}</select></label>
-      <label className="cf-label" style={{marginBottom:10}}>Description<input value={f.description} onChange={e=>upd("description",e.target.value)} className="cf-input" placeholder="Pharmacy copay, aide hours, etc."/></label>
-      <label className="cf-label" style={{marginBottom:10}}>Payee / Vendor<input value={f.payee} onChange={e=>upd("payee",e.target.value)} className="cf-input" placeholder="Walgreens, Home Instead, etc."/></label>
-      <label className="cf-label" style={{marginBottom:10}}>Receipt / Reference<input value={f.receipt} onChange={e=>upd("receipt",e.target.value)} className="cf-input" placeholder="Receipt #, check #, confirmation…"/></label>
-      <div className="cf-actions">
-        <button disabled={!f.amount||!f.date} onClick={()=>saveExpense(f,expenseForm.id)} className="save-btn" style={{opacity:f.amount&&f.date?1:.4}}>Save</button>
-        {expenseForm.mode==="edit"&&<button onClick={()=>deleteExpense(expenseForm.id)} className="cd-delete-btn">Delete</button>}
-        <button onClick={()=>setExpenseForm(null)} className="cancel-btn">Cancel</button>
-      </div>
-    </div></div>)};
-
-  const MedFormUI=()=>{const[f,setF]=useState(medForm.med);const toggleSlot=(s)=>setF(p=>({...p,timeSlots:p.timeSlots.includes(s)?p.timeSlots.filter(x=>x!==s):[...p.timeSlots,s]}));return(
-    <div className="cf-overlay" onClick={()=>setMedForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
-      <h2 className="cf-title">{medForm.mode==="edit"?"Edit Medication":"Add Medication to Schedule"}</h2>
-      <label className="cf-label" style={{marginBottom:10}}>Medication Name<input value={f.name} onChange={e=>setF(p=>({...p,name:e.target.value}))} className="cf-input" placeholder="Donepezil"/></label>
-      <label className="cf-label" style={{marginBottom:10}}>Dosage<input value={f.dosage} onChange={e=>setF(p=>({...p,dosage:e.target.value}))} className="cf-input" placeholder="10 mg"/></label>
-      <label className="cf-label" style={{marginBottom:10}}>Time Slots</label>
-      <div className="med-slot-row">{MED_TIME_SLOTS.map(s=>(<button key={s} onClick={()=>toggleSlot(s)} className={`cc-btn ${f.timeSlots.includes(s)?"cc-active":""}`}>{s}</button>))}</div>
-      <label className="cf-label" style={{marginTop:12,marginBottom:10}}>Notes<input value={f.notes||""} onChange={e=>setF(p=>({...p,notes:e.target.value}))} className="cf-input" placeholder="Take with food, etc."/></label>
-      <div className="cf-actions" style={{marginTop:8}}>
-        <button disabled={!f.name.trim()||!f.timeSlots.length} onClick={()=>medForm.mode==="edit"?editMedInSchedule(f,medForm.id):addMedToSchedule(f)} className="save-btn" style={{opacity:f.name.trim()&&f.timeSlots.length?1:.4}}>Save</button>
-        {medForm.mode==="edit"&&<button onClick={()=>{removeMedFromSchedule(medForm.id);setMedForm(null)}} className="cd-delete-btn">Remove</button>}
-        <button onClick={()=>setMedForm(null)} className="cancel-btn">Cancel</button>
-      </div>
-    </div></div>)};
-
-  const CreateTeamForm=()=>{const[tn,setTn]=useState("");const[cn,setCn]=useState("");const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[mr,setMr]=useState("Primary Caregiver");return(
-    <div className="team-form">
-      <h4 className="sync-sub-title">Create Your Care Team</h4>
-      <label className="cf-label">Team name<input value={tn} onChange={e=>setTn(e.target.value)} className="cf-input" placeholder="e.g., Mom's Care Team"/></label>
-      <label className="cf-label">Who are you caring for?<input value={cn} onChange={e=>setCn(e.target.value)} className="cf-input" placeholder="e.g., Margaret Johnson"/></label>
-      <label className="cf-label">Your name<input value={mn} onChange={e=>setMn(e.target.value)} className="cf-input" placeholder="e.g., David"/></label>
-      <label className="cf-label">Your role<input value={mr} onChange={e=>setMr(e.target.value)} className="cf-input" placeholder="e.g., Primary Caregiver, Daughter, Aide"/></label>
-      <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!tn.trim()||!cn.trim()||!mn.trim()){flash("Please fill in all fields.");return}createTeam(tn,cn,mn,mr)}} className="save-btn">Create Team</button><button onClick={()=>setTeamSetupMode(null)} className="cancel-btn">Cancel</button></div>
-    </div>)};
-  const JoinTeamForm=()=>{const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[mr,setMr]=useState("");const[rk,setRk]=useState("family");return(
-    <div className="team-form">
-      <h4 className="sync-sub-title">Join an Existing Team</h4>
-      <label className="cf-label">Invite code<input value={joinCode} onChange={e=>setJoinCode(e.target.value)} className="cf-input" placeholder="Paste the code from your team member" style={{fontFamily:"monospace",fontSize:12}}/></label>
-      {joinCode&&parseInviteCode(joinCode)&&<p className="hint" style={{color:"#718355"}}>✓ Team: <strong>{parseInviteCode(joinCode).teamName}</strong> · Caring for: <strong>{parseInviteCode(joinCode).clientName}</strong></p>}
-      <label className="cf-label">Your name<input value={mn} onChange={e=>setMn(e.target.value)} className="cf-input" placeholder="e.g., Sarah"/></label>
-      <label className="cf-label">Your role title<input value={mr} onChange={e=>setMr(e.target.value)} className="cf-input" placeholder="e.g., Weekend Caregiver, Son, Home Health Aide"/></label>
-      <label className="cf-label">Access level<select value={rk} onChange={e=>setRk(e.target.value)} className="cf-select">{ROLES.filter(r=>r.key!=="admin"&&!r.key.startsWith("client")).map(r=>(<option key={r.key} value={r.key}>{r.icon} {r.label} — {r.desc}</option>))}</select></label>
-      <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!joinCode.trim()||!mn.trim()){flash("Please enter the invite code and your name.");return}joinTeamFromCode(joinCode,mn,mr,rk)}} className="save-btn">Join Team</button><button onClick={()=>{setTeamSetupMode(null);setJoinCode("")}} className="cancel-btn">Cancel</button></div>
-    </div>)};
 
   const detailContact=contactDetail?data.contacts.find(c=>c.id===contactDetail):null;
   const detailCat=detailContact?CONTACT_CATS.find(c=>c.key===detailContact.category):null;
@@ -3763,12 +3770,12 @@ export default function App() {
           </div>):<div className="search-hint">Type at least 2 characters to search</div>})()}
       </div>
     </div>)}
-    {contactForm&&!isClient&&<ContactFormUI/>}
-    {apptForm&&!isClient&&<ApptFormUI/>}
-    {editingDomain&&!isClient&&<DomainEditModal/>}
-    {incidentForm&&!isClient&&<IncidentFormUI/>}
-    {expenseForm&&!isClient&&<ExpenseFormUI/>}
-    {medForm&&!isClient&&<MedFormUI/>}
+    {contactForm&&!isClient&&<ContactFormUI key={"contact-"+(contactForm.id||contactForm.mode)} contactForm={contactForm} setContactForm={setContactForm} saveContact={saveContact}/>}
+    {apptForm&&!isClient&&<ApptFormUI key={"appt-"+(apptForm.id||apptForm.mode)} apptForm={apptForm} setApptForm={setApptForm} saveAppt={saveAppt} deleteAppt={deleteAppt}/>}
+    {editingDomain&&!isClient&&<DomainEditModal key={"domain-"+editingDomain.key} editingDomain={editingDomain} setEditingDomain={setEditingDomain} setData={setData} addLog={addLog}/>}
+    {incidentForm&&!isClient&&<IncidentFormUI key={"incident-"+(incidentForm.id||incidentForm.mode)} incidentForm={incidentForm} setIncidentForm={setIncidentForm} saveIncident={saveIncident} deleteIncident={deleteIncident} incidentPhotoRef={incidentPhotoRef} handlePhotoCapture={handlePhotoCapture}/>}
+    {expenseForm&&!isClient&&<ExpenseFormUI key={"expense-"+(expenseForm.id||expenseForm.mode)} expenseForm={expenseForm} setExpenseForm={setExpenseForm} saveExpense={saveExpense} deleteExpense={deleteExpense}/>}
+    {medForm&&!isClient&&<MedFormUI key={"med-"+(medForm.id||medForm.mode)} medForm={medForm} setMedForm={setMedForm} addMedToSchedule={addMedToSchedule} editMedInSchedule={editMedInSchedule} removeMedFromSchedule={removeMedFromSchedule}/>}
     {/* Merge Preview Modal */}
     {/* MFA enrollment */}
     {mfaEnroll&&(<div className="cf-overlay" onClick={()=>{if(mfaEnroll!=="registering"){setMfaEnroll(null);setMfaEnrollPrepared(null)}}}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
@@ -4580,8 +4587,8 @@ export default function App() {
                   <div className="sync-method-card" onClick={()=>setTeamSetupMode("create")}><div className="sync-method-icon">✦</div><div className="sync-method-info"><strong>Create a Team</strong><span>You're the first caregiver setting this up</span></div></div>
                   <div className="sync-method-card" onClick={()=>setTeamSetupMode("join")}><div className="sync-method-icon">🔗</div><div className="sync-method-info"><strong>Join a Team</strong><span>Someone shared an invite code with you</span></div></div>
                 </div>)}
-                {teamSetupMode==="create"&&<CreateTeamForm/>}
-                {teamSetupMode==="join"&&<JoinTeamForm/>}
+                {teamSetupMode==="create"&&<CreateTeamForm data={data} flash={flash} createTeam={createTeam} setTeamSetupMode={setTeamSetupMode}/>}
+                {teamSetupMode==="join"&&<JoinTeamForm data={data} joinCode={joinCode} setJoinCode={setJoinCode} parseInviteCode={parseInviteCode} flash={flash} joinTeamFromCode={joinTeamFromCode} setTeamSetupMode={setTeamSetupMode}/>}
               </>):(<>
                 {/* Team is set up — show roster */}
                 <div className="team-header">
