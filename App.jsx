@@ -3342,7 +3342,7 @@ export default function App() {
 
   /* ── nav ── */
   const toggle=(gi)=>setExpanded(p=>({...p,[gi]:!p[gi]}));
-  const PHI_VIEWS={"meds":"medications","log":"incidents","sos":"emergency_info","cabinet":"medications","care-domains":"domains","incidents":"incidents","medadmin":"medications","contacts":"contacts","documents":"documents","selfreport":"self_reports","poa-decisions":"poa_decisions","capacity":"capacity","physical":"domains","cognitive":"domains","wellness":"domains","legal":"domains","financial":"domains","emergency-card":"emergency_info","binder":"care_plan","handoff":"shift_data"};
+  const PHI_VIEWS={"meds":"medications","log":"incidents","sos":"emergency_info","care-domains":"domains","contacts":"contacts","documents":"documents","selfreport":"self_reports","poa-decisions":"poa_decisions","capacity":"capacity","physical":"domains","cognitive":"domains","wellness":"domains","legal":"domains","financial":"domains","emergency-card":"emergency_info","binder":"care_plan","handoff":"shift_data"};
   // PHI access is audited on every route into a PHI view — including the bottom
   // nav, which reaches the Meds/Log/SOS roots without going through nav().
   const auditView=(v)=>{if(PHI_VIEWS[v]&&authed)hipaaAudit("view","Accessed "+v,PHI_VIEWS[v])};
@@ -3353,7 +3353,7 @@ export default function App() {
   const nav=(v)=>{if(NAV_ROOTS.includes(v)){navRoot(v);return}auditView(v);setNavStack(p=>[...p,{view,hub:currentHub}]);setView(v);setExpanded({});setEditNotes(false);setAddSubFor(null);cancelEdit();setContactForm(null);setContactDetail(null);setEditingDomain(null);setApptForm(null);setCalSelected(null);setDocResult(null);setDocMeds([]);setDocLabs([]);setIncidentForm(null);setExpenseForm(null);setMedForm(null);setViewingDoc(null)};
   const navBack=()=>{if(navStack.length>0){const prev=navStack[navStack.length-1];setNavStack(p=>p.slice(0,-1));setView(prev.view);setCurrentHub(prev.hub)}else{navRoot(NAV_ROOTS.includes(currentHub)?currentHub:"today")}};
   const isHubView=NAV_ROOTS.includes(view);
-  const getViewTitle=()=>{const t={today:"Today",meds:"Medications",log:"Log",sos:"SOS",cabinet:"Medicine Cabinet","care-domains":"Care domains",physical:"Physical health",cognitive:"Cognitive health",wellness:"Wellness",legal:"Legal safety",financial:"Financial security",incidents:"Incidents",medadmin:"Medication admin",expenses:"Expenses",calendar:"Calendar",contacts:"Contacts",documents:"Documents",triggers:"Escalation triggers",tracking:"Tracking",visit:"Visit prep",emergency:"Emergency plans",postdeath:"After death",messages:"Messages",sync:"Sync",selfreport:"Self-report",settings:"Settings",help:"Help",overview:"Overview",handoff:"Shift Handoff","emergency-card":"Emergency Card","caregiver-wellness":"Caregiver Check-in","incident-patterns":"Incident Patterns",capacity:"Capacity Observations",binder:"Care Plan Binder","poa-decisions":"POA Decisions",schedule:"Care Schedule",availability:"My Availability"};return t[view]||"Care Guardian"};
+  const getViewTitle=()=>{const t={today:"Today",meds:"Medications",log:"Log",sos:"SOS","care-domains":"Care domains",physical:"Physical health",cognitive:"Cognitive health",wellness:"Wellness",legal:"Legal safety",financial:"Financial security",expenses:"Expenses",calendar:"Calendar",contacts:"Contacts",documents:"Documents",triggers:"Escalation triggers",tracking:"Tracking",visit:"Visit prep",emergency:"Emergency plans",postdeath:"After death",messages:"Messages",sync:"Sync",selfreport:"Self-report",settings:"Settings",help:"Help",overview:"Overview",handoff:"Shift Handoff","emergency-card":"Emergency Card","caregiver-wellness":"Caregiver Check-in","incident-patterns":"Incident Patterns",display:"Display settings",capacity:"Capacity Observations",binder:"Care Plan Binder","poa-decisions":"POA Decisions",schedule:"Care Schedule",availability:"My Availability"};return t[view]||"Care Guardian"};
   const getBreadcrumb=()=>{const h={today:"Today",meds:"Medications",log:"Log",sos:"SOS",care:"Care Hub"};if(isHubView)return null;return h[currentHub]||null};
 
   // Universal search
@@ -4185,7 +4185,7 @@ export default function App() {
               <button role="tab" aria-selected={medsTab==="cabinet"} onClick={()=>setMedsTab("cabinet")} className={`seg-tab ${medsTab==="cabinet"?"seg-tab-on":""}`}>Cabinet</button>
             </div>
             {medsTab==="schedule"&&(<>
-              <p className="page-sub">Tap a cell to cycle: given ✓ · missed ✗ · refused ⊘</p>
+              <p className="page-sub">Tap a time slot to cycle: given ✓ · missed ✗ · refused ⊘</p>
               <div className="med-date-nav">
                 <button onClick={()=>{const d=new Date(medAdminDate+"T12:00:00");d.setDate(d.getDate()-1);setMedAdminDate(fmtDate(d.getFullYear(),d.getMonth(),d.getDate()))}} className="cal-nav-btn" aria-label="Previous day">‹</button>
                 <input type="date" value={medAdminDate} onChange={e=>setMedAdminDate(e.target.value)} className="cf-input" style={{textAlign:"center",fontWeight:700,maxWidth:180}}/>
@@ -4311,7 +4311,7 @@ export default function App() {
             <div className="hub-card" onClick={()=>{setCurrentHub("sos");nav("emergency-card")}}><div className="hub-card-icon" style={{background:"var(--color-background-danger)"}}><span style={{color:"var(--color-text-danger)"}}>🆔</span></div><div className="hub-card-body"><div className="hub-card-title">Emergency info card</div><div className="hub-card-sub">Diagnoses, medications, allergies, code status{getEmergencyInfo().clientPhoto?", photo":""}</div></div><span className="hub-card-arr">›</span></div>
             <div className="hub-section-label">If this is happening right now</div>
             {EMERGENCY_SCENARIOS.map(sc=>(
-              <div key={sc.key} className="hub-card" onClick={()=>{setCurrentHub("sos");nav("emergency")}}><div className="hub-card-icon" style={{background:"var(--color-background-warning)"}}><span style={{color:"var(--color-text-warning)"}}>{sc.icon||"🚨"}</span></div><div className="hub-card-body"><div className="hub-card-title">{sc.label}</div></div><span className="hub-card-arr">›</span></div>))}
+              <div key={sc.key} className="hub-card" onClick={()=>{setCurrentHub("sos");nav("emergency")}}><div className="hub-card-icon" style={{background:"var(--color-background-warning)"}}><span style={{color:"var(--color-text-warning)"}}>{sc.icon||"🚨"}</span></div><div className="hub-card-body"><div className="hub-card-title">{sc.title}</div></div><span className="hub-card-arr">›</span></div>))}
             {can("view-contacts")&&<>
               <div className="hub-section-label">People to call</div>
               {(()=>{const cats=[{key:"medical",label:"Medical"},{key:"care",label:"Care team"},{key:"family",label:"Family"},{key:"legal",label:"Legal"},{key:"financial",label:"Financial"},{key:"other",label:"Other"}];
