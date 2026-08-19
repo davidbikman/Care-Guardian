@@ -2,12 +2,12 @@ import { useState, useEffect, useRef, Fragment } from "react";
 
 /* ═══════════════ CONSTANTS ═══════════════ */
 const CONTACT_CATS = [
-  { key: "medical", label: "Medical", icon: "♥", color: "#b56576" },
-  { key: "care", label: "Care & Support", icon: "✿", color: "#718355" },
-  { key: "legal", label: "Legal", icon: "⚖", color: "#457b9d" },
-  { key: "financial", label: "Financial", icon: "◈", color: "#bc6c25" },
-  { key: "family", label: "Family", icon: "⌂", color: "#6d6875" },
-  { key: "other", label: "Other", icon: "◉", color: "#8d99ae" },
+  { key: "medical", label: "Medical", icon: "♥", color: "var(--color-text-danger)" },
+  { key: "care", label: "Care & Support", icon: "✿", color: "var(--color-text-success)" },
+  { key: "legal", label: "Legal", icon: "⚖", color: "var(--color-action-primary)" },
+  { key: "financial", label: "Financial", icon: "◈", color: "var(--color-text-warning)" },
+  { key: "family", label: "Family", icon: "⌂", color: "var(--color-action-primary)" },
+  { key: "other", label: "Other", icon: "◉", color: "var(--color-text-muted)" },
 ];
 
 const INCIDENT_TYPES = [
@@ -107,7 +107,7 @@ const EMPTY_CONTACT = { name:"",role:"",org:"",phone:"",email:"",category:"medic
 const DAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
-const TASK_TYPES={O:{key:"O",label:"One-time",icon:"☐",color:"#457b9d",desc:"Do once and it's done"},R:{key:"R",label:"Recurring",icon:"↻",color:"#bc6c25",desc:"Repeat on a schedule"},M:{key:"M",label:"Monitoring",icon:"◉",color:"#718355",desc:"Ongoing observation"}};
+const TASK_TYPES={O:{key:"O",label:"One-time",icon:"☐",color:"var(--color-action-primary)",desc:"Do once and it's done"},R:{key:"R",label:"Recurring",icon:"↻",color:"var(--color-text-warning)",desc:"Repeat on a schedule"},M:{key:"M",label:"Monitoring",icon:"◉",color:"var(--color-text-success)",desc:"Ongoing observation"}};
 
 
 const DOMAIN_META = [
@@ -1732,7 +1732,7 @@ const JoinTeamForm=({data,joinCode,setJoinCode,parseInviteCode,flash,joinTeamFro
   <div className="team-form">
     <h4 className="sync-sub-title">Join an Existing Team</h4>
     <label className="cf-label">Invite code<input value={joinCode} onChange={e=>setJoinCode(e.target.value)} className="cf-input" placeholder="Paste the code from your team member" style={{fontFamily:"monospace",fontSize:12}}/></label>
-    {joinCode&&parseInviteCode(joinCode)&&<p className="hint" style={{color:"#718355"}}>✓ Team: <strong>{parseInviteCode(joinCode).teamName}</strong> · Caring for: <strong>{parseInviteCode(joinCode).clientName}</strong></p>}
+    {joinCode&&parseInviteCode(joinCode)&&<p className="hint" style={{color:"var(--color-text-success)"}}>✓ Team: <strong>{parseInviteCode(joinCode).teamName}</strong> · Caring for: <strong>{parseInviteCode(joinCode).clientName}</strong></p>}
     <label className="cf-label">Your name<input value={mn} onChange={e=>setMn(e.target.value)} className="cf-input" placeholder="e.g., Sarah"/></label>
     <label className="cf-label">Your role title<input value={mr} onChange={e=>setMr(e.target.value)} className="cf-input" placeholder="e.g., Weekend Caregiver, Son, Home Health Aide"/></label>
     <label className="cf-label">Access level<select value={rk} onChange={e=>setRk(e.target.value)} className="cf-select">{ROLES.filter(r=>r.key!=="admin"&&!r.key.startsWith("client")).map(r=>(<option key={r.key} value={r.key}>{r.icon} {r.label} — {r.desc}</option>))}</select></label>
@@ -2468,7 +2468,7 @@ export default function App() {
     return{done:oDone+cDone,total:oTotal+g.customSubs.length,pct:(oTotal+g.customSubs.length)?Math.round((oDone+cDone)/(oTotal+g.customSubs.length)*100):0};
   };
   const getSubRecency=(dk,gi,si)=>{const st=getSubState(dk,gi,si);if(!st.lastDone)return null;const age=Math.floor((Date.now()-new Date(st.lastDone).getTime())/(86400000));return age};
-  const getRecencyColor=(age,interval)=>{if(age===null)return"#e5e1db";if(interval){return age<interval?"#718355":age<interval*1.5?"#bc6c25":"#b56576"}return age<7?"#718355":age<30?"#bc6c25":"#b56576"};
+  const getRecencyColor=(age,interval)=>{if(age===null)return"var(--color-border-subtle)";if(interval){return age<interval?"var(--color-text-success)":age<interval*1.5?"var(--color-text-warning)":"var(--color-text-danger)"}return age<7?"var(--color-text-success)":age<30?"var(--color-text-warning)":"var(--color-text-danger)"};
   const getRecencyLabel=(age)=>{if(age===null)return"Not yet attended";if(age===0)return"Today";if(age===1)return"Yesterday";if(age<7)return age+" days ago";if(age<30)return Math.floor(age/7)+"w ago";return Math.floor(age/30)+"mo ago"};
   const changeSubType=(dk,gi,si,newType)=>{setData(p=>{const goals=[...p.domains[dk].goals];const subs=[...goals[gi].subs];subs[si]={...subs[si],typeOverride:newType};goals[gi]={...goals[gi],subs};return{...p,domains:{...p.domains,[dk]:{...p.domains[dk],goals}}}})};
 
@@ -4056,7 +4056,7 @@ export default function App() {
         <p className="hint">Your passkey is registered. <strong>Write down or print this recovery code now</strong> — it's shown only once and is the only way in if you lose your passkey.</p>
         <div className="recovery-code-box">{mfaEnrollPrepared.code}</div>
         <div style={{display:"flex",gap:8,marginTop:8}}><button className="mini-btn" onClick={()=>{try{navigator.clipboard.writeText(mfaEnrollPrepared.code);flash("Recovery code copied.")}catch{}}}>Copy</button><button className="mini-btn" onClick={()=>window.print()}>Print</button></div>
-        <p className="hint" style={{marginTop:10,color:"#9a5a2a"}}><strong>Store it away from this device</strong> — in a password manager or a locked location, never in the same drawer or on the same device. Anyone who has both this code and the caregiver passcode can sign in without the passkey, so treat it like a spare key.</p>
+        <p className="hint" style={{marginTop:10,color:"var(--color-text-warning)"}}><strong>Store it away from this device</strong> — in a password manager or a locked location, never in the same drawer or on the same device. Anyone who has both this code and the caregiver passcode can sign in without the passkey, so treat it like a spare key.</p>
         <label className="confirm-check"><input type="checkbox" checked={mfaCodeConfirmed} onChange={e=>setMfaCodeConfirmed(e.target.checked)}/> I've saved this code in a separate, secure location.</label>
         <div className="cf-actions" style={{marginTop:12}}><button className="save-btn" onClick={confirmMfaEnroll} disabled={!mfaCodeConfirmed}>Turn on MFA</button></div>
       </>)}
@@ -4088,14 +4088,14 @@ export default function App() {
       <h2 className="cf-title">📡 Merge Preview</h2>
       <p className="merge-source">Merging from: <strong>{mergePreview.sourceName}</strong></p>
       {mergePreview.oversized&&(<div className="flood-warn">⚠ This update is unusually large{mergePreview.floodBytes?` — about ${mb(mergePreview.floodBytes)} MB`:""}{mergePreview.report&&mergePreview.report.added?`, ${mergePreview.report.added.length} new items`:""}. It was <strong>not</strong> applied automatically. A flood of records can come from a corrupted or compromised device — confirm this looks legitimate before applying.</div>)}
-      {mergePreview.report.added.length>0&&(<div className="merge-section"><h4 className="merge-section-title" style={{color:"#718355"}}>+ New items to add ({mergePreview.report.added.length})</h4>
+      {mergePreview.report.added.length>0&&(<div className="merge-section"><h4 className="merge-section-title" style={{color:"var(--color-text-success)"}}>+ New items to add ({mergePreview.report.added.length})</h4>
         {mergePreview.report.added.map((item,i)=><div key={i} className="merge-item merge-added">{item}</div>)}</div>)}
-      {mergePreview.report.updated.length>0&&(<div className="merge-section"><h4 className="merge-section-title" style={{color:"#bc6c25"}}>↻ Items updated from remote ({mergePreview.report.updated.length})</h4>
+      {mergePreview.report.updated.length>0&&(<div className="merge-section"><h4 className="merge-section-title" style={{color:"var(--color-text-warning)"}}>↻ Items updated from remote ({mergePreview.report.updated.length})</h4>
         {mergePreview.report.updated.map((item,i)=><div key={i} className="merge-item merge-updated">{item}</div>)}</div>)}
-      {mergePreview.report.kept.length>0&&(<div className="merge-section"><h4 className="merge-section-title" style={{color:"#8d99ae"}}>= Local version kept ({mergePreview.report.kept.length})</h4>
+      {mergePreview.report.kept.length>0&&(<div className="merge-section"><h4 className="merge-section-title" style={{color:"var(--color-text-muted)"}}>= Local version kept ({mergePreview.report.kept.length})</h4>
         {mergePreview.report.kept.map((item,i)=><div key={i} className="merge-item merge-kept">{item}</div>)}</div>)}
-      {mergePreview.report.conflicts.length>0&&(<div className="merge-section"><h4 className="merge-section-title" style={{color:"#b04434"}}>⚠ Flagged — not applied ({mergePreview.report.conflicts.length})</h4>
-        {mergePreview.report.conflicts.map((item,i)=><div key={i} className="merge-item" style={{color:"#b04434"}}>{item}</div>)}</div>)}
+      {mergePreview.report.conflicts.length>0&&(<div className="merge-section"><h4 className="merge-section-title" style={{color:"var(--color-text-danger)"}}>⚠ Flagged — not applied ({mergePreview.report.conflicts.length})</h4>
+        {mergePreview.report.conflicts.map((item,i)=><div key={i} className="merge-item" style={{color:"var(--color-text-danger)"}}>{item}</div>)}</div>)}
       {mergePreview.report.added.length===0&&mergePreview.report.updated.length===0&&<p className="hint">No new changes detected — your data is already up to date.</p>}
       <div className="cf-actions" style={{marginTop:16}}>
         <button onClick={applyMerge} className="save-btn" disabled={mergePreview.report.added.length===0&&mergePreview.report.updated.length===0}>Apply Merge</button>
@@ -4138,13 +4138,13 @@ export default function App() {
             {(()=>{const d=daysSinceRespite();if(d===null||d<14)return null;return(<div className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub("today");nav("caregiver-wellness")}}><div className="hub-card-icon" style={{background:"var(--color-background-danger)"}}><span style={{color:"var(--color-text-danger)"}}>💛</span></div><div className="hub-card-body"><div className="hub-card-title">No respite in {d} days</div><div className="hub-card-sub">Caregiver burnout risk — please take a break</div></div><span className="hub-card-arr">›</span></div>)})()}
             {(()=>{const rems=getReminders();const missed=rems.filter(r=>r.type==="med-missed");const dueMeds=rems.filter(r=>r.type==="med-due");const upcoming=rems.filter(r=>r.type==="med-upcoming");const overdueT=rems.filter(r=>r.type==="task-overdue");const upcomingT=rems.filter(r=>r.type==="task-upcoming");const appts=rems.filter(r=>r.type==="appt");const hasAlerts=missed.length+dueMeds.length+overdueT.length+appts.length>0;
               return(<>
-                {missed.length>0&&<><div className="hub-section-label" style={{color:"#b56576"}}>⚠ Missed medications</div>{missed.map((r,i)=>(<div key={"m"+i} className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#fde2e8"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
-                {dueMeds.length>0&&<><div className="hub-section-label">💊 Medications due now</div>{dueMeds.map((r,i)=>(<div key={"d"+i} className="hub-card" style={{borderLeft:"3px solid #bc6c25"}} onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#fdf0d5"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
-                {appts.length>0&&<><div className="hub-section-label">📅 Upcoming appointments</div>{appts.map((r,i)=>(<div key={"a"+i} className="hub-card" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#eef4f8"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
-                {overdueT.length>0&&<><div className="hub-section-label">Overdue recurring tasks</div>{overdueT.slice(0,5).map((r,i)=>(<div key={"t"+i} className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#fde2e8"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
-                {upcoming.length>0&&<><div className="hub-section-label">Coming up</div>{upcoming.map((r,i)=>(<div key={"u"+i} className="hub-card" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#f6f4f0"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
-                {upcomingT.length>0&&<><div className="hub-section-label">Tasks due this week</div>{upcomingT.slice(0,5).map((r,i)=>(<div key={"tw"+i} className="hub-card" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#fdf0d5"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
-                {!hasAlerts&&<><div className="hub-section-label">Status</div><div className="hub-card hub-card-ok"><div className="hub-card-icon" style={{background:"#e8f0df"}}><span style={{color:"#718355"}}>✓</span></div><div className="hub-card-body"><div className="hub-card-title">All clear</div><div className="hub-card-sub">No overdue medications, tasks, or appointments</div></div></div></>}
+                {missed.length>0&&<><div className="hub-section-label" style={{color:"var(--color-text-danger)"}}>⚠ Missed medications</div>{missed.map((r,i)=>(<div key={"m"+i} className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"var(--color-background-danger)"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
+                {dueMeds.length>0&&<><div className="hub-section-label">💊 Medications due now</div>{dueMeds.map((r,i)=>(<div key={"d"+i} className="hub-card" style={{borderLeft:"3px solid var(--color-text-warning)"}} onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"var(--color-background-warning)"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
+                {appts.length>0&&<><div className="hub-section-label">📅 Upcoming appointments</div>{appts.map((r,i)=>(<div key={"a"+i} className="hub-card" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"var(--color-background-info)"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
+                {overdueT.length>0&&<><div className="hub-section-label">Overdue recurring tasks</div>{overdueT.slice(0,5).map((r,i)=>(<div key={"t"+i} className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"var(--color-background-danger)"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
+                {upcoming.length>0&&<><div className="hub-section-label">Coming up</div>{upcoming.map((r,i)=>(<div key={"u"+i} className="hub-card" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
+                {upcomingT.length>0&&<><div className="hub-section-label">Tasks due this week</div>{upcomingT.slice(0,5).map((r,i)=>(<div key={"tw"+i} className="hub-card" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"var(--color-background-warning)"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
+                {!hasAlerts&&<><div className="hub-section-label">Status</div><div className="hub-card hub-card-ok"><div className="hub-card-icon" style={{background:"var(--color-background-success)"}}><span style={{color:"var(--color-text-success)"}}>✓</span></div><div className="hub-card-body"><div className="hub-card-title">All clear</div><div className="hub-card-sub">No overdue medications, tasks, or appointments</div></div></div></>}
               </>)})()}
 
             {/* This week's appointments — the calendar moved here from Records,
@@ -4425,7 +4425,7 @@ export default function App() {
               <div className="ecard-body">{(data.domains.legal&&data.domains.legal.goals&&data.domains.legal.goals[1]&&data.domains.legal.goals[1].done)?"Advance directive on file":"[Status unknown — check Legal Safety domain]"}</div>
             </div>
             {can("edit-emergency")&&<button onClick={()=>setEcardForm(getEmergencyInfo())} className="edit-btn" style={{marginTop:16}}>✎ Edit emergency info</button>}
-            <div style={{display:"flex",gap:8,marginTop:16}}><button onClick={()=>{const el=document.querySelector(".ecard");if(el){try{navigator.clipboard.writeText(el.innerText);flash("Card copied to clipboard.")}catch{}}}} className="save-btn">📋 Copy</button><button onClick={()=>window.print()} className="save-btn" style={{background:"#6b6560"}}>🖨 Print</button></div>
+            <div style={{display:"flex",gap:8,marginTop:16}}><button onClick={()=>{const el=document.querySelector(".ecard");if(el){try{navigator.clipboard.writeText(el.innerText);flash("Card copied to clipboard.")}catch{}}}} className="save-btn">📋 Copy</button><button onClick={()=>window.print()} className="save-btn" style={{background:"var(--color-text-secondary)"}}>🖨 Print</button></div>
           </>)}
 
           {/* ═══ CAREGIVER WELLNESS ═══ */}
@@ -4443,7 +4443,7 @@ export default function App() {
               <button onClick={submitCaregiverCheckin} className="save-btn" style={{marginTop:12}}>Submit check-in</button>
             </div>
             {(data.caregiverWellness||[]).length>0&&<div className="section"><h3 className="sec-title">History</h3>
-              {(()=>{const d=daysSinceRespite();if(d===null||d<7)return null;return(<p className="hint" style={{color:d>=14?"#b56576":"#bc6c25",fontWeight:600}}>{d>=14?"⚠":"⏰"} {d} days since your last day off. Please schedule respite.</p>)})()}
+              {(()=>{const d=daysSinceRespite();if(d===null||d<7)return null;return(<p className="hint" style={{color:d>=14?"var(--color-text-danger)":"var(--color-text-warning)",fontWeight:600}}>{d>=14?"⚠":"⏰"} {d} days since your last day off. Please schedule respite.</p>)})()}
               {(data.caregiverWellness||[]).slice(0,10).map(e=>(<div key={e.id} className="hub-card" style={{cursor:"default"}}><div className="hub-card-body"><div className="hub-card-title">{e.stress} · {e.sleep}{e.hoursOfCare>0?" · "+e.hoursOfCare+"h":""}</div><div className="hub-card-sub">{e.timestamp}{e.notes?" — "+e.notes:""}{e.caregiver?" ("+e.caregiver+")":""}</div></div></div>))}
             </div>}
           </>)}
@@ -4473,7 +4473,7 @@ export default function App() {
               const peakLabel=maxHour>0?(peakHour>12?(peakHour-12)+"pm":peakHour+"am"):null;
               return(<>
                 <div className="section"><h3 className="sec-title">By type</h3>
-                  <div className="pattern-bars">{Object.entries(types).sort((a,b)=>b[1]-a[1]).map(([t,c])=>(<div key={t} className="pattern-bar-row"><span className="pattern-bar-label">{t}</span><div className="pattern-bar-track"><div className="pattern-bar-fill" style={{width:(c/maxType*100)+"%",background:"#b56576"}}/></div><span className="pattern-bar-val">{c}</span></div>))}</div>
+                  <div className="pattern-bars">{Object.entries(types).sort((a,b)=>b[1]-a[1]).map(([t,c])=>(<div key={t} className="pattern-bar-row"><span className="pattern-bar-label">{t}</span><div className="pattern-bar-track"><div className="pattern-bar-fill" style={{width:(c/maxType*100)+"%",background:"var(--color-text-danger)"}}/></div><span className="pattern-bar-val">{c}</span></div>))}</div>
                 </div>
                 {trigTotal>0&&<div className="section"><h3 className="sec-title">By trigger</h3>
                   <p className="hint" style={{marginTop:0}}>Across the {trigTotal} of {incs.length} incidents where a trigger was recorded.</p>
@@ -4484,14 +4484,14 @@ export default function App() {
                   </div>
                 </div>}
                 <div className="section"><h3 className="sec-title">By severity</h3>
-                  <div className="pattern-bars">{Object.entries(sevs).sort((a,b)=>b[1]-a[1]).map(([s,c])=>(<div key={s} className="pattern-bar-row"><span className="pattern-bar-label">{s}</span><div className="pattern-bar-track"><div className="pattern-bar-fill" style={{width:(c/maxType*100)+"%",background:s==="Severe"?"#b56576":s==="Moderate"?"#bc6c25":"#718355"}}/></div><span className="pattern-bar-val">{c}</span></div>))}</div>
+                  <div className="pattern-bars">{Object.entries(sevs).sort((a,b)=>b[1]-a[1]).map(([s,c])=>(<div key={s} className="pattern-bar-row"><span className="pattern-bar-label">{s}</span><div className="pattern-bar-track"><div className="pattern-bar-fill" style={{width:(c/maxType*100)+"%",background:s==="Severe"?"var(--color-text-danger)":s==="Moderate"?"var(--color-text-warning)":"var(--color-text-success)"}}/></div><span className="pattern-bar-val">{c}</span></div>))}</div>
                 </div>
                 <div className="section"><h3 className="sec-title">By time of day</h3>
                   <div className="hour-chart">{hours.map((c,h)=>(<div key={h} className="hour-col"><div className="hour-bar" style={{height:maxHour>0?(c/maxHour*80)+"px":"0"}}/><span className="hour-label">{h%6===0?h+"h":""}</span></div>))}</div>
                   {peakLabel&&<p className="hint">Peak incident hour: {peakLabel}</p>}
                 </div>
                 <div className="section"><h3 className="sec-title">Weekly trend</h3>
-                  <div className="pattern-bars">{weeks.map(w=>(<div key={w.label} className="pattern-bar-row"><span className="pattern-bar-label">{w.label}</span><div className="pattern-bar-track"><div className="pattern-bar-fill" style={{width:maxWeek>0?(w.count/maxWeek*100)+"%":"0",background:"#457b9d"}}/></div><span className="pattern-bar-val">{w.count}</span></div>))}</div>
+                  <div className="pattern-bars">{weeks.map(w=>(<div key={w.label} className="pattern-bar-row"><span className="pattern-bar-label">{w.label}</span><div className="pattern-bar-track"><div className="pattern-bar-fill" style={{width:maxWeek>0?(w.count/maxWeek*100)+"%":"0",background:"var(--color-action-primary)"}}/></div><span className="pattern-bar-val">{w.count}</span></div>))}</div>
                 </div>
               </>)})()}
           </>)}
@@ -4537,14 +4537,14 @@ export default function App() {
                   <div className="shift-head"><span className="shift-date">{s.date} · {s.startTime}–{s.endTime}</span><span className="pill pill-a">{s.status==="claim-requested"?"Claim":"Swap"}</span></div>
                   {s.status==="claim-requested"&&<div className="shift-approvals">
                     <p className="hint">Caregivers requesting this open shift:</p>
-                    {(s.claimRequests||[]).map(c=>(<div key={c.deviceId} className="shift-approval-row"><span>{c.name}</span><div style={{display:"flex",gap:6}}><button onClick={()=>approveClaim(s.id,c.deviceId)} className="edit-btn" style={{marginTop:0,fontSize:11,background:"#718355",color:"#fff",borderColor:"#718355"}}>Approve</button><button onClick={()=>denyClaim(s.id,c.deviceId)} className="edit-btn" style={{marginTop:0,fontSize:11}}>Deny</button></div></div>))}
+                    {(s.claimRequests||[]).map(c=>(<div key={c.deviceId} className="shift-approval-row"><span>{c.name}</span><div style={{display:"flex",gap:6}}><button onClick={()=>approveClaim(s.id,c.deviceId)} className="edit-btn" style={{marginTop:0,fontSize:11,background:"var(--color-text-success)",color:"var(--color-text-on-fill)",borderColor:"var(--color-text-success)"}}>Approve</button><button onClick={()=>denyClaim(s.id,c.deviceId)} className="edit-btn" style={{marginTop:0,fontSize:11}}>Deny</button></div></div>))}
                   </div>}
                   {s.status==="swap-requested"&&s.swapRequest&&<div className="shift-approvals">
                     <p className="hint">{s.swapRequest.fromName} wants to give up this shift{s.swapRequest.reason?": "+s.swapRequest.reason:"."}</p>
                     <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
                       <span className="hint">Reassign to:</span>
                       <select className="cf-input" style={{width:"auto",padding:"4px 8px"}} onChange={e=>{if(e.target.value)approveSwap(s.id,e.target.value)}} defaultValue=""><option value="">Open for claiming</option>{teamMembers().filter(m=>m.deviceId!==s.swapRequest.fromDevice).map(m=>(<option key={m.deviceId} value={m.deviceId}>{m.name}</option>))}</select>
-                      <button onClick={()=>approveSwap(s.id,null)} className="edit-btn" style={{marginTop:0,fontSize:11,background:"#718355",color:"#fff",borderColor:"#718355"}}>Open it</button>
+                      <button onClick={()=>approveSwap(s.id,null)} className="edit-btn" style={{marginTop:0,fontSize:11,background:"var(--color-text-success)",color:"var(--color-text-on-fill)",borderColor:"var(--color-text-success)"}}>Open it</button>
                       <button onClick={()=>denySwap(s.id)} className="edit-btn" style={{marginTop:0,fontSize:11}}>Deny</button>
                     </div>
                   </div>}
@@ -4555,7 +4555,7 @@ export default function App() {
             {(()=>{const open=(data.careShifts||[]).filter(s=>s.status==="open"&&new Date(s.date)>=new Date(new Date().toDateString())).sort((a,b)=>a.date.localeCompare(b.date));if(open.length===0)return null;return(
               <div className="section"><h3 className="sec-title">🟢 Open shifts ({open.length})</h3>
                 {open.map(s=>(<div key={s.id} className="shift-card shift-open">
-                  <div className="shift-head"><span className="shift-date">{s.date} · {s.startTime}–{s.endTime}</span>{can("claim-shift")&&!isAdmin&&<button onClick={()=>requestClaim(s.id)} className="edit-btn" style={{marginTop:0,fontSize:11,background:"#457b9d",color:"#fff",borderColor:"#457b9d"}}>Request to claim</button>}{can("manage-schedule")&&<button onClick={()=>deleteShift(s.id)} className="remove-sub">×</button>}</div>
+                  <div className="shift-head"><span className="shift-date">{s.date} · {s.startTime}–{s.endTime}</span>{can("claim-shift")&&!isAdmin&&<button onClick={()=>requestClaim(s.id)} className="edit-btn" style={{marginTop:0,fontSize:11,background:"var(--color-action-primary)",color:"var(--color-text-on-fill)",borderColor:"var(--color-action-primary)"}}>Request to claim</button>}{can("manage-schedule")&&<button onClick={()=>deleteShift(s.id)} className="remove-sub">×</button>}</div>
                   {s.carePlan&&<div className="shift-careplan">{s.carePlan}</div>}
                   {(s.tasks||[]).length>0&&<div className="hint">{s.tasks.length} task(s)</div>}
                 </div>))}
@@ -4571,9 +4571,9 @@ export default function App() {
                 {s.carePlan&&<div className="shift-careplan"><strong>Care plan:</strong> {s.carePlan}</div>}
                 {(s.tasks||[]).length>0&&<div className="shift-tasks">{s.tasks.map(t=>(<div key={t.id} className="shift-task-check" onClick={()=>{if(isMine&&can("log-visit"))toggleShiftTask(s.id,t.id)}} style={{cursor:isMine?"pointer":"default",opacity:t.done?.6:1}}><span>{t.done?"☑":"☐"}</span> <span style={{textDecoration:t.done?"line-through":"none"}}>{t.text}</span></div>))}</div>}
                 {isMine&&can("log-visit")&&<div className="shift-visit">
-                  {!s.visitStarted&&<button onClick={()=>startVisit(s.id)} className="edit-btn" style={{marginTop:0,fontSize:11,background:"#718355",color:"#fff",borderColor:"#718355"}}>▶ Start visit</button>}
-                  {s.visitStarted&&!s.visitEnded&&<><span className="hint">Started {new Date(s.visitStarted).toLocaleTimeString()}</span> <button onClick={()=>endVisit(s.id)} className="edit-btn" style={{marginTop:0,fontSize:11,background:"#b56576",color:"#fff",borderColor:"#b56576"}}>■ End visit</button></>}
-                  {s.visitStarted&&s.visitEnded&&<span className="hint" style={{color:"#718355"}}>✓ Visit logged: {new Date(s.visitStarted).toLocaleTimeString()}–{new Date(s.visitEnded).toLocaleTimeString()}</span>}
+                  {!s.visitStarted&&<button onClick={()=>startVisit(s.id)} className="edit-btn" style={{marginTop:0,fontSize:11,background:"var(--color-text-success)",color:"var(--color-text-on-fill)",borderColor:"var(--color-text-success)"}}>▶ Start visit</button>}
+                  {s.visitStarted&&!s.visitEnded&&<><span className="hint">Started {new Date(s.visitStarted).toLocaleTimeString()}</span> <button onClick={()=>endVisit(s.id)} className="edit-btn" style={{marginTop:0,fontSize:11,background:"var(--color-text-danger)",color:"var(--color-text-on-fill)",borderColor:"var(--color-text-danger)"}}>■ End visit</button></>}
+                  {s.visitStarted&&s.visitEnded&&<span className="hint" style={{color:"var(--color-text-success)"}}>✓ Visit logged: {new Date(s.visitStarted).toLocaleTimeString()}–{new Date(s.visitEnded).toLocaleTimeString()}</span>}
                 </div>}
                 {isMine&&can("log-visit")&&<><label className="cf-label" style={{marginTop:8}}>Visit notes</label><textarea defaultValue={s.visitNotes} onBlur={e=>setVisitNotes(s.id,e.target.value)} className="notes-ta" rows={2} placeholder="What happened during this visit?"/></>}
                 {!isMine&&s.visitNotes&&<div className="shift-careplan"><strong>Visit notes:</strong> {s.visitNotes}</div>}
@@ -4690,7 +4690,7 @@ export default function App() {
             {(data.capacityLog||[]).length>0&&<div className="section"><h3 className="sec-title">History ({(data.capacityLog||[]).length})</h3>
               {(data.capacityLog||[]).map(e=>(<div key={e.id} className="cap-entry">
                 <div className="cap-entry-head"><strong>{e.timestamp}</strong>{e.assessor&&<span className="cap-assessor"> — {e.assessor}</span>}</div>
-                <div className="cap-entry-grid">{Object.entries(e.assessments||{}).filter(([k,v])=>v&&v!=="Not assessed").map(([k,v])=>{const area=CAPACITY_AREAS.find(a=>a.key===k);const color=v==="Independent"?"#718355":v==="Needs prompting"?"#bc6c25":v==="Needs assistance"?"#b56576":"#8d99ae";return(
+                <div className="cap-entry-grid">{Object.entries(e.assessments||{}).filter(([k,v])=>v&&v!=="Not assessed").map(([k,v])=>{const area=CAPACITY_AREAS.find(a=>a.key===k);const color=v==="Independent"?"var(--color-text-success)":v==="Needs prompting"?"var(--color-text-warning)":v==="Needs assistance"?"var(--color-text-danger)":"var(--color-text-muted)";return(
                   <div key={k} className="cap-entry-item"><span className="cap-entry-area">{(area&&area.label)||k}</span><span className="pill" style={{background:color+"20",color,marginLeft:0}}>{v}</span></div>)})}</div>
                 {e.notes&&<p className="cap-entry-notes">{e.notes}</p>}
               </div>))}
@@ -4703,7 +4703,7 @@ export default function App() {
             <p className="page-sub">A comprehensive care document compiled from all your dashboard data. Print for facility admission, new aide onboarding, or provider handoff.</p>
             <div style={{display:"flex",gap:8,marginBottom:16}}>
               <button onClick={()=>{try{navigator.clipboard.writeText(generateCarePlanBinder());flash("Binder copied to clipboard.")}catch{}}} className="save-btn">📋 Copy</button>
-              <button onClick={()=>window.print()} className="save-btn" style={{background:"#6b6560"}}>🖨 Print</button>
+              <button onClick={()=>window.print()} className="save-btn" style={{background:"var(--color-text-secondary)"}}>🖨 Print</button>
             </div>
             <pre className="binder-preview">{generateCarePlanBinder()}</pre>
           </>)}
@@ -4713,8 +4713,8 @@ export default function App() {
             <h1 className="page-title">Dashboard Overview</h1>
             <p className="page-sub">{isReadOnly?"You're viewing in read-only mode.":"Tap any domain to see guided steps. Use ✎ to rename categories."}</p>
             <div className="o-grid">
-              {DOMAINS.filter(d=>can("view-domain",d.key)).map(d=>{const prog=getProgress(d.key);const pulseColor=prog.recency>=75?"#718355":prog.recency>=40?"#bc6c25":"#b56576";const healthColor=prog.pct>=80&&prog.recency>=70?"#718355":prog.pct>=40||prog.recency>=40?"#bc6c25":"#b56576";const healthLabel=prog.pct>=80&&prog.recency>=70?"Healthy":prog.pct>=40||prog.recency>=40?"Fair":"Needs Attention";return(
-                <button key={d.key} onClick={()=>nav(d.key)} className="o-card" style={{borderLeftColor:d.color,background:d.bg}}>
+              {DOMAINS.filter(d=>can("view-domain",d.key)).map(d=>{const prog=getProgress(d.key);const pulseColor=prog.recency>=75?"var(--color-text-success)":prog.recency>=40?"var(--color-text-warning)":"var(--color-text-danger)";const healthColor=prog.pct>=80&&prog.recency>=70?"var(--color-text-success)":prog.pct>=40||prog.recency>=40?"var(--color-text-warning)":"var(--color-text-danger)";const healthLabel=prog.pct>=80&&prog.recency>=70?"Healthy":prog.pct>=40||prog.recency>=40?"Fair":"Needs Attention";return(
+                <button key={d.key} onClick={()=>nav(d.key)} className="o-card" style={{borderLeftColor:d.color,background:d.color+"1F"}}>
                   <div className="o-card-head"><span style={{fontSize:24,color:d.color}}>{d.icon}</span><span className="o-badge" style={{background:healthColor+"18",color:healthColor}}>{healthLabel}</span></div>
                   <div className="o-card-title-row"><h2 className="o-card-title">{getDomLabel(d.key)}</h2>{!isReadOnly&&<span className="edit-icon edit-icon-visible" onClick={e=>{e.stopPropagation();setEditingDomain({key:d.key,label:getDomLabel(d.key),desc:getDomDesc(d.key)})}}>✎</span>}</div>
                   <p className="o-card-desc">{getDomDesc(d.key)}</p>
@@ -4725,14 +4725,14 @@ export default function App() {
                 </button>)})}
 
               {/* upcoming appointments */}
-              <button onClick={()=>nav("calendar")} className="o-card" style={{borderLeftColor:"#6d6875",background:"#f3f0f5"}}>
-                <div className="o-card-head"><span style={{fontSize:24,color:"#6d6875"}}>▦</span><span className="o-badge" style={{background:"#eef0f3",color:"#8d99ae"}}>{getUpcoming().length} upcoming</span></div>
+              <button onClick={()=>nav("calendar")} className="o-card" style={{borderLeftColor:"var(--color-action-primary)",background:"var(--color-background-secondary)"}}>
+                <div className="o-card-head"><span style={{fontSize:24,color:"var(--color-action-primary)"}}>▦</span><span className="o-badge" style={{background:"var(--color-background-secondary)",color:"var(--color-text-muted)"}}>{getUpcoming().length} upcoming</span></div>
                 <h2 className="o-card-title">Calendar</h2>
                 {getUpcoming().length>0?getUpcoming().slice(0,3).map((a,i)=>(<p key={i} className="o-card-desc" style={{margin:"2px 0"}}>{a.date} {a.time} — {a.title}</p>)):<p className="o-card-desc">No upcoming appointments.</p>}
               </button>
             </div>
             {data.log.length>0&&(<div className="log-wrap"><h3 className="log-title">Recent Activity</h3>
-              {data.log.slice(0,10).map((e,i)=>{const d=DOMAINS.find(x=>x.key===e.domain);return(<div key={i} className="log-row"><span className="log-dot" style={{background:(d&&d.color)||(e.domain==="contacts"?"#457b9d":e.domain==="calendar"?"#6d6875":"#999")}}/><span className="log-text"><strong>{d?getDomLabel(d.key):e.domain==="contacts"?"Contacts":e.domain==="calendar"?"Calendar":""}</strong> — {e.action}</span><span className="log-time">{e.time}</span></div>)})}
+              {data.log.slice(0,10).map((e,i)=>{const d=DOMAINS.find(x=>x.key===e.domain);return(<div key={i} className="log-row"><span className="log-dot" style={{background:(d&&d.color)||(e.domain==="contacts"?"var(--color-action-primary)":e.domain==="calendar"?"var(--color-action-primary)":"var(--color-text-muted)")}}/><span className="log-text"><strong>{d?getDomLabel(d.key):e.domain==="contacts"?"Contacts":e.domain==="calendar"?"Calendar":""}</strong> — {e.action}</span><span className="log-time">{e.time}</span></div>)})}
             </div>)}
           </>)}
 
@@ -4770,7 +4770,7 @@ export default function App() {
                     <td>{(cat&&cat.label)||exp.category}</td>
                     <td>{exp.description}</td>
                     <td>{exp.payee}</td>
-                    <td style={{fontSize:12,color:"#8d99ae"}}>{exp.receipt}</td>
+                    <td style={{fontSize:12,color:"var(--color-text-muted)"}}>{exp.receipt}</td>
                     {!isReadOnly&&<td><button onClick={()=>setExpenseForm({mode:"edit",expense:{...exp},id:exp.id})} className="edit-icon edit-icon-visible">✎</button></td>}
                   </tr>)})}</tbody>
               </table></div>}
@@ -4825,7 +4825,7 @@ export default function App() {
           {view==="triggers"&&(<>
             <h1 className="page-title">📊 Care Escalation Triggers</h1>
             <p className="page-sub">Monitor these indicators. When multiple triggers are active, it may be time to evaluate a higher level of care.</p>
-            {getTriggeredCount()>0&&<div className="trigger-alert" style={{background:getTriggeredCount()>=4?"#fde2e8":getTriggeredCount()>=2?"#fdf0d5":"#e8f0df",color:getTriggeredCount()>=4?"#8b0000":getTriggeredCount()>=2?"#bc6c25":"#718355"}}>
+            {getTriggeredCount()>0&&<div className="trigger-alert" style={{background:getTriggeredCount()>=4?"var(--color-background-danger)":getTriggeredCount()>=2?"var(--color-background-warning)":"var(--color-background-success)",color:getTriggeredCount()>=4?"var(--color-text-danger)":getTriggeredCount()>=2?"var(--color-text-warning)":"var(--color-text-success)"}}>
               {getTriggeredCount()} of {TRANSITION_TRIGGERS.length} triggers active.{getTriggeredCount()>=4?" This strongly suggests evaluating a care level escalation.":getTriggeredCount()>=2?" Consider discussing care level options with the care team.":""}
             </div>}
             <div className="trigger-list">{TRANSITION_TRIGGERS.map(t=>{const active=getTrigger(t.key);return(
@@ -4845,7 +4845,7 @@ export default function App() {
                 <thead><tr><th>Date</th>{DOMAINS.map(d=><th key={d.key} style={{fontSize:11}}>{d.icon} {getDomLabel(d.key).split(" ")[0]}</th>)}<th>Triggers</th><th>Incidents</th></tr></thead>
                 <tbody>{[...(data.statusHistory||[])].reverse().map((snap,i)=>(<tr key={i}>
                   <td style={{whiteSpace:"nowrap",fontWeight:600}}>{snap.date}</td>
-                  {DOMAINS.map(d=>{const s=(snap.domains&&snap.domains[d.key]);const pct=(s&&s.pct)||0;const hColor=pct>=80?"#718355":pct>=40?"#bc6c25":"#b56576";return(
+                  {DOMAINS.map(d=>{const s=(snap.domains&&snap.domains[d.key]);const pct=(s&&s.pct)||0;const hColor=pct>=80?"var(--color-text-success)":pct>=40?"var(--color-text-warning)":"var(--color-text-danger)";return(
                     <td key={d.key}><span className="o-badge" style={{background:hColor+"18",color:hColor,fontSize:10}}>{pct}%</span></td>)})}
                   <td>{snap.triggeredCount||0}</td>
                   <td>{snap.incidentCount||0}</td>
@@ -4869,9 +4869,9 @@ export default function App() {
               <div key={si} className="section">
                 <h3 className="sec-title">{section.title} <span className="prog-label">({doneCount}/{section.items.length})</span></h3>
                 <div className="goals-wrap">{section.items.map((item,ii)=>{const done=getPostDeathChecked(si,ii);return(
-                  <label key={ii} className="sub-item" style={{background:done?"#f5f9f0":"#faf9f7"}}>
+                  <label key={ii} className="sub-item" style={{background:done?"var(--color-background-success)":"var(--color-background-secondary)"}}>
                     {!isReadOnly?<input type="checkbox" checked={done} onChange={()=>togglePostDeath(si,ii)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:12}}>{done?"✓":"○"}</span>}
-                    <span className="sub-text" style={{textDecoration:done?"line-through":"none",color:done?"#a09a92":"#3d3730"}}>{item}</span>
+                    <span className="sub-text" style={{textDecoration:done?"line-through":"none",color:done?"var(--color-text-muted)":"var(--color-text-primary)"}}>{item}</span>
                   </label>)})}</div>
               </div>)})}
           </>)}
@@ -4909,7 +4909,7 @@ export default function App() {
           {/* ═══ SELF REPORT ═══ */}
           {view==="selfreport"&&(<>
             <div className="contacts-header"><div><h1 className="page-title">🗣 Self Report</h1><p className="page-sub" style={{margin:"4px 0 0"}}>{isReadOnly?"Share how you're feeling. Your care team will see these updates.":"Client self-reported health and wellness updates."}</p>
-              {isClient&&srChainStatus&&srChainStatus.status==="ok"&&<p className="page-sub" style={{margin:"4px 0 0",color:"#6F8A5F"}}>🔏 Your updates are permanent — they can't be deleted or changed by anyone.</p>}
+              {isClient&&srChainStatus&&srChainStatus.status==="ok"&&<p className="page-sub" style={{margin:"4px 0 0",color:"var(--color-text-success)"}}>🔏 Your updates are permanent — they can't be deleted or changed by anyone.</p>}
               {/* Deliberately NO client-facing tamper warning: integrity failures surface on the caregiver
                   Security & Integrity panel and in the audit log. A "your words may have been altered" alarm
                   shown to a person with dementia risks feeding paranoid ideation, cannot be acted on by them
@@ -5073,11 +5073,11 @@ export default function App() {
                   <label className="cf-label">Server URL<input value={getServerUrl()} onChange={e=>setServerConfig(e.target.value,getServerApiKey())} className="cf-input" placeholder="https://your-server.example.com"/></label>
                   <label className="cf-label">API key (if required)<input value={getServerApiKey()} onChange={e=>setServerConfig(getServerUrl(),e.target.value)} className="cf-input" type="password" placeholder="Leave blank if none"/></label>
                 </div>
-                {getServerUrl()&&<div className="cloud-connected-info" style={{marginTop:12,background:getServerUrl().startsWith("https://")?"#e8f0df":"#fdf0d5",borderColor:getServerUrl().startsWith("https://")?"#b8d4a0":"#f0d5a0"}}>
+                {getServerUrl()&&<div className="cloud-connected-info" style={{marginTop:12,background:getServerUrl().startsWith("https://")?"var(--color-background-success)":"var(--color-background-warning)",borderColor:getServerUrl().startsWith("https://")?"var(--color-border-success)":"var(--color-border-warning)"}}>
                   <div className="cloud-connected-icon">🖥</div>
                   <div className="cloud-connected-details">
                     <div className="cloud-connected-file">{getServerUrl()}</div>
-                    <div className="cloud-connected-meta">{!getServerUrl().startsWith("https://")&&<span style={{color:"#bc6c25"}}>⚠ HTTPS recommended for production</span>}{(data._sync&&data._sync.lastSync)&&<span>{getServerUrl().startsWith("https://")?"":"  · "}Last sync: {new Date(data._sync.lastSync).toLocaleString()}</span>}</div>
+                    <div className="cloud-connected-meta">{!getServerUrl().startsWith("https://")&&<span style={{color:"var(--color-text-warning)"}}>⚠ HTTPS recommended for production</span>}{(data._sync&&data._sync.lastSync)&&<span>{getServerUrl().startsWith("https://")?"":"  · "}Last sync: {new Date(data._sync.lastSync).toLocaleString()}</span>}</div>
                   </div>
                   <button onClick={()=>setServerConfig("","")} className="cancel-btn" style={{flexShrink:0}}>Remove</button>
                 </div>}
@@ -5087,7 +5087,7 @@ export default function App() {
             {/* THE SYNC BUTTON — works with whichever method is configured */}
             {(cloudConnected||getServerUrl())&&(<div className="sync-main-action">
               <button onClick={syncNow} disabled={cloudSyncing||!getSyncPasscode()} className="cloud-sync-btn">
-                {cloudSyncing?<><span className="doc-spinner" style={{borderTopColor:"#fff",borderColor:"rgba(255,255,255,.3)",width:18,height:18}}/>Syncing...</>:"📡 Sync Now"}
+                {cloudSyncing?<><span className="doc-spinner" style={{borderTopColor:"var(--color-text-warning)",borderColor:"rgba(255,255,255,.3)",width:18,height:18}}/>Syncing...</>:"📡 Sync Now"}
               </button>
               <p className="hint" style={{textAlign:"center",marginTop:8}}>Pulls team changes, merges, and pushes your updates — all in one tap.</p>
             </div>)}
@@ -5155,7 +5155,7 @@ export default function App() {
               {(data.messages||[]).length===0?<p className="contacts-empty">No messages yet.{!hasTeam()?" Set up a care team in the Sync tab to get started.":""}</p>:
                 [...(data.messages||[])].reverse().map(m=>{const member=getMemberInfo(m.from);const isMe=m.from===myName;return(<div key={m.id} className={`msg-bubble ${isMe?"msg-self":""}`}>
                   <div className="msg-meta">
-                    {member&&<div className="team-member-avatar" style={{width:24,height:24,fontSize:11,background:isMe?"#457b9d":"#8d99ae"}}>{m.from[0].toUpperCase()}</div>}
+                    {member&&<div className="team-member-avatar" style={{width:24,height:24,fontSize:11,background:isMe?"var(--color-action-primary)":"var(--color-text-muted)"}}>{m.from[0].toUpperCase()}</div>}
                     <strong>{m.from}</strong>{member&&<span className="msg-role">{member.role}</span>}
                     <span className="msg-time">{m.timestamp}</span>
                   </div>
@@ -5187,7 +5187,7 @@ export default function App() {
                 <p className="hint">Each device has a unique ID used during sync. Set a name so team members know whose backup is whose.</p>
                 <div className="cf-grid" style={{maxWidth:400}}>
                   <label className="cf-label">Device name<input value={(data.settings&&data.settings.deviceName)||""} onChange={e=>setData(p=>({...p,settings:{...p.settings,deviceName:e.target.value}}))} className="cf-input" placeholder="e.g., David's phone, Sarah's laptop"/></label>
-                  <label className="cf-label">Device ID<input value={(data.settings&&data.settings.deviceId)||""} readOnly className="cf-input" style={{color:"#a09a92",fontSize:12}}/></label>
+                  <label className="cf-label">Device ID<input value={(data.settings&&data.settings.deviceId)||""} readOnly className="cf-input" style={{color:"var(--color-text-muted)",fontSize:12}}/></label>
                 </div>
                 {(data._sync&&data._sync.lastMerge)&&<p className="hint" style={{marginTop:8}}>Last merge: {new Date(data._sync.lastMerge).toLocaleString()} from {data._sync.mergedFromName||data._sync.mergedFrom||"unknown"}</p>}
               </div>
@@ -5254,7 +5254,7 @@ export default function App() {
                 </div>)}
                 {backupStatus==="off"&&hasFileSystemAccess&&can("export-data")&&(<div className="settings-row">
                   <input value={backupPw} onChange={e=>setBackupPw(e.target.value)} className="cf-input" placeholder="Choose a backup passcode (min 6)" type="password" style={{width:240}}/>
-                  <button onClick={setupContinuousBackup} className="save-btn" disabled={backupBusy} style={{background:"#457b9d"}}>🛟 Set up continuous backup</button>
+                  <button onClick={setupContinuousBackup} className="save-btn" disabled={backupBusy} style={{background:"var(--color-action-primary)"}}>🛟 Set up continuous backup</button>
                 </div>)}
                 {backupStatus==="off"&&<p className="hint" style={{marginTop:8,fontStyle:"italic"}}>Remember your backup passcode — it's what restores your data if the browser clears it. The backup file is fully encrypted, so storing it in iCloud, Google Drive, or Dropbox is safe.</p>}
                 {backupStatus!=="off"&&<p className="hint" style={{marginTop:8,fontStyle:"italic"}}>Note: browser security requires you to re-authorize file access each session — the unlock is one click when you see "Resume." Your manual backup below always works as a fallback.</p>}
@@ -5262,7 +5262,7 @@ export default function App() {
               <div className="section"><h3 className="sec-title">Encrypted Backup & Sync</h3>
                 <p className="hint">Export your data with AES-256-GCM encryption. Import merges intelligently — new items are added, more recent changes win. Your passcodes and device ID are never overwritten.</p>
                 <div className="settings-row"><input value={exportPw} onChange={e=>setExportPw(e.target.value)} className="cf-input" placeholder="Export passcode" type="password" style={{width:200}}/><button onClick={handleEncryptedExport} className="save-btn">↓ Export Encrypted</button></div>
-                <div className="settings-row" style={{marginTop:12}}><input value={importPw} onChange={e=>setImportPw(e.target.value)} className="cf-input" placeholder="Import passcode" type="password" style={{width:200}}/><button onClick={()=>(importFileRef.current&&importFileRef.current.click)()} className="save-btn" style={{background:"#457b9d"}}>↑ Import & Merge</button></div>
+                <div className="settings-row" style={{marginTop:12}}><input value={importPw} onChange={e=>setImportPw(e.target.value)} className="cf-input" placeholder="Import passcode" type="password" style={{width:200}}/><button onClick={()=>(importFileRef.current&&importFileRef.current.click)()} className="save-btn" style={{background:"var(--color-action-primary)"}}>↑ Import & Merge</button></div>
                 <p className="hint" style={{marginTop:12}}>Workflow: team member exports → shares file via text/Signal/AirDrop/Drive → you import → merge preview shows changes → you confirm.</p>
               </div>
               <div className="section"><h3 className="sec-title">Summary Export (No PHI)</h3>
@@ -5429,7 +5429,7 @@ export default function App() {
             {!docResult&&!docProcessing&&(<div className="contacts-empty">
               <p style={{fontSize:16,marginBottom:8}}>📄 Upload a PDF or text file to get started.</p>
               <p>Supported: medication lists, lab results, clinical notes, and general documents.</p>
-              <p style={{marginTop:12,fontSize:12.5,color:"#a09a92"}}>Text-based PDFs are extracted automatically. Scanned documents may require manual entry.<br/>All processing happens locally in your browser — nothing is uploaded or sent anywhere.</p>
+              <p style={{marginTop:12,fontSize:12.5,color:"var(--color-text-muted)"}}>Text-based PDFs are extracted automatically. Scanned documents may require manual entry.<br/>All processing happens locally in your browser — nothing is uploaded or sent anywhere.</p>
             </div>)}
           </>)}
 
@@ -5443,14 +5443,14 @@ export default function App() {
               <div className="cc-group"><span className="cc-label">Filter:</span><button onClick={()=>setContactFilter("all")} className={`cc-btn ${contactFilter==="all"?"cc-active":""}`}>All</button>{CONTACT_CATS.map(c=>(<button key={c.key} onClick={()=>setContactFilter(c.key)} className={`cc-btn ${contactFilter===c.key?"cc-active":""}`}>{c.icon} {c.label}</button>))}</div>
             </div>
             {getSortedContacts().length===0?<div className="contacts-empty"><p>{((data.contacts&&data.contacts.length)||0)===0?"No contacts yet.":"No contacts match this filter."}</p></div>:
-              <div className="contacts-list">{contactSort==="category"&&contactFilter==="all"?CONTACT_CATS.map(cat=>{const items=getSortedContacts().filter(c=>c.category===cat.key);if(!items.length)return null;return(<div key={cat.key} className="contact-group"><h3 className="contact-group-title" style={{color:cat.color}}>{cat.icon} {cat.label}</h3>{items.map(c=>(<button key={c.id} className="contact-row" onClick={()=>setContactDetail(c.id)}><div className="contact-avatar" style={{background:cat.color}}>{c.name.charAt(0).toUpperCase()}</div><div className="contact-info"><div className="contact-name">{c.name}</div><div className="contact-role">{[c.role,c.org].filter(Boolean).join(" · ")||"—"}</div></div><span className="contact-arrow">›</span></button>))}</div>)}):getSortedContacts().map(c=>{const cat=CONTACT_CATS.find(x=>x.key===c.category);return(<button key={c.id} className="contact-row" onClick={()=>setContactDetail(c.id)}><div className="contact-avatar" style={{background:(cat&&cat.color)||"#8d99ae"}}>{c.name.charAt(0).toUpperCase()}</div><div className="contact-info"><div className="contact-name">{c.name}</div><div className="contact-role">{[c.role,c.org].filter(Boolean).join(" · ")||(cat&&cat.label)}</div></div><span className="contact-arrow">›</span></button>)})}</div>}
+              <div className="contacts-list">{contactSort==="category"&&contactFilter==="all"?CONTACT_CATS.map(cat=>{const items=getSortedContacts().filter(c=>c.category===cat.key);if(!items.length)return null;return(<div key={cat.key} className="contact-group"><h3 className="contact-group-title" style={{color:cat.color}}>{cat.icon} {cat.label}</h3>{items.map(c=>(<button key={c.id} className="contact-row" onClick={()=>setContactDetail(c.id)}><div className="contact-avatar" style={{background:cat.color}}>{c.name.charAt(0).toUpperCase()}</div><div className="contact-info"><div className="contact-name">{c.name}</div><div className="contact-role">{[c.role,c.org].filter(Boolean).join(" · ")||"—"}</div></div><span className="contact-arrow">›</span></button>))}</div>)}):getSortedContacts().map(c=>{const cat=CONTACT_CATS.find(x=>x.key===c.category);return(<button key={c.id} className="contact-row" onClick={()=>setContactDetail(c.id)}><div className="contact-avatar" style={{background:(cat&&cat.color)||"var(--color-text-muted)"}}>{c.name.charAt(0).toUpperCase()}</div><div className="contact-info"><div className="contact-name">{c.name}</div><div className="contact-role">{[c.role,c.org].filter(Boolean).join(" · ")||(cat&&cat.label)}</div></div><span className="contact-arrow">›</span></button>)})}</div>}
           </>)}
 
           {/* ═══ CONTACT DETAIL ═══ */}
           {view==="contacts"&&contactDetail&&detailContact&&(<>
             <button onClick={()=>setContactDetail(null)} className="back-link">← All Contacts</button>
             <div className="cd-header" style={{borderLeftColor:(detailCat&&detailCat.color)||"var(--color-text-muted)"}}>{detailContact.photo?<MediaImg value={detailContact.photo} dek={dekRef.current} altKey={rKeyRef.current} className="contact-avatar cd-avatar" alt=""/>:<div className="contact-avatar cd-avatar" style={{background:(detailCat&&detailCat.color)||"var(--color-text-muted)"}}>{detailContact.name.charAt(0).toUpperCase()}</div>}
-              <div style={{flex:1}}><h1 className="page-title" style={{margin:0}}>{detailContact.name}</h1><p className="cd-meta">{[detailContact.role,detailContact.org].filter(Boolean).join(" · ")}</p><span className="o-badge" style={{background:((detailCat&&detailCat.color)||"#8d99ae")+"18",color:(detailCat&&detailCat.color)}}>{(detailCat&&detailCat.icon)} {(detailCat&&detailCat.label)}</span></div>
+              <div style={{flex:1}}><h1 className="page-title" style={{margin:0}}>{detailContact.name}</h1><p className="cd-meta">{[detailContact.role,detailContact.org].filter(Boolean).join(" · ")}</p><span className="o-badge" style={{background:((detailCat&&detailCat.color)||"var(--color-text-muted)")+"18",color:(detailCat&&detailCat.color)}}>{(detailCat&&detailCat.icon)} {(detailCat&&detailCat.label)}</span></div>
             </div>
             <div className="cd-info-grid">
               {detailContact.phone&&<div className="cd-info-item"><span className="cd-info-label">Phone</span><span className="cd-info-value">{detailContact.phone}</span></div>}
@@ -5465,8 +5465,8 @@ export default function App() {
           </>)}
 
           {/* ═══ DOMAIN DETAIL ═══ */}
-          {activeDom&&activeData&&(()=>{const prog=getProgress(activeDom.key);const pulseColor=prog.recency>=75?"#718355":prog.recency>=40?"#bc6c25":"#b56576";return(<>
-            <div className="domain-header" style={{borderLeftColor:activeDom.color,background:activeDom.bg}}>
+          {activeDom&&activeData&&(()=>{const prog=getProgress(activeDom.key);const pulseColor=prog.recency>=75?"var(--color-text-success)":prog.recency>=40?"var(--color-text-warning)":"var(--color-text-danger)";return(<>
+            <div className="domain-header" style={{borderLeftColor:activeDom.color,background:activeDom.color+"1F"}}>
               <div className="domain-header-top"><div>
                 <div className="domain-title-row"><h1 className="page-title" style={{margin:0}}>{activeDom.icon} {getDomLabel(activeDom.key)}</h1>{!isReadOnly&&<button className="edit-icon edit-icon-visible" onClick={()=>setEditingDomain({key:activeDom.key,label:getDomLabel(activeDom.key),desc:getDomDesc(activeDom.key)})}>✎</button>}</div>
                 <p className="page-sub" style={{margin:"6px 0 0"}}>{getDomDesc(activeDom.key)}</p>
@@ -5475,20 +5475,20 @@ export default function App() {
                 <div className="dual-track-row"><span className="dual-track-label">☐ Foundation</span><div className="prog-track"><div className="prog-fill" style={{width:`${prog.pct}%`,background:activeDom.color}}/></div><span className="prog-label">{prog.done}/{prog.total} one-time</span></div>
                 {prog.ongoingTotal>0&&<div className="dual-track-row"><span className="dual-track-label" style={{color:pulseColor}}>↻ Care Pulse</span><div className="prog-track"><div className="prog-fill" style={{width:`${prog.recency}%`,background:pulseColor}}/></div><span className="prog-label" style={{color:pulseColor}}>{prog.ongoingOk}/{prog.ongoingTotal} current</span></div>}
               </div>
-              <div className="type-legend"><span className="type-legend-item"><span style={{color:"#457b9d"}}>☐</span> One-time</span><span className="type-legend-item"><span style={{color:"#bc6c25"}}>↻</span> Recurring</span><span className="type-legend-item"><span style={{color:"#718355"}}>◉</span> Monitoring</span></div>
+              <div className="type-legend"><span className="type-legend-item"><span style={{color:"var(--color-action-primary)"}}>☐</span> One-time</span><span className="type-legend-item"><span style={{color:"var(--color-text-warning)"}}>↻</span> Recurring</span><span className="type-legend-item"><span style={{color:"var(--color-text-success)"}}>◉</span> Monitoring</span></div>
             </div>
 
             <div className="section"><h3 className="sec-title">Guided Steps</h3>
               <div className="goals-wrap">{activeDom.goals.map((goal,gi)=>{const gd=activeData.goals[gi];const sp=getSubProgress(activeDom.key,gi);const isOpen=expanded[gi];return(
-                <div key={gi} className="goal-card" style={{borderLeftColor:gd.done?"#718355":activeDom.color,background:gd.done?"#f9fcf6":"#fff"}}>
+                <div key={gi} className="goal-card" style={{borderLeftColor:gd.done?"var(--color-text-success)":activeDom.color,background:gd.done?"var(--color-background-success)":"var(--color-surface)"}}>
                   <div className="goal-head" onClick={()=>toggle(gi)}>
                     {!isReadOnly&&<input type="checkbox" checked={gd.done} onChange={e=>{e.stopPropagation();toggleGoal(activeDom.key,gi)}} className="goal-check"/>}
                     {isReadOnly&&<span style={{width:20,textAlign:"center",flexShrink:0}}>{gd.done?"✓":"○"}</span>}
                     <div style={{flex:1,minWidth:0}}>
                       {!isReadOnly&&(editing&&editing.type)==="goal"&&editing.gi===gi?(
                         <div className="inline-edit" onClick={e=>e.stopPropagation()}><input ref={editRef} value={editText} onChange={e=>setEditText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveEdit();if(e.key==="Escape")cancelEdit()}} className="inline-edit-input"/><button onClick={saveEdit} className="inline-edit-save">✓</button><button onClick={cancelEdit} className="inline-edit-cancel">✕</button></div>
-                      ):(<div className="goal-title-row"><div className="goal-title" style={{textDecoration:gd.done?"line-through":"none",color:gd.done?"#8d99ae":"#3d3730"}}>{getGoalTitle(activeDom.key,gi)}</div>{!isReadOnly&&<button className="edit-icon" onClick={e=>{e.stopPropagation();startEdit("goal",gi,null,getGoalTitle(activeDom.key,gi))}}>✎</button>}</div>)}
-                      <div className="sub-prog-row"><div className="sub-prog-track"><div className="sub-prog-fill" style={{width:`${sp.pct}%`,background:gd.done?"#718355":activeDom.color}}/></div><span className="sub-prog-label">{sp.done}/{sp.total}</span></div>
+                      ):(<div className="goal-title-row"><div className="goal-title" style={{textDecoration:gd.done?"line-through":"none",color:gd.done?"var(--color-text-muted)":"var(--color-text-primary)"}}>{getGoalTitle(activeDom.key,gi)}</div>{!isReadOnly&&<button className="edit-icon" onClick={e=>{e.stopPropagation();startEdit("goal",gi,null,getGoalTitle(activeDom.key,gi))}}>✎</button>}</div>)}
+                      <div className="sub-prog-row"><div className="sub-prog-track"><div className="sub-prog-fill" style={{width:`${sp.pct}%`,background:gd.done?"var(--color-text-success)":activeDom.color}}/></div><span className="sub-prog-label">{sp.done}/{sp.total}</span></div>
                     </div><span className="chevron" style={{transform:isOpen?"rotate(180deg)":"rotate(0)"}}>▾</span>
                   </div>
                   {isOpen&&<div className="subs-wrap">
@@ -5498,13 +5498,13 @@ export default function App() {
                         {type==="O"?(
                           !isReadOnly?<input type="checkbox" checked={st.done} onChange={()=>toggleSub(activeDom.key,gi,si)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:12}}>{st.done?"✓":"○"}</span>
                         ):(
-                          !isReadOnly?<button onClick={()=>toggleSub(activeDom.key,gi,si)} className="sub-attend-btn" title="Mark as attended today" style={{background:age!==null&&age<7?"#e8f0df":"transparent",borderColor:age!==null&&age<7?"#718355":"#e5e1db"}}>✓</button>
+                          !isReadOnly?<button onClick={()=>toggleSub(activeDom.key,gi,si)} className="sub-attend-btn" title="Mark as attended today" style={{background:age!==null&&age<7?"var(--color-background-success)":"transparent",borderColor:age!==null&&age<7?"var(--color-text-success)":"var(--color-border-subtle)"}}>✓</button>
                           :<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:12}}>{age!==null&&age<7?"✓":"○"}</span>
                         )}
                         <div style={{flex:1,minWidth:0}}>
                           {!isReadOnly&&(editing&&editing.type)==="sub"&&editing.gi===gi&&editing.si===si?(<div className="inline-edit" onClick={e=>e.preventDefault()}><input ref={editRef} value={editText} onChange={e=>setEditText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveEdit();if(e.key==="Escape")cancelEdit()}} className="inline-edit-input"/><button onClick={e=>{e.preventDefault();saveEdit()}} className="inline-edit-save">✓</button><button onClick={e=>{e.preventDefault();cancelEdit()}} className="inline-edit-cancel">✕</button></div>
-                          ):(<span className="sub-text" style={{textDecoration:isDone?"line-through":"none",color:isDone?"#a09a92":"#3d3730"}}>{getSubText(activeDom.key,gi,si)}</span>)}
-                          {type!=="O"&&<div className="sub-recency" style={{color:age!==null?getRecencyColor(age,interval):"#c5c0b8"}}>{getRecencyLabel(age)}{type==="R"&&interval?` (every ${interval}d)`:""}
+                          ):(<span className="sub-text" style={{textDecoration:isDone?"line-through":"none",color:isDone?"var(--color-text-muted)":"var(--color-text-primary)"}}>{getSubText(activeDom.key,gi,si)}</span>)}
+                          {type!=="O"&&<div className="sub-recency" style={{color:age!==null?getRecencyColor(age,interval):"var(--color-text-muted)"}}>{getRecencyLabel(age)}{type==="R"&&interval?` (every ${interval}d)`:""}
                           </div>}
                         </div>
                         {can("edit-subtask")&&<select value={type} onChange={e=>changeSubType(activeDom.key,gi,si,e.target.value)} className="sub-type-select" title="Change task type"><option value="O">☐ One-time</option><option value="R">↻ Recurring</option><option value="M">◉ Monitoring</option></select>}
@@ -5512,9 +5512,9 @@ export default function App() {
                         {can("remove-subtask")&&<button onClick={()=>removeSub(activeDom.key,gi,si)} className="remove-sub" title="Remove this sub-task">×</button>}
                       </div>)})}
                     {/* Show removed subs count with restore option */}
-                    {(()=>{const removedCount=goal.subs.filter((_,si)=>getSubState(activeDom.key,gi,si).removed).length;return removedCount>0&&!isReadOnly?(<details className="removed-subs-details"><summary className="removed-subs-summary">{removedCount} removed sub-task{removedCount>1?"s":""}</summary><div className="removed-subs-list">{goal.subs.map((subDef,si)=>{const st=getSubState(activeDom.key,gi,si);if(!st.removed)return null;return(<div key={si} className="sub-item sub-removed"><span className="sub-text" style={{color:"#c5c0b8",flex:1}}>{getSubText(activeDom.key,gi,si)}</span><button onClick={()=>restoreSub(activeDom.key,gi,si)} className="edit-btn" style={{marginTop:0,fontSize:11,padding:"3px 10px"}}>Restore</button></div>)})}</div></details>):null})()}                    {gd.customSubs.map((cs,ci)=>(<label key={`c${ci}`} className="sub-item sub-custom" style={{background:cs.done?"#f5f9f0":"#faf9f7"}}>
+                    {(()=>{const removedCount=goal.subs.filter((_,si)=>getSubState(activeDom.key,gi,si).removed).length;return removedCount>0&&!isReadOnly?(<details className="removed-subs-details"><summary className="removed-subs-summary">{removedCount} removed sub-task{removedCount>1?"s":""}</summary><div className="removed-subs-list">{goal.subs.map((subDef,si)=>{const st=getSubState(activeDom.key,gi,si);if(!st.removed)return null;return(<div key={si} className="sub-item sub-removed"><span className="sub-text" style={{color:"var(--color-text-muted)",flex:1}}>{getSubText(activeDom.key,gi,si)}</span><button onClick={()=>restoreSub(activeDom.key,gi,si)} className="edit-btn" style={{marginTop:0,fontSize:11,padding:"3px 10px"}}>Restore</button></div>)})}</div></details>):null})()}                    {gd.customSubs.map((cs,ci)=>(<label key={`c${ci}`} className="sub-item sub-custom" style={{background:cs.done?"var(--color-background-success)":"var(--color-background-secondary)"}}>
                       {!isReadOnly?<input type="checkbox" checked={cs.done} onChange={()=>toggleCustomSub(activeDom.key,gi,ci)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:12}}>{cs.done?"✓":"○"}</span>}
-                      <span className="sub-text" style={{flex:1,textDecoration:cs.done?"line-through":"none",color:cs.done?"#a09a92":"#3d3730"}}>{cs.text}</span>
+                      <span className="sub-text" style={{flex:1,textDecoration:cs.done?"line-through":"none",color:cs.done?"var(--color-text-muted)":"var(--color-text-primary)"}}>{cs.text}</span>
                       {!isReadOnly&&<button onClick={e=>{e.preventDefault();removeCustomSub(activeDom.key,gi,ci)}} className="remove-sub">×</button>}
                     </label>))}
                     {can("add-custom-sub")&&(addSubFor===gi?(<div className="add-sub-row"><input ref={subRef} value={newSubText} onChange={e=>setNewSubText(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addCustomSub(activeDom.key,gi,newSubText)} placeholder="Sub-task…" className="add-sub-input"/><button onClick={()=>addCustomSub(activeDom.key,gi,newSubText)} className="add-sub-btn">Add</button><button onClick={()=>{setAddSubFor(null);setNewSubText("")}} className="add-sub-cancel">Cancel</button></div>):(<button onClick={()=>{setAddSubFor(gi);setNewSubText("")}} className="add-sub-trigger">+ Add sub-task</button>))}
