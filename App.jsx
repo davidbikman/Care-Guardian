@@ -3358,7 +3358,12 @@ export default function App() {
 
   // Universal search
   const SEARCH_FEATURES=[
-    {label:"Medications",hub:"meds",view:"meds",icon:"💊",keywords:"medication med admin drug pill prescription"},
+    {label:"Medications",hub:"meds",view:"meds",icon:"💊",keywords:"medication med admin drug pill prescription schedule dose"},
+    {label:"Medicine Cabinet",hub:"meds",view:"meds",icon:"🗄",keywords:"cabinet medication list purpose prescriber pharmacy refill supply critical"},
+    {label:"SOS / Emergency",hub:"sos",view:"sos",icon:"🚨",keywords:"sos emergency 911 urgent help crisis ambulance paramedic script dispatcher"},
+    {label:"Log",hub:"log",view:"log",icon:"✎",keywords:"log record incident observation note trigger what happened"},
+    {label:"Care Domains",hub:"care",view:"care-domains",icon:"🧭",keywords:"domain care plan physical cognitive wellness legal financial progress foundation"},
+    {label:"Display Settings",hub:"care",view:"display",icon:"🅰",keywords:"display text size larger bigger font contrast dark mode accessibility readable"},
     {label:"Incidents",hub:"log",view:"log",icon:"⚠",keywords:"incident fall behavior wandering medication error accident"},
     {label:"Incident Patterns",hub:"log",view:"incident-patterns",icon:"📊",keywords:"pattern trend chart graph analysis time"},
     {label:"Expenses",hub:"care",view:"expenses",icon:"$",keywords:"expense cost money payment receipt"},
