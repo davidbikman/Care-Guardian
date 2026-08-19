@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Fragment } from "react";
+import { useState, useEffect, useRef, Fragment, Component } from "react";
 
 /* ═══════════════ CONSTANTS ═══════════════ */
 const CONTACT_CATS = [
@@ -1638,6 +1638,29 @@ const IncidentFormUI=({incidentForm,setIncidentForm,saveIncident,deleteIncident,
       <button onClick={()=>setIncidentForm(null)} className="cancel-btn">Cancel</button>
     </div>
   </div></div>)};
+
+/* Without a boundary, an uncaught render error unmounts the whole tree: the
+   screen goes blank or a tap appears to do nothing, with the cause visible only
+   in the console. This keeps the failure on screen and nameable, and lets the
+   rest of the app carry on — which matters most for the views a caregiver
+   reaches mid-shift. */
+class ViewErrorBoundary extends Component {
+  constructor(props){ super(props); this.state={error:null}; }
+  static getDerivedStateFromError(error){ return {error}; }
+  componentDidCatch(error,info){ try{ console.error("Care Guardian view error:",error,info); }catch{} }
+  componentDidUpdate(prev){ if(prev.viewKey!==this.props.viewKey&&this.state.error) this.setState({error:null}); }
+  render(){
+    if(!this.state.error) return this.props.children;
+    return (
+      <div className="view-error">
+        <h2 className="view-error-title">This screen didn't load</h2>
+        <p className="view-error-body">Your records are safe — nothing was lost, and the rest of the app still works. Use the buttons at the bottom to go somewhere else.</p>
+        <p className="view-error-detail">{String((this.state.error&&this.state.error.message)||this.state.error)}</p>
+        <button className="save-btn" onClick={()=>this.setState({error:null})}>Try this screen again</button>
+      </div>
+    );
+  }
+}
 
 const EcardFormUI=({info,setEcardForm,saveEmergencyInfo,ecardPhotoRef,handlePhotoCapture})=>{
   const[f,setF]=useState(info);
@@ -4133,6 +4156,7 @@ export default function App() {
 
         <div className="content-v2">
           {(settingsMsg||importResult)&&<div className="import-toast">{settingsMsg||importResult}</div>}
+          <ViewErrorBoundary viewKey={view}>
 
           {/* ═══ TODAY HUB ═══ */}
           {/* ═══ TODAY ═══ */}
@@ -4213,7 +4237,7 @@ export default function App() {
                         {m.visualId&&<div className="med-card-visual">{m.visualId}</div>}
                       </div>
                     </div>
-                    <div className="med-slot-grid">{MED_TIME_SLOTS.filter(s=>m.timeSlots.includes(s)).map(s=>{
+                    <div className="med-slot-grid">{MED_TIME_SLOTS.filter(s=>(m.timeSlots||[]).includes(s)).map(s=>{
                       const status=getMedStatus(m.id,s,medAdminDate);
                       return(<button key={s} disabled={isReadOnly} onClick={()=>toggleMedAdmin(m.id,s,medAdminDate)} className={`med-slot-btn med-slot-${status||"pending"}`}>
                         <span className="med-slot-name">{s}</span>
@@ -4221,7 +4245,7 @@ export default function App() {
                       </button>)})}
                     </div>
                     {!isReadOnly&&<div className="med-card-actions">
-                      <button onClick={()=>setRefusal({medId:m.id,slot:(m.timeSlots[0]||"Morning"),date:medAdminDate})} className="mini-btn">Refused…</button>
+                      <button onClick={()=>setRefusal({medId:m.id,slot:((m.timeSlots||[])[0]||"Morning"),date:medAdminDate})} className="mini-btn">Refused…</button>
                       <button onClick={()=>setMedForm({mode:"edit",med:{...EMPTY_MED,...m},id:m.id})} className="mini-btn">Edit</button>
                     </div>}
                   </div>))}
@@ -5539,6 +5563,7 @@ export default function App() {
                   :(<button onClick={()=>nav("overview")} className="pn-btn pn-btn-next"><span className="pn-arrow">⊞</span><span className="pn-dir">Back to</span><span className="pn-name">Overview</span></button>)}
               </div>)})()}
           </>)})()}
+          </ViewErrorBoundary>
         </div>
       </main>
       {/* ═══ CARE HUB MENU ═══ Everything administrative or infrequent. Grouped
@@ -6393,6 +6418,12 @@ select.cf-input{background:var(--color-surface)}.cf-actions{display:flex;gap:8px
 .sos-contact-name{font-size:15px;font-weight:600;color:var(--color-text-primary)}
 .sos-contact-role{font-size:12.5px;color:var(--color-text-muted)}
 .sos-contact-call{width:var(--tap-target-min);height:var(--tap-target-min);border-radius:50%;background:var(--color-background-success);color:var(--color-text-success);display:flex;align-items:center;justify-content:center;font-size:20px;text-decoration:none;flex-shrink:0}
+
+/* view error boundary */
+.view-error{background:var(--color-surface);border:1px solid var(--color-border-danger);border-radius:var(--radius-card);padding:var(--space-md);margin-top:var(--space-sm)}
+.view-error-title{font-family:var(--font-ui);font-size:18px;font-weight:700;color:var(--color-text-danger);margin:0 0 8px}
+.view-error-body{font-size:15px;line-height:1.55;color:var(--color-text-primary);margin:0 0 12px}
+.view-error-detail{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--color-text-muted);background:var(--color-background-secondary);border-radius:var(--radius-button);padding:8px 10px;margin:0 0 14px;overflow-x:auto;word-break:break-word}
 
 /* print styles for expenses */
 @media print{
