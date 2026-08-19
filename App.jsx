@@ -5625,13 +5625,13 @@ export default function App() {
           </div>
         </aside>
       </>)}
-      <nav className="hub-bar" aria-label="Primary">
+    </div>
+    <nav className="hub-bar" aria-label="Primary">
         <button onClick={()=>navRoot("today")} aria-current={currentHub==="today"?"page":undefined} className={`hub-btn ${currentHub==="today"?"hub-active":""}`}><span className="hub-btn-icon">☀</span><span className="hub-btn-label">Today</span></button>
         <button onClick={()=>navRoot("meds")} aria-current={currentHub==="meds"?"page":undefined} className={`hub-btn ${currentHub==="meds"?"hub-active":""}`}><span className="hub-btn-icon">💊</span><span className="hub-btn-label">Meds</span></button>
         <button onClick={()=>navRoot("log")} aria-current={currentHub==="log"?"page":undefined} className={`hub-btn ${currentHub==="log"?"hub-active":""}`}><span className="hub-btn-icon">✎</span><span className="hub-btn-label">Log</span></button>
         <button onClick={()=>navRoot("sos")} aria-current={currentHub==="sos"?"page":undefined} className={`hub-btn hub-btn-sos ${currentHub==="sos"?"hub-active":""}`}><span className="hub-btn-icon">🚨</span><span className="hub-btn-label">SOS</span></button>
       </nav>
-    </div>
   </>);
 }
 
@@ -5651,6 +5651,9 @@ const CSS=`
   --ui-scale-pct:100;
   --font-size-base:calc(18px * var(--ui-scale-pct) / 100);
   --tap-target-min:calc(56px * var(--ui-scale-pct) / 100);
+  /* The bottom nav is fixed, so the column above it has to reserve its height.
+     Derived from the tap target so it grows with the Large/Larger text tiers. */
+  --nav-height:calc(var(--tap-target-min) + 14px + env(safe-area-inset-bottom, 0px));
 
   /* Spacing scale */
   --space-xs:8px;--space-sm:16px;--space-md:24px;--space-lg:32px;--space-xl:48px;
@@ -5835,14 +5838,20 @@ button,input,select,textarea{color:inherit;font-family:inherit}
 .content{flex:1;padding:28px 32px 40px;max-width:960px}
 
 /* hub navigation v2 */
-.main-area-v2{flex:1;min-height:100vh;display:flex;flex-direction:column}
-.content-v2{padding:16px 20px 100px;max-width:960px;margin:0 auto;width:100%;flex:1;color:var(--color-text-primary);background:var(--color-background)}
+/* padding-bottom, not margin: with border-box the 100vh floor then describes the
+   area above the nav. Without it .content-v2 (flex:1) stretches past the
+   viewport and its box sits under the fixed nav — at a 1920px-wide window the
+   centred 960px column lands exactly over the middle two nav buttons, leaving
+   only z-index paint order to decide whether taps reach them. Firefox resolved
+   that the other way and the middle two buttons did nothing. */
+.main-area-v2{flex:1;min-height:100vh;display:flex;flex-direction:column;padding-bottom:var(--nav-height)}
+.content-v2{padding:16px 20px var(--space-lg);max-width:960px;margin:0 auto;width:100%;flex:1;color:var(--color-text-primary);background:var(--color-background)}
 .hub-topbar{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--color-border-subtle);background:var(--color-surface);position:sticky;top:0;z-index:10;color:var(--color-text-primary)}
 .hub-back{background:none;border:none;cursor:pointer;font-size:18px;color:var(--color-action-primary);padding:4px 8px 4px 0;display:flex;align-items:center}
 .hub-topbar-text{flex:1}
 .hub-topbar-title{font-size:16px;font-weight:700;font-family:var(--font-ui);color:var(--color-text-primary)}
 .hub-topbar-crumb{font-size:11px;color:var(--color-text-muted);display:block}
-.hub-bar{display:flex;position:fixed;bottom:0;left:0;right:0;background:var(--color-surface);border-top:1px solid var(--color-border-subtle);z-index:20;padding-bottom:env(safe-area-inset-bottom)}
+.hub-bar{display:flex;position:fixed;bottom:0;left:0;right:0;background:var(--color-surface);border-top:1px solid var(--color-border-subtle);z-index:80;isolation:isolate;padding-bottom:env(safe-area-inset-bottom)}
 .hub-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 4px 6px;border:none;background:transparent;cursor:pointer;color:var(--color-text-muted);font-size:10px;transition:color .12s}
 .hub-btn-icon{font-size:26px;line-height:1;color:inherit}
 .hub-btn-label{font-weight:600;color:inherit}
