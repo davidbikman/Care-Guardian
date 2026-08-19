@@ -103,16 +103,30 @@ Serve over HTTPS with HSTS. Set a restrictive Content-Security-Policy at the hos
 
 Safety-critical logic is proven in isolated, runnable suites (in `tests/`, run with `node tests/<file>`; all pass together): `wal-test`/`wal-core` (200k+ diff/apply round-trips, 20k replay chains) and `wal-sim` (crash and corrupt-snapshot pipeline simulation); `audit-chain-test` (tamper, deletion, truncation, recompute-limit); `hlc-test` (causal ordering, future-stamp DoS rejection); `mfa-core-test` (both factors required, multi-passkey, recovery is two-factor); `blob-test` and `blob-roundtrip-test` (real-AES-GCM media round-trip across different keys); `gc-test` (referenced blobs never deleted, orphans purged); `sync-flood-test` (hard and soft breaker thresholds); `zone-core-test` (scoped key cannot decrypt the private zone, one-way hierarchy, projection/outbox round-trip); and `srchain-test` (client-voice chain integrity plus outbox sanitizer hardening). What the harness cannot exercise is documented where relevant: the WebAuthn ceremony requires a real authenticator and is validated on devices, not headlessly.
 
-## Hub-and-Spoke Navigation
+## Task-Based Navigation
 
-Four bottom-bar hubs replace the previous 21-tab layout. Maximum depth: 3 taps to any feature.
+Four bottom-bar destinations, plus a persistent top bar. Each destination is a
+place where work happens rather than a menu of links, so the common actions —
+give a medication, log an incident, reach emergency information — are one tap
+from anywhere.
 
-| Hub | Contents |
+| Destination | Contents |
 |-----|----------|
-| **☀ Today** | Smart dashboard with proactive reminders, medication alerts, appointment previews, overdue task warnings, caregiver burnout alerts, quick actions (log incident, shift handoff, emergency card, self-report, caregiver check-in) |
-| **♥ Care plan** | Strategic overview grid, 5 care domains, legal/financial, escalation triggers, tracking, visit prep, emergency plans, POA decision log, capacity observations, care plan binder, end-of-life planning |
-| **📁 Records** | Incidents, incident patterns, medication admin, expenses, documents, contacts, calendar, shifts |
-| **👥 Team** | Messages, sync, self-reports, settings (HIPAA audit log, data integrity, storage monitoring, notifications), help |
+| **☀ Today** | Proactive reminders, medication alerts, overdue task warnings, caregiver burnout alerts, a weekly appointment strip with a month view, shift handoff, caregiver check-in, and a link into the five care domains |
+| **💊 Meds** | *Today's schedule* — the day's doses as tappable time slots, with the refusal protocol. *Cabinet* — the master medication list with purpose, prescriber, pharmacy and refill countdown |
+| **✎ Log** | Incident logging as the default view, with trigger and optional description. Patterns and the client's self-report as tabs |
+| **🚨 SOS** | Ordered by urgency: 911 dispatcher script → Emergency Info Card → six emergency scenario plans → categorised, photo-backed contact directory with tap-to-call |
+
+**Top bar (all screens):** hamburger opens the Care Hub menu; search and
+messages (with unread badge) on the right.
+
+**Care Hub menu** holds everything administrative or infrequent, grouped into
+Care domains, Administration (team, expenses, sync, display settings, full
+settings), Monitoring (escalation triggers, tracking, visit prep),
+Documentation (POA decisions, capacity observations, care plan binder,
+end-of-life planning, medical records and documents, care schedule), and Help.
+Relocating a feature never widens who can see it: every item keeps the
+permission gate it had before.
 
 ## Proactive Reminder Engine
 
@@ -142,10 +156,28 @@ Optional browser notifications (Notification API) check every 15 minutes for due
 | **Care Professional** 🩺 | Health domains only. Log incidents, med admin, shifts, messages. No legal, financial, export, or delete. | Caregiver |
 | **Client (Independent)** 🟢 | Full view including legal/financial. Export. Self-reports. | Client |
 | **Client (Supported)** 🛡 | Self-reports, messages, schedule, medications, care domains — via a cryptographically scoped key that cannot decrypt anything else (see Cryptographic Role Scoping). | Client |
+| **Observer** 👁 | Read-only. Views care domains, contacts, documents, schedules and messages. Cannot edit, add, delete, administer medications, or export. | Caregiver |
 
 ## Usability & Accessibility
 
-UI icons (navigation, hub tiles, tab bar, controls) are sized ~30% larger than typical defaults for legibility. Saving an incident, expense, contact, or document resets that list's filter to "All" so the new record is visible. The app uses emotionally honest language ("Care Escalation" rather than euphemism), keeps After-Death planning accessible but low-profile, and reports "Saved" only after the write commits.
+The interface is built on a semantic design-token layer: components reference
+roles (`--color-text-danger`, `--color-background-warning`) rather than raw
+values, so dark mode re-points the tokens once instead of restating every
+component. Both palettes are authored against the same cool base rather than
+one being an inversion of the other.
+
+- **Type** — Atkinson Hyperlegible, designed for low vision, bundled locally
+  (no CDN request). Libre Baskerville is retained for printable documents —
+  the Care Plan Binder and Emergency Info Card — where a serif reads as a
+  record rather than a screen.
+- **Size** — the root is 18px at the Standard tier. Large and Larger scale the
+  same root via `--ui-scale-pct`, so every size grows together.
+- **Tap targets** — a single `--tap-target-min` token at 56px, which scales up
+  with the text setting and never shrinks below it.
+- **Focus** — never removed, only restyled: a 3px ring on every interactive
+  control, for keyboard and switch access.
+
+UI icons are sized ~30% larger than typical defaults for legibility. Saving an incident, expense, contact, or document resets that list's filter to "All" so the new record is visible. The app uses emotionally honest language ("Care Escalation" rather than euphemism), keeps After-Death planning accessible but low-profile, and reports "Saved" only after the write commits.
 
 ## Complete Feature List
 
@@ -156,16 +188,18 @@ UI icons (navigation, hub tiles, tab bar, controls) are sized ~30% larger than t
 - Sub-task edit, remove with restore, type override, custom sub-tasks
 
 ### Clinical Tools
-- **Incident Log** — 9 types, 4 severity levels, photo attachments (3 max, 2MB each, MIME validated), structured fields
-- **Incident Pattern Visualization** — type/severity distribution, time-of-day histogram, weekly trend
-- **Medication Admin Log** — daily grid, 6 time slots, tap-to-cycle, start dates, discontinued meds archived with restore
+- **Incident Log** — 9 types, 4 severity levels, 4 trigger options, photo attachments (3 max, 2MB each, MIME validated), structured fields. Type, severity and trigger are tap-select; only type is required to save, so an incident can be logged in seconds and detail added later
+- **Incident Pattern Visualization** — type/severity/trigger distribution, time-of-day histogram, weekly trend. The trigger chart counts only incidents that recorded one, so older records don't skew it
+- **Medication Schedule** — the day's doses as tappable time slots, 6 windows, tap-to-cycle, start dates, discontinued meds archived with restore
+- **Medicine Cabinet** — master list with plain-English purpose, pill appearance, prescriber, pharmacy and phone, and a refill countdown that flags overdue and due-within-a-week
+- **Refusal protocol** — a refusal opens Pause & Pivot: de-escalation guidance, a tap-select reason, then a branch on whether the medication is marked critical. Critical refusals surface missed-dose guidance and the prescriber's and pharmacy's numbers instead of being filed away silently
 - **Document Scanner** — client-side PDF extraction (pdf.js, bundled locally, lazy-loaded), ~200 drug + lab result parsers
 - **Document Library** — 10 categories, stored content, full viewer
 - **Self-Reports** — 6 types (text, voice, mood, pain, sleep, concern), photo attachments, individual deletion with permission guard, storage warning, CSV/text export, print
 - **Visit Prep Summary** — auto-generated from all data
 - **Emergency Action Plans** — 6 editable scenario cards
 - **Care Escalation Triggers** — 12 monitored conditions
-- **Emergency Info Card** — printable wallet card with diagnoses, meds, contacts, directive status
+- **Emergency Info Card** — printable wallet card with photo (for identification during a wandering episode), diagnoses, medications, allergies, code status (DNR/DNI/POLST), a baseline "what's normal for this person" note, flagged alert medications, contacts and directive status
 
 ### Legal & Documentation
 - **POA Decision Log** — 7 decision types, 3 urgency levels, 6 structured fields (decision, reasoning, known wishes, consulted, outcome, agent), exportable, included in binder

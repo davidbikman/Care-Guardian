@@ -74,12 +74,13 @@ The following HIPAA requirements are organizational policies that must be implem
 
 ## Minimum Necessary Standard
 
-Care Guardian implements the Minimum Necessary standard through its five-tier access control system:
+Care Guardian implements the Minimum Necessary standard through its six-tier access control system:
 
 - **Care Professionals** see only Physical Health, Cognitive Health, and Wellness domains. Legal, Financial, documents, expenses, and export functions are invisible.
 - **Client (Supported)** sees only self-reports and messages.
+- **Observers** hold read-only access to care domains, contacts, documents, schedules and messages. The role is enforced as an allow-list evaluated before the main permission table, so every write, delete, medication-administration, export and management action is denied — including any permission added in future, which is denied to observers by default rather than requiring a new exclusion.
 - **All delete operations** are permission-guarded at the function level.
-- **The audit log** records which user accessed which PHI type, enabling retrospective review of access appropriateness.
+- **The audit log** records which user accessed which PHI type, enabling retrospective review of access appropriateness. Every route into a PHI view is audited through a single choke point, including the bottom navigation, which reaches the Meds, Log and SOS views without passing through the general navigation handler.
 
 ---
 

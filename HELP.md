@@ -65,24 +65,45 @@ Phone and tablet browsers sometimes delete a website's stored data when the devi
 
 ## Navigation
 
-Care Guardian uses a hub-and-spoke layout. Four hubs at the bottom of the screen:
+Four buttons at the bottom of the screen. Each one is a place where you do
+something, not a menu you have to read through first:
 
-**☀ Today** — your daily dashboard. Shows what needs attention right now.
-**♥ Care plan** — the strategic view. Domains, triggers, documentation.
-**📁 Records** — everything that gets logged. Incidents, meds, expenses, documents.
-**👥 Team** — communication and coordination. Messages, sync, settings.
+**☀ Today** — what needs attention right now, this week's appointments, and quick actions.
+**💊 Meds** — today's doses, and the Cabinet with everything on record.
+**✎ Log** — write down what happened. This is the fastest screen in the app.
+**🚨 SOS** — for emergencies. What to say to 911, the info card, what to do, who to call.
 
-Tap any card within a hub to go deeper. The ← back button returns one level. Maximum 3 taps to reach any feature.
+The ← back button returns one level.
 
-### 🔍 Search
+### ☰ The Care Hub menu
 
-The magnifying glass in the top bar opens universal search. Type at least 2 characters to find features by name or keyword, and search across all stored data — incidents, contacts, documents, medications, messages, expenses, self-reports, and POA decisions.
+The three lines at the top left open everything else — care domains, team and
+roles, expenses, sync, display settings, documents, the care plan binder, legal
+and financial planning, and this guide. It's all one tap from any screen, and
+it's grouped so you're not scanning a long list.
+
+### 🔍 Search and 💬 Messages
+
+The magnifying glass opens universal search. Type at least 2 characters to find
+features by name or keyword, and search across all stored data — incidents,
+contacts, documents, medications, messages, expenses, self-reports, and POA
+decisions.
+
+The speech bubble goes to team messages. A red number on it means messages you
+haven't read yet; it clears when you open them.
+
+### Making text bigger
+
+Care Hub menu → Display settings → Text size. Standard, Large, or Larger.
+Buttons and tap targets grow with the text, so nothing becomes harder to hit as
+the type gets bigger. The app follows your device's light or dark mode
+automatically.
 
 ---
 
-## Today Hub
+## Today
 
-The Today hub is a smart dashboard that shows time-aware, prioritized reminders:
+Today is a smart dashboard that shows time-aware, prioritized reminders:
 
 - **❌ Missed medications** — past their time window without being logged
 - **💊 Medications due now** — in the current time window
@@ -117,6 +138,7 @@ Enable in Settings → Notifications. The app checks every 15 minutes and sends 
 | **Care Professional** 🩺 | Aides, nurses, therapists | Health domains, incidents, meds, shifts, messages, emergency plans |
 | **Client (Independent)** 🟢 | Care recipient — full autonomy | All domains, export, self-reports |
 | **Client (Supported)** 🛡 | Care recipient — simplified | Their own view: schedule, medications, messages, self-reports, and care progress |
+| **Observer** 👁 | A relative keeping an eye on things, a supervisor, a care manager | Read-only. Can see care domains, contacts, documents, schedules and messages. Cannot change, add, delete, give medications, or export anything |
 
 Admin assigns roles in the team roster and can toggle the client between Independent and Supported mode.
 
@@ -173,16 +195,56 @@ The strategic overview grid at the top of the Care Plan hub shows all domains at
 
 ## Clinical Features
 
-### 📋 Incident Log
-9 types, 4 severity levels. Structured fields: description, response, injuries, provider notified. Attach up to 3 photos per incident (2MB each). Care Professionals can add but not delete.
+### ✎ Log — incidents
+Tap **Log** at the bottom, then **+ Log something now**. Pick what happened and
+how serious it was — that's all you need to save it. Everything else is
+optional and can be added later, so you can log in the moment and write it up
+when you have a hand free.
+
+You can also record **what might have set it off**: fatigue or end of day,
+overstimulation, a physical need, or a change in routine. This is the field
+that turns a list of bad days into a pattern you can act on.
+
+9 types, 4 severity levels, 4 triggers. Optional fields: details, response,
+injuries, provider notified, and up to 3 photos (2MB each). Care Professionals
+can add but not delete.
 
 Tip: saving any new record (incident, expense, contact, document) resets that list's filter to **All**, so what you just logged is always immediately visible.
 
 ### 📊 Incident Patterns
-Available with 3+ incidents. Shows: type distribution, severity distribution, time-of-day histogram (identifies sundowning), and 8-week trend line.
+Available with 3+ incidents. Shows: type distribution, severity distribution,
+trigger distribution, time-of-day histogram (identifies sundowning), and 8-week
+trend line. The trigger chart counts only the incidents where a trigger was
+recorded, so incidents logged before you started using the field don't wash the
+picture out.
 
-### 💊 Medication Admin
-Add medications with time slots. Daily grid: tap to cycle (not logged → given ✓ → missed ✗ → refused ⊘). Start dates tracked automatically. Discontinued meds are archived (not deleted) with restore capability.
+### 💊 Meds — today's schedule
+Each medication shows its time slots as buttons. Tap one to cycle it: not
+logged → given ✓ → missed ✗ → refused ⊘. Start dates are tracked automatically.
+Discontinued medications are archived, not deleted, and can be restored.
+
+### 💊 Meds — the Cabinet
+The master list of everything they take. Alongside name and dosage you can
+record what it's for in plain English ("For memory"), what the pill looks like,
+the prescriber, the pharmacy and its phone number, and when the refill is due —
+the Cabinet counts down to it and flags anything overdue.
+
+Two checkboxes matter:
+
+- **Critical** — a missed dose of this one needs a decision, not just a record.
+- **Flag for paramedics** — blood thinners, antipsychotics, anything a
+  responder must know about. These appear on the Emergency Info Card. Tick it
+  by hand rather than trusting the app to recognise drug names.
+
+### When they refuse a medication
+Tap **Refused…** on the medication. The app will tell you to pause rather than
+push: step back, change something small — the room, the cup, who's asking — and
+try again in a few minutes. Then record what got in the way.
+
+What happens next depends on the medication. If it isn't marked critical, it's
+logged and you move on. If it **is** critical, the app tells you to check the
+missed-dose instructions and gives you the prescriber's and pharmacy's numbers,
+because that's a decision someone needs to make now.
 
 ### 📄 Document Scanner
 Upload PDFs or text files. Client-side extraction via pdf.js — nothing uploaded. Regex parsers identify ~200 medications and lab results.
