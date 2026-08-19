@@ -95,9 +95,16 @@ haven't read yet; it clears when you open them.
 ### Making text bigger
 
 Care Hub menu → Display settings → Text size. Standard, Large, or Larger.
-Buttons and tap targets grow with the text, so nothing becomes harder to hit as
-the type gets bigger. The app follows your device's light or dark mode
-automatically.
+
+Everything scales together — body text, headings, buttons and tap targets — so
+nothing gets harder to hit as the type grows. On a laptop, desktop or tablet the
+page also widens as the text grows, so a large setting uses the screen you have
+instead of leaving a narrow column stranded in empty space.
+
+The app follows your device's light or dark mode automatically.
+
+**Closing things:** every pop-up closes with the **Escape** key as well as its
+Cancel button, so you never need to find a particular spot to tap to get out.
 
 ---
 

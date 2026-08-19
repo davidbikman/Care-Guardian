@@ -170,12 +170,20 @@ one being an inversion of the other.
   (no CDN request). Libre Baskerville is retained for printable documents —
   the Care Plan Binder and Emergency Info Card — where a serif reads as a
   record rather than a screen.
-- **Size** — the root is 18px at the Standard tier. Large and Larger scale the
-  same root via `--ui-scale-pct`, so every size grows together.
+- **Size** — every font size is expressed in `rem` against an 18px root, so the
+  Standard tier puts primary content text at 18px and the Large/Larger tiers
+  scale the whole interface via `--ui-scale-pct`. (Sizes were previously
+  hardcoded in px, which meant the tier setting changed a root nothing read.)
+- **Width** — the content column and dialogs are capped in `rem`, not px, so a
+  line holds about the same number of characters at every tier and a large text
+  setting widens the page to use the available screen rather than stranding a
+  narrow column in empty space.
 - **Tap targets** — a single `--tap-target-min` token at 56px, which scales up
   with the text setting and never shrinks below it.
 - **Focus** — never removed, only restyled: a 3px ring on every interactive
   control, for keyboard and switch access.
+- **Escape** — closes whichever overlay is topmost, so every dialog has a
+  keyboard exit and not only a Cancel button to point at.
 
 UI icons are sized ~30% larger than typical defaults for legibility. Saving an incident, expense, contact, or document resets that list's filter to "All" so the new record is visible. The app uses emotionally honest language ("Care Escalation" rather than euphemism), keeps After-Death planning accessible but low-profile, and reports "Saved" only after the write commits.
 
