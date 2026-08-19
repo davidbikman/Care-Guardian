@@ -21,7 +21,7 @@ const SEVERITY_LEVELS = [
   { key:"low",label:"Low",color:"var(--color-text-success)",bg:"var(--color-background-success)" },
   { key:"moderate",label:"Moderate",color:"var(--color-text-warning)",bg:"var(--color-background-warning)" },
   { key:"high",label:"High",color:"var(--color-text-danger)",bg:"var(--color-background-danger)" },
-  { key:"critical",label:"Critical",color:"var(--color-text-on-fill)",bg:"var(--color-text-danger)" },
+  { key:"critical",label:"Critical",color:"var(--color-text-on-fill-danger)",bg:"var(--color-fill-danger)" },
 ];
 
 /* What was going on around the incident. Separate from type ("what happened")
@@ -5656,6 +5656,11 @@ const CSS=`
   --color-background-success:#E7F5EF;--color-text-success:#046C4E;--color-border-success:#8FCFB6;
   --color-background-warning:#FDF1E3;--color-text-warning:#B45309;--color-border-warning:#EBC08A;
   --color-background-danger:#FCEAEA;--color-text-danger:#C81E1E;--color-border-danger:#EFA9A9;
+  /* Danger *fill* is its own token, not the danger text colour. The status text
+     colours invert to light tints in dark mode so they stay legible as text —
+     correct for text, wrong for a fill whose whole job is to look urgent. This
+     one stays saturated in both themes, so its label stays white in both. */
+  --color-fill-danger:#C81E1E;--color-text-on-fill-danger:#FFFFFF;
   --color-background-info:#E8F0F7;--color-text-info:#0F4C81;--color-border-info:#A9C6DF;
 
   /* Elevation */
@@ -5685,6 +5690,9 @@ const CSS=`
   --color-background-success:#0D2A21;--color-text-success:#5FD3A8;--color-border-success:#1F5F4A;
   --color-background-warning:#33230D;--color-text-warning:#F0B45E;--color-border-warning:#6B4A18;
   --color-background-danger:#3A1517;--color-text-danger:#F58A8A;--color-border-danger:#7A2B2E;
+  /* Brighter than the light-mode fill so it still reads as alarming against a
+     near-black ground rather than sinking into it. White label holds 4.8:1. */
+  --color-fill-danger:#DC2626;--color-text-on-fill-danger:#FFFFFF;
   --color-background-info:#12283C;--color-text-info:#7CB6E6;--color-border-info:#2A5375;
 
   --shadow-card:0 1px 3px rgba(0,0,0,.5),0 1px 2px rgba(0,0,0,.35);
@@ -5850,6 +5858,9 @@ button,input,select,textarea{color:inherit;font-family:inherit}
 .pattern-bar-val{font-size:11px;font-weight:600;color:var(--color-text-primary);min-width:20px}
 .hour-chart{display:flex;align-items:flex-end;gap:2px;height:100px;padding:8px 0}
 .hour-col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%}
+/* .hour-bar and .cal-dot are marks, not filled labels — they need to stand out
+   *against* the surface, so they keep the adaptive text-danger colour, which
+   lightens in dark mode. Only fills that carry a label use --color-fill-danger. */
 .hour-bar{width:100%;background:var(--color-text-danger);border-radius:2px 2px 0 0;min-height:1px;transition:height .3s}
 .hour-label{font-size:9px;color:var(--color-text-muted);margin-top:4px}
 
@@ -6291,7 +6302,7 @@ select.cf-input{background:var(--color-surface)}.cf-actions{display:flex;gap:8px
 /* top bar */
 .topbar-icon{background:none;border:none;font-size:20px;cursor:pointer;padding:0 8px;color:var(--color-text-secondary);position:relative;display:flex;align-items:center;justify-content:center;min-width:var(--tap-target-min)}
 .topbar-icon:hover{color:var(--color-action-primary);opacity:1}
-.topbar-msg .msg-badge{position:absolute;top:4px;right:2px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--color-text-danger);color:var(--color-text-on-fill);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;line-height:1}
+.topbar-msg .msg-badge{position:absolute;top:4px;right:2px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--color-fill-danger);color:var(--color-text-on-fill-danger);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;line-height:1}
 
 /* bottom nav */
 .hub-btn-sos .hub-btn-icon{color:var(--color-text-danger)}
@@ -6367,7 +6378,7 @@ select.cf-input{background:var(--color-surface)}.cf-actions{display:flex;gap:8px
 .refusal-critical-title{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--color-text-danger);margin-bottom:8px}
 
 /* sos */
-.sos-call{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:22px;font-size:22px;font-weight:700;border-radius:var(--radius-card);background:var(--color-text-danger);color:var(--color-text-on-fill);text-decoration:none;margin-bottom:16px;min-height:var(--tap-target-min)}
+.sos-call{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:22px;font-size:22px;font-weight:700;border-radius:var(--radius-card);background:var(--color-fill-danger);color:var(--color-text-on-fill-danger);text-decoration:none;margin-bottom:16px;min-height:var(--tap-target-min)}
 .sos-script{background:var(--color-surface);border:2px solid var(--color-border-danger);border-radius:var(--radius-card);padding:16px 18px;margin-bottom:20px}
 .sos-script-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--color-text-danger);margin-bottom:10px}
 .sos-script-list{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px}
