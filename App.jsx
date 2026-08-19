@@ -103,7 +103,7 @@ const SELF_REPORT_TYPES = [
 ];
 const MOOD_OPTIONS = ["😊 Good","🙂 Okay","😐 Fair","😟 Not great","😢 Bad"];
 const PAIN_LEVELS = ["0 — None","1–2 — Mild","3–4 — Moderate","5–6 — Moderate-Severe","7–8 — Severe","9–10 — Worst possible"];
-const EMPTY_CONTACT = { name:"",role:"",org:"",phone:"",email:"",category:"medical",notes:[],customFields:[] };
+const EMPTY_CONTACT = { name:"",role:"",org:"",phone:"",email:"",category:"medical",photo:"",notes:[],customFields:[] };
 const DAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
@@ -1272,6 +1272,7 @@ function sanitizeContact(c) {
     phone: sanitizeText(c.phone || "", 50).replace(/[^\d+\-() .ext]/gi, ""),
     email: sanitizeText(c.email || "", 200),
     category: ["medical","care","legal","financial","family","other"].includes(c.category) ? c.category : "other",
+    photo: (typeof c.photo==="string" && (c.photo.startsWith("blobref:") || (c.photo.startsWith("data:image/") && c.photo.length<3000000))) ? c.photo : "",
     customFields: Array.isArray(c.customFields) ? c.customFields.slice(0, 20).map(f => ({
       label: sanitizeText(f.label || "", 100),
       value: sanitizeText(f.value || "", 500)
@@ -1546,7 +1547,7 @@ function fmtDate(y,m,d) { return `${y}-${String(m+1).padStart(2,"0")}-${String(d
    makes React unmount and remount it — wiping the local useState that holds
    whatever the user has typed or attached. Keep them out here. */
 
-const ContactFormUI=({contactForm,setContactForm,saveContact})=>{const[f,setF]=useState({...contactForm.contact,customFields:[...(contactForm.contact.customFields||[])]});const[nfl,setNfl]=useState("");const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
+const ContactFormUI=({contactForm,setContactForm,saveContact,contactPhotoRef,handlePhotoCapture})=>{const[f,setF]=useState({...contactForm.contact,customFields:[...(contactForm.contact.customFields||[])]});const[nfl,setNfl]=useState("");const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
   <div className="cf-overlay" onClick={()=>setContactForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()}>
     <h2 className="cf-title">{contactForm.mode==="edit"?"Edit Contact":"Add Contact"}</h2>
     <div className="cf-grid">
@@ -1557,6 +1558,13 @@ const ContactFormUI=({contactForm,setContactForm,saveContact})=>{const[f,setF]=u
       <label className="cf-label">Phone<input value={f.phone} onChange={e=>upd("phone",e.target.value)} className="cf-input" type="tel"/></label>
       <label className="cf-label">Email<input value={f.email} onChange={e=>upd("email",e.target.value)} className="cf-input" type="email"/></label>
     </div>
+    <label className="cf-label" style={{marginTop:10}}>Photo <span className="cf-optional">helps everyone recognise who to call</span></label>
+    <div className="photo-attach-row">
+      <button onClick={()=>contactPhotoRef.current&&contactPhotoRef.current.click()} type="button" className="edit-btn" style={{marginTop:0,fontSize:12}}>📷 {f.photo?"Replace photo":"Add photo"}</button>
+      <input ref={contactPhotoRef} type="file" accept="image/*" style={{display:"none"}} onChange={e=>handlePhotoCapture(e,(updater)=>{const arr=typeof updater==="function"?updater(f.photo?[f.photo]:[]):updater;upd("photo",(arr&&arr[arr.length-1])||"")})}/>
+      {f.photo&&<button onClick={()=>upd("photo","")} type="button" className="cancel-btn" style={{fontSize:11,padding:"4px 10px"}}>Remove</button>}
+    </div>
+    {f.photo&&<div className="photo-preview-row" style={{marginBottom:8}}><div className="photo-thumb"><img src={f.photo} alt=""/></div></div>}
     {f.customFields.length>0&&<div className="cf-custom-section"><h4 className="cf-custom-title">Custom Fields</h4>
       {f.customFields.map((cf,i)=>(<div key={i} className="cf-custom-row"><input value={cf.label} onChange={e=>{const c=[...f.customFields];c[i]={...c[i],label:e.target.value};setF(p=>({...p,customFields:c}))}} className="cf-input cf-custom-label" placeholder="Field name"/><input value={cf.value} onChange={e=>{const c=[...f.customFields];c[i]={...c[i],value:e.target.value};setF(p=>({...p,customFields:c}))}} className="cf-input cf-custom-value" placeholder="Value"/><button onClick={()=>setF(p=>({...p,customFields:p.customFields.filter((_,j)=>j!==i)}))} className="remove-sub">×</button></div>))}
     </div>}
@@ -1871,8 +1879,12 @@ export default function App() {
   };
 
   const switchState=(newCode)=>{const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{const existing=data.domains[d.key];if(existing&&existing.goals){newDomains[d.key]={...existing,goals:d.goals.map((g,gi)=>{const eg=existing.goals[gi];if(eg)return{...eg,subs:g.subs.map((s,si)=>eg.subs[si]||{done:false,lastDone:null,typeOverride:null}),titleOverride:eg.titleOverride,subOverrides:eg.subOverrides,customSubs:eg.customSubs||[]};return{done:false,subs:g.subs.map(()=>({done:false,lastDone:null,typeOverride:null})),customSubs:[],titleOverride:null,subOverrides:{}}})}}else{newDomains[d.key]={status:"not-started",notes:"",lastUpdated:null,goals:d.goals.map(g=>({done:false,subs:g.subs.map(()=>({done:false,lastDone:null,typeOverride:null})),customSubs:[],titleOverride:null,subOverrides:{}}))}}});setData(p=>({...p,domains:newDomains,settings:{...p.settings,stateCode:newCode}}));flash(newCode?"Switched to "+(AVAILABLE_STATES.find(s=>s.code===newCode)||{}).name+" mode.":"Switched to Generic mode.")};
-  const [view,setView]=useState("today-hub");
+  const [view,setView]=useState("today");
   const [currentHub,setCurrentHub]=useState("today");
+  const [careMenuOpen,setCareMenuOpen]=useState(false);
+  const [medsTab,setMedsTab]=useState("schedule"); // schedule | cabinet
+  const [logTab,setLogTab]=useState("mine");       // mine | patient | patterns
+  const [refusal,setRefusal]=useState(null);       // {medId, slot, date} — Pause & Pivot
   const [navStack,setNavStack]=useState([]);
   const [expanded,setExpanded]=useState({});
   const [editNotes,setEditNotes]=useState(false); const [notesDraft,setNotesDraft]=useState("");
@@ -1935,6 +1947,7 @@ export default function App() {
   const incidentPhotoRef=useRef(null);
   const [ecardForm,setEcardForm]=useState(null);
   const ecardPhotoRef=useRef(null);
+  const contactPhotoRef=useRef(null);
   const [incidentFilter,setIncidentFilter]=useState("all");
   // Expenses
   const [expenseForm,setExpenseForm]=useState(null);
@@ -2064,6 +2077,7 @@ export default function App() {
   // Text size — Standard is the 18px root; Large/Larger scale the same root so
   // every rem-based size and the tap-target floor grow together. Missing setting
   // reads as "standard", so pre-v3 payloads render exactly as they did before.
+  useEffect(()=>{ if(view==="messages"&&authed) markMessagesRead(); },[view,authed,(data.messages||[]).length]);
   useEffect(()=>{
     const pct=UI_SCALE_PCT[(data.settings&&data.settings.textSize)||"standard"]||100;
     try{document.documentElement.style.setProperty("--ui-scale-pct",String(pct))}catch{}
@@ -2459,7 +2473,11 @@ export default function App() {
   const changeSubType=(dk,gi,si,newType)=>{setData(p=>{const goals=[...p.domains[dk].goals];const subs=[...goals[gi].subs];subs[si]={...subs[si],typeOverride:newType};goals[gi]={...goals[gi],subs};return{...p,domains:{...p.domains,[dk]:{...p.domains[dk],goals}}}})};
 
   /* ── contacts ── */
-  const saveContact=(c,id)=>{setData(p=>{let contacts;if(id)contacts=p.contacts.map(x=>x.id===id?{...x,...c}:x);else contacts=[...p.contacts,{...c,id:nextId(),notes:c.notes||[],customFields:c.customFields||[]}];return addLog({...p,contacts},"contacts",id?`Edited ${c.name}`:`Added ${c.name}`)});setContactFilter("all");setContactForm(null)};
+  const saveContact=async(c,id)=>{
+    // Photos follow the same path as incident photos: written to the encrypted
+    // blob store and stored as a blobref, never inline in the main payload.
+    if(c.photo&&c.photo.startsWith("data:")){const out=await externalizeMedia([c.photo]);c={...c,photo:out[0]||""}}
+    setData(p=>{let contacts;if(id)contacts=p.contacts.map(x=>x.id===id?{...x,...c}:x);else contacts=[...p.contacts,{...c,id:nextId(),notes:c.notes||[],customFields:c.customFields||[]}];return addLog({...p,contacts},"contacts",id?`Edited ${c.name}`:`Added ${c.name}`)});setContactFilter("all");setContactForm(null)};
   const deleteContact=(id)=>{if(!can("add-contact"))return;hipaaAudit("delete","Contact deleted: "+id,"contacts");const c=data.contacts.find(x=>x.id===id);setData(p=>addLog({...p,contacts:p.contacts.filter(x=>x.id!==id)},"contacts",`Removed ${(c&&c.name)}`));setContactDetail(null)};
   const addContactNote=(id,text)=>{if(!text.trim())return;setData(p=>({...p,contacts:p.contacts.map(c=>c.id===id?{...c,notes:[{text:text.trim(),date:new Date().toLocaleString()},...(c.notes||[])]}:c)}));setContactNoteText("")};
   const deleteContactNote=(cid,ni)=>{setData(p=>({...p,contacts:p.contacts.map(c=>c.id===cid?{...c,notes:c.notes.filter((_,i)=>i!==ni)}:c)}))};
@@ -2718,6 +2736,26 @@ export default function App() {
   /* ── med admin ── */
   // Missing key reads as all-empty, so pre-v3 payloads render the card exactly
   // as they did before rather than throwing on a field that was never stored.
+  /* Unread messages. Tracked as a device-local set of read ids rather than a
+     high-water-mark id: ids are minted per device (Date.now()-seeded), so they
+     interleave once messages sync and a "last read id" comparison would mark
+     other devices' messages read by accident. Pruned to ids still present, so
+     the list stays bounded. */
+  const getUnreadMessages=()=>{
+    const did=data.settings&&data.settings.deviceId;
+    const read=(data.settings&&data.settings.readMessageIds)||[];
+    return (data.messages||[]).filter(m=>m.deviceId!==did&&!read.includes(m.id));
+  };
+  const markMessagesRead=()=>{
+    const ids=(data.messages||[]).map(m=>m.id);
+    setData(p=>{
+      const prev=(p.settings&&p.settings.readMessageIds)||[];
+      const next=Array.from(new Set([...prev,...ids])).filter(id=>ids.includes(id));
+      if(next.length===prev.length&&next.every((v,i)=>v===prev[i]))return p; // no-op, don't dirty the vault
+      return {...p,settings:{...p.settings,readMessageIds:next}};
+    });
+  };
+
   const getEmergencyInfo=()=>({...EMPTY_EMERGENCY_INFO,...(data.emergencyInfo||{})});
   const saveEmergencyInfo=async(info)=>{
     const photos=await externalizeMedia([info.clientPhoto].filter(Boolean));
@@ -2732,6 +2770,31 @@ export default function App() {
     return addLog({...p,medSchedule:ms},"medadmin",`Added ${med.name} to schedule`)});setMedForm(null)};
   const editMedInSchedule=(med,id)=>{setData(p=>{const ms={...(p.medSchedule||{medications:[],log:[]})};ms.medications=ms.medications.map(m=>m.id===id?{...m,...med}:m);return{...p,medSchedule:ms}});setMedForm(null)};
   const removeMedFromSchedule=(id)=>{if(!can("med-admin"))return;setData(p=>{const ms={...(p.medSchedule||{medications:[],log:[]})};ms.medications=ms.medications.filter(m=>m.id!==id);ms.log=ms.log.filter(l=>l.medId!==id);return addLog({...p,medSchedule:ms},"medadmin","Removed medication from schedule")})};
+  /* Refusal protocol. A refusal isn't a data-entry event, it's a moment where
+     the caregiver needs to stop pushing — so record the reason, then branch:
+     for a critical medication surface the prescriber's missed-dose instructions
+     rather than filing it away silently. */
+  const REFUSAL_REASONS=[
+    {key:"upset",label:"Too upset / agitated",icon:"😣"},
+    {key:"suspicious",label:"Doesn't trust it",icon:"🤨"},
+    {key:"swallow",label:"Trouble swallowing",icon:"😖"},
+    {key:"asleep",label:"Asleep / can't rouse",icon:"😴"},
+    {key:"nausea",label:"Nausea or upset stomach",icon:"🤢"},
+    {key:"other",label:"Something else",icon:"…"},
+  ];
+  const recordRefusal=(medId,slot,date,reason)=>{
+    const logKey=`${medId}|${slot}|${date}`;
+    setData(p=>{
+      const ms={...(p.medSchedule||{medications:[],log:[]})};
+      const existing=(ms.log||[]).find(l=>l.key===logKey);
+      if(existing)ms.log=ms.log.map(l=>l.key===logKey?{...l,status:"refused",refusalReason:reason}:l);
+      else ms.log=[...(ms.log||[]),{key:logKey,medId,slot,date,status:"refused",refusalReason:reason,timestamp:new Date().toLocaleString()}];
+      const med=(ms.medications||[]).find(m=>m.id===medId);
+      return addLog({...p,medSchedule:ms},"medications",`Refused: ${(med&&med.name)||"medication"} (${slot})`);
+    });
+    hipaaAudit("update","Recorded medication refusal","medications");
+  };
+
   const toggleMedAdmin=(medId,slot,date)=>{
     setData(p=>{
       const ms={...(p.medSchedule||{medications:[],log:[]})};
@@ -3118,13 +3181,13 @@ export default function App() {
         if(!logged){
           if(curHour>=range.end){
             // Past this window — missed
-            reminders.push({type:"med-missed",priority:1,icon:"❌",title:med.name+" — "+slot+" missed",sub:"Was due by "+range.end+":00",action:"medadmin",hub:"records"});
+            reminders.push({type:"med-missed",priority:1,icon:"❌",title:med.name+" — "+slot+" missed",sub:"Was due by "+range.end+":00",action:"meds",hub:"meds"});
           } else if(curHour>=range.start){
             // Current window — due now
-            reminders.push({type:"med-due",priority:2,icon:"💊",title:med.name+" — due now",sub:slot+" window ("+range.start+":00–"+range.end+":00)",action:"medadmin",hub:"records"});
+            reminders.push({type:"med-due",priority:2,icon:"💊",title:med.name+" — due now",sub:slot+" window ("+range.start+":00–"+range.end+":00)",action:"meds",hub:"meds"});
           } else if(nextSlot&&nextSlot.name===slot&&nextSlot.inMinutes<=60){
             // Upcoming within the hour
-            reminders.push({type:"med-upcoming",priority:3,icon:"⏰",title:med.name+" — "+slot+" in ~"+nextSlot.inMinutes+"min",sub:"Coming up soon",action:"medadmin",hub:"records"});
+            reminders.push({type:"med-upcoming",priority:3,icon:"⏰",title:med.name+" — "+slot+" in ~"+nextSlot.inMinutes+"min",sub:"Coming up soon",action:"meds",hub:"meds"});
           }
         }
       });
@@ -3160,7 +3223,7 @@ export default function App() {
       const hoursUntil=Math.round((apptDate.getTime()-now.getTime())/3600000);
       if(hoursUntil>0&&hoursUntil<=48){
         const timeLabel=hoursUntil<=2?"in "+hoursUntil+"h":hoursUntil<=24?"today":"tomorrow";
-        reminders.push({type:"appt",priority:hoursUntil<=4?2:3,icon:"📅",title:appt.description||"Appointment",sub:timeLabel+(appt.location?" at "+appt.location:""),action:"calendar",hub:"records"});
+        reminders.push({type:"appt",priority:hoursUntil<=4?2:3,icon:"📅",title:appt.description||"Appointment",sub:timeLabel+(appt.location?" at "+appt.location:""),action:"calendar",hub:"today"});
       }
     });
 
@@ -3279,29 +3342,35 @@ export default function App() {
 
   /* ── nav ── */
   const toggle=(gi)=>setExpanded(p=>({...p,[gi]:!p[gi]}));
-  const PHI_VIEWS={"incidents":"incidents","medadmin":"medications","contacts":"contacts","documents":"documents","selfreport":"self_reports","poa-decisions":"poa_decisions","capacity":"capacity","physical":"domains","cognitive":"domains","wellness":"domains","legal":"domains","financial":"domains","emergency-card":"emergency_info","binder":"care_plan","handoff":"shift_data"};
-  const nav=(v)=>{if(PHI_VIEWS[v]&&authed)hipaaAudit("view","Accessed "+v,PHI_VIEWS[v]);setNavStack(p=>[...p,{view,hub:currentHub}]);setView(v);setExpanded({});setEditNotes(false);setAddSubFor(null);cancelEdit();setContactForm(null);setContactDetail(null);setEditingDomain(null);setApptForm(null);setCalSelected(null);setDocResult(null);setDocMeds([]);setDocLabs([]);setIncidentForm(null);setExpenseForm(null);setMedForm(null);setViewingDoc(null)};
-  const navHub=(hub)=>{setCurrentHub(hub);setView(hub+"-hub");setNavStack([]);setExpanded({})};
-  const navBack=()=>{if(navStack.length>0){const prev=navStack[navStack.length-1];setNavStack(p=>p.slice(0,-1));setView(prev.view);setCurrentHub(prev.hub)}else{navHub(currentHub)}};
-  const isHubView=view.endsWith("-hub");
-  const getViewTitle=()=>{const t={"today-hub":"Today","care-hub":"Care plan","records-hub":"Records","team-hub":"Team",physical:"Physical health",cognitive:"Cognitive health",wellness:"Wellness",legal:"Legal safety",financial:"Financial security",incidents:"Incidents",medadmin:"Medication admin",expenses:"Expenses",calendar:"Calendar",contacts:"Contacts",documents:"Documents",triggers:"Escalation triggers",tracking:"Tracking",visit:"Visit prep",emergency:"Emergency plans",postdeath:"After death",messages:"Messages",sync:"Sync",selfreport:"Self-report",settings:"Settings",help:"Help",overview:"Overview",handoff:"Shift Handoff","emergency-card":"Emergency Card","caregiver-wellness":"Caregiver Check-in","incident-patterns":"Incident Patterns",capacity:"Capacity Observations",binder:"Care Plan Binder","poa-decisions":"POA Decisions",schedule:"Care Schedule",availability:"My Availability"};return t[view]||"Care Guardian"};
-  const getBreadcrumb=()=>{const h={today:"Today",care:"Care plan",records:"Records",team:"Team"};if(isHubView)return null;return h[currentHub]||null};
+  const PHI_VIEWS={"meds":"medications","log":"incidents","sos":"emergency_info","cabinet":"medications","care-domains":"domains","incidents":"incidents","medadmin":"medications","contacts":"contacts","documents":"documents","selfreport":"self_reports","poa-decisions":"poa_decisions","capacity":"capacity","physical":"domains","cognitive":"domains","wellness":"domains","legal":"domains","financial":"domains","emergency-card":"emergency_info","binder":"care_plan","handoff":"shift_data"};
+  // PHI access is audited on every route into a PHI view — including the bottom
+  // nav, which reaches the Meds/Log/SOS roots without going through nav().
+  const auditView=(v)=>{if(PHI_VIEWS[v]&&authed)hipaaAudit("view","Accessed "+v,PHI_VIEWS[v])};
+  // Bottom nav roots. Each is a destination in its own right, not a container
+  // of links — the four hubs it replaces cost a tap before anything happened.
+  const NAV_ROOTS=["today","meds","log","sos"];
+  const navRoot=(root)=>{auditView(root);setCurrentHub(root);setView(root);setNavStack([]);setExpanded({});setCareMenuOpen(false)};
+  const nav=(v)=>{if(NAV_ROOTS.includes(v)){navRoot(v);return}auditView(v);setNavStack(p=>[...p,{view,hub:currentHub}]);setView(v);setExpanded({});setEditNotes(false);setAddSubFor(null);cancelEdit();setContactForm(null);setContactDetail(null);setEditingDomain(null);setApptForm(null);setCalSelected(null);setDocResult(null);setDocMeds([]);setDocLabs([]);setIncidentForm(null);setExpenseForm(null);setMedForm(null);setViewingDoc(null)};
+  const navBack=()=>{if(navStack.length>0){const prev=navStack[navStack.length-1];setNavStack(p=>p.slice(0,-1));setView(prev.view);setCurrentHub(prev.hub)}else{navRoot(NAV_ROOTS.includes(currentHub)?currentHub:"today")}};
+  const isHubView=NAV_ROOTS.includes(view);
+  const getViewTitle=()=>{const t={today:"Today",meds:"Medications",log:"Log",sos:"SOS",cabinet:"Medicine Cabinet","care-domains":"Care domains",physical:"Physical health",cognitive:"Cognitive health",wellness:"Wellness",legal:"Legal safety",financial:"Financial security",incidents:"Incidents",medadmin:"Medication admin",expenses:"Expenses",calendar:"Calendar",contacts:"Contacts",documents:"Documents",triggers:"Escalation triggers",tracking:"Tracking",visit:"Visit prep",emergency:"Emergency plans",postdeath:"After death",messages:"Messages",sync:"Sync",selfreport:"Self-report",settings:"Settings",help:"Help",overview:"Overview",handoff:"Shift Handoff","emergency-card":"Emergency Card","caregiver-wellness":"Caregiver Check-in","incident-patterns":"Incident Patterns",capacity:"Capacity Observations",binder:"Care Plan Binder","poa-decisions":"POA Decisions",schedule:"Care Schedule",availability:"My Availability"};return t[view]||"Care Guardian"};
+  const getBreadcrumb=()=>{const h={today:"Today",meds:"Medications",log:"Log",sos:"SOS",care:"Care Hub"};if(isHubView)return null;return h[currentHub]||null};
 
   // Universal search
   const SEARCH_FEATURES=[
-    {label:"Medications",hub:"records",view:"medadmin",icon:"💊",keywords:"medication med admin drug pill prescription"},
-    {label:"Incidents",hub:"records",view:"incidents",icon:"⚠",keywords:"incident fall behavior wandering medication error accident"},
-    {label:"Incident Patterns",hub:"records",view:"incident-patterns",icon:"📊",keywords:"pattern trend chart graph analysis time"},
-    {label:"Expenses",hub:"records",view:"expenses",icon:"$",keywords:"expense cost money payment receipt"},
-    {label:"Documents",hub:"records",view:"documents",icon:"📄",keywords:"document scan pdf lab result upload library"},
-    {label:"Contacts",hub:"records",view:"contacts",icon:"☷",keywords:"contact phone email doctor nurse lawyer provider"},
-    {label:"Calendar",hub:"records",view:"calendar",icon:"▦",keywords:"calendar appointment schedule date"},
-    {label:"Care Schedule",hub:"records",view:"schedule",icon:"🗓",keywords:"schedule shift open swap claim visit clock availability roster assignment"},
-    {label:"Messages",hub:"team",view:"messages",icon:"✉",keywords:"message chat text communication team"},
-    {label:"Self-Reports",hub:"team",view:"selfreport",icon:"🗣",keywords:"self report mood pain sleep voice concern"},
-    {label:"Sync",hub:"team",view:"sync",icon:"📡",keywords:"sync backup export import cloud server team invite"},
-    {label:"Settings",hub:"team",view:"settings",icon:"⚙",keywords:"settings passcode password state region device"},
-    {label:"Help",hub:"team",view:"help",icon:"?",keywords:"help guide how to feature"},
+    {label:"Medications",hub:"meds",view:"meds",icon:"💊",keywords:"medication med admin drug pill prescription"},
+    {label:"Incidents",hub:"log",view:"log",icon:"⚠",keywords:"incident fall behavior wandering medication error accident"},
+    {label:"Incident Patterns",hub:"log",view:"incident-patterns",icon:"📊",keywords:"pattern trend chart graph analysis time"},
+    {label:"Expenses",hub:"care",view:"expenses",icon:"$",keywords:"expense cost money payment receipt"},
+    {label:"Documents",hub:"care",view:"documents",icon:"📄",keywords:"document scan pdf lab result upload library"},
+    {label:"Contacts",hub:"sos",view:"contacts",icon:"☷",keywords:"contact phone email doctor nurse lawyer provider"},
+    {label:"Calendar",hub:"today",view:"calendar",icon:"▦",keywords:"calendar appointment schedule date"},
+    {label:"Care Schedule",hub:"care",view:"schedule",icon:"🗓",keywords:"schedule shift open swap claim visit clock availability roster assignment"},
+    {label:"Messages",hub:"today",view:"messages",icon:"✉",keywords:"message chat text communication team"},
+    {label:"Self-Reports",hub:"log",view:"selfreport",icon:"🗣",keywords:"self report mood pain sleep voice concern"},
+    {label:"Sync",hub:"care",view:"sync",icon:"📡",keywords:"sync backup export import cloud server team invite"},
+    {label:"Settings",hub:"care",view:"settings",icon:"⚙",keywords:"settings passcode password state region device"},
+    {label:"Help",hub:"care",view:"help",icon:"?",keywords:"help guide how to feature"},
     {label:"Physical Health",hub:"care",view:"physical",icon:"♥",keywords:"physical health mobility fall nutrition dental vision sleep"},
     {label:"Cognitive Health",hub:"care",view:"cognitive",icon:"◐",keywords:"cognitive memory assessment routine behavior orientation"},
     {label:"Wellness",hub:"care",view:"wellness",icon:"✿",keywords:"wellness emotional social activity engagement respite"},
@@ -3310,12 +3379,12 @@ export default function App() {
     {label:"Escalation Triggers",hub:"care",view:"triggers",icon:"📊",keywords:"trigger escalation transition warning condition monitor"},
     {label:"Tracking",hub:"care",view:"tracking",icon:"📈",keywords:"tracking longitudinal snapshot history trend progress"},
     {label:"Visit Prep",hub:"care",view:"visit",icon:"📋",keywords:"visit prep doctor appointment provider summary"},
-    {label:"Emergency Plans",hub:"care",view:"emergency",icon:"🚨",keywords:"emergency plan fall choking wandering agitation"},
+    {label:"Emergency Plans",hub:"sos",view:"emergency",icon:"🚨",keywords:"emergency plan fall choking wandering agitation"},
     {label:"POA Decisions",hub:"care",view:"poa-decisions",icon:"⚖",keywords:"poa power attorney decision medical financial legal guardian agent fiduciary"},
     {label:"Capacity Observations",hub:"care",view:"capacity",icon:"📝",keywords:"capacity observation ability assessment functional decline"},
     {label:"Care Plan Binder",hub:"care",view:"binder",icon:"📖",keywords:"binder care plan printable comprehensive document"},
     {label:"Shift Handoff",hub:"today",view:"handoff",icon:"📋",keywords:"handoff shift change summary incoming outgoing"},
-    {label:"Emergency Card",hub:"today",view:"emergency-card",icon:"🆔",keywords:"emergency card wallet id printable diagnoses medications"},
+    {label:"Emergency Card",hub:"sos",view:"emergency-card",icon:"🆔",keywords:"emergency card wallet id printable diagnoses medications"},
     {label:"Caregiver Check-in",hub:"today",view:"caregiver-wellness",icon:"💛",keywords:"caregiver wellness burnout stress sleep respite self care"},
   ];
 
@@ -3331,32 +3400,32 @@ export default function App() {
     // Search incidents
     (data.incidents||[]).forEach(i=>{
       if((i.description||"").toLowerCase().includes(ql)||(i.type||"").toLowerCase().includes(ql)||(i.response||"").toLowerCase().includes(ql))
-        results.data.push({type:"incident",icon:"⚠",title:i.type+" — "+i.severity,sub:(i.description||"").slice(0,80),date:i.date,hub:"records",view:"incidents",id:i.id});
+        results.data.push({type:"incident",icon:"⚠",title:i.type+" — "+i.severity,sub:(i.description||"").slice(0,80),date:i.date,hub:"log",view:"log",id:i.id});
     });
 
     // Search contacts
     (data.contacts||[]).forEach(c=>{
       if((c.name||"").toLowerCase().includes(ql)||(c.role||"").toLowerCase().includes(ql)||(c.organization||"").toLowerCase().includes(ql))
-        results.data.push({type:"contact",icon:"☷",title:c.name,sub:c.role||c.category||"",hub:"records",view:"contacts",id:c.id});
+        results.data.push({type:"contact",icon:"☷",title:c.name,sub:c.role||c.category||"",hub:"sos",view:"contacts",id:c.id});
     });
 
     // Search documents
     (data.savedDocs||[]).forEach(d=>{
       const name=(d.fileName||d.category||"Document");
       if(name.toLowerCase().includes(ql)||(d.rawText||"").toLowerCase().includes(ql))
-        results.data.push({type:"document",icon:"📄",title:name,sub:d.category||"",hub:"records",view:"documents",id:d.id});
+        results.data.push({type:"document",icon:"📄",title:name,sub:d.category||"",hub:"care",view:"documents",id:d.id});
     });
 
     // Search medications
     getMedSchedule(true).medications.forEach(m=>{
       if((m.name||"").toLowerCase().includes(ql)||(m.dosage||"").toLowerCase().includes(ql))
-        results.data.push({type:"medication",icon:"💊",title:m.name+(m.dosage?" "+m.dosage:""),sub:m.discontinued?"Discontinued":"Active",hub:"records",view:"medadmin",id:m.id});
+        results.data.push({type:"medication",icon:"💊",title:m.name+(m.dosage?" "+m.dosage:""),sub:m.discontinued?"Discontinued":"Active",hub:"meds",view:"meds",id:m.id});
     });
 
     // Search messages
     (data.messages||[]).slice(0,50).forEach(m=>{
       if((m.text||"").toLowerCase().includes(ql)||(m.from||"").toLowerCase().includes(ql))
-        results.data.push({type:"message",icon:"✉",title:m.from||"",sub:(m.text||"").slice(0,80),date:m.timestamp,hub:"team",view:"messages",id:m.id});
+        results.data.push({type:"message",icon:"✉",title:m.from||"",sub:(m.text||"").slice(0,80),date:m.timestamp,hub:"today",view:"messages",id:m.id});
     });
 
     // Search POA decisions
@@ -3368,19 +3437,19 @@ export default function App() {
     // Search expenses
     (data.expenses||[]).forEach(e=>{
       if((e.description||"").toLowerCase().includes(ql)||(e.payee||"").toLowerCase().includes(ql)||(e.category||"").toLowerCase().includes(ql))
-        results.data.push({type:"expense",icon:"$",title:e.description||"Expense",sub:"$"+(e.amount||0)+" — "+e.date,hub:"records",view:"expenses",id:e.id});
+        results.data.push({type:"expense",icon:"$",title:e.description||"Expense",sub:"$"+(e.amount||0)+" — "+e.date,hub:"care",view:"expenses",id:e.id});
     });
 
     // Search self-reports
     (data.selfReports||[]).slice(0,30).forEach(r=>{
       if((r.text||"").toLowerCase().includes(ql)||(r.mood||"").toLowerCase().includes(ql))
-        results.data.push({type:"self-report",icon:"🗣",title:(r.mood||r.type||"Report"),sub:(r.text||"").slice(0,80),date:r.timestamp,hub:"team",view:"selfreport",id:r.id});
+        results.data.push({type:"self-report",icon:"🗣",title:(r.mood||r.type||"Report"),sub:(r.text||"").slice(0,80),date:r.timestamp,hub:"log",view:"selfreport",id:r.id});
     });
 
     return results;
   };
   const persistAuditTipToVault=()=>{ const t=auditTipRef.current; if(t&&t.seq){ setData(p=>((p.settings&&p.settings.auditTip&&p.settings.auditTip.seq>=t.seq)?p:{...p,settings:{...p.settings,auditTip:{seq:t.seq,hash:t.hash}}})); } };
-  const lock=()=>{persistAuditTipToVault();if(rKeyRef.current&&!clientScopedRef.current){try{writeProjection(data,rKeyRef.current)}catch{}}hipaaAudit("logout","Session locked","");dekRef.current=null;auditKeyRef.current=null;rKeyRef.current=null;clientScopedRef.current=false;_scopedWriteLock=false;setClientScoped(false);_mediaCache.clear();setAuditEntries([]);setSyncPasscode("");setAuthed(false);setAuthMode(null);setPc("");navHub("today")};
+  const lock=()=>{persistAuditTipToVault();if(rKeyRef.current&&!clientScopedRef.current){try{writeProjection(data,rKeyRef.current)}catch{}}hipaaAudit("logout","Session locked","");dekRef.current=null;auditKeyRef.current=null;rKeyRef.current=null;clientScopedRef.current=false;_scopedWriteLock=false;setClientScoped(false);_mediaCache.clear();setAuditEntries([]);setSyncPasscode("");setAuthed(false);setAuthMode(null);setPc("");navRoot("today")};
 
   // Sync reminder & forced lock
   const SYNC_WARN_DAYS=7;const SYNC_LOCK_DAYS=14;const SYNC_LOCK_ACTIONS=50;
@@ -3821,7 +3890,7 @@ export default function App() {
       <div style={{fontSize:38,marginBottom:10}}>📡</div>
       <h1 className="auth-title">Sync Required</h1>
       <p className="auth-sub">{"Your data hasn\'t been synced in over "+getSyncAge().days+" days, or you have "+getSyncAge().actions+" unsynced changes. Please sync now to protect your data and keep your team up to date."}</p>
-      <button onClick={()=>{setSyncLocked(false);navHub("team");setTimeout(()=>nav("sync"),100)}} className="auth-btn">Open Sync</button>
+      <button onClick={()=>{setSyncLocked(false);navRoot("today");setTimeout(()=>{setCurrentHub("care");nav("sync")},100)}} className="auth-btn">Open Sync</button>
       <p className="auth-footer">Your data exists only on this device until synced.</p>
     </div></div>
   </>);
@@ -3890,7 +3959,7 @@ export default function App() {
     {storageAtRisk&&(<div className="nudge-banner nudge-risk">
       <span className="nudge-icon">⚠️</span>
       <div className="nudge-body"><strong>This browser hasn't granted durable storage.</strong> Your records could be cleared if the device runs low on space. Add the app to your home screen and keep a recent backup so nothing is lost.{backupStatus==="active"?" Your continuous backup is protecting you in the meantime.":""}</div>
-      <button className="nudge-act" onClick={()=>{setCurrentHub("team");nav("settings")}}>Back up</button>
+      <button className="nudge-act" onClick={()=>{setCurrentHub("care");nav("settings")}}>Back up</button>
       <button className="nudge-x" onClick={()=>setStorageAtRisk(false)}>×</button>
     </div>)}
     {/* Truthful durability indicator — "saved" only after the edit's append has committed */}
@@ -3910,7 +3979,7 @@ export default function App() {
     </div>):(<div className="nudge-banner nudge-backup">
       <span className="nudge-icon">💾</span>
       <div className="nudge-body"><strong>Time to back up.</strong> {(data.settings&&data.settings.lastBackupAt)?"It's been a while since your last backup.":"You haven't made a backup yet."} A downloaded backup file survives even if your browser clears its storage — it's how you recover everything.</div>
-      <button className="nudge-act" onClick={()=>{setShowBackupReminder(false);setCurrentHub("team");nav("settings")}}>Back up now</button>
+      <button className="nudge-act" onClick={()=>{setShowBackupReminder(false);setCurrentHub("care");nav("settings")}}>Back up now</button>
       <button className="nudge-x" onClick={()=>setShowBackupReminder(false)}>×</button>
     </div>))}
     {searchOpen&&(<div className="search-overlay" onClick={()=>setSearchOpen(false)}>
@@ -3930,9 +3999,44 @@ export default function App() {
           </div>):<div className="search-hint">Type at least 2 characters to search</div>})()}
       </div>
     </div>)}
-    {contactForm&&!isReadOnly&&<ContactFormUI key={"contact-"+(contactForm.id||contactForm.mode)} contactForm={contactForm} setContactForm={setContactForm} saveContact={saveContact}/>}
+    {contactForm&&!isReadOnly&&<ContactFormUI key={"contact-"+(contactForm.id||contactForm.mode)} contactForm={contactForm} setContactForm={setContactForm} saveContact={saveContact} contactPhotoRef={contactPhotoRef} handlePhotoCapture={handlePhotoCapture}/>}
     {apptForm&&!isReadOnly&&<ApptFormUI key={"appt-"+(apptForm.id||apptForm.mode)} apptForm={apptForm} setApptForm={setApptForm} saveAppt={saveAppt} deleteAppt={deleteAppt}/>}
     {editingDomain&&!isReadOnly&&<DomainEditModal key={"domain-"+editingDomain.key} editingDomain={editingDomain} setEditingDomain={setEditingDomain} setData={setData} addLog={addLog}/>}
+    {refusal&&(()=>{
+      const med=getMedSchedule().medications.find(m=>m.id===refusal.medId);
+      if(!med)return null;
+      return(<div className="cf-overlay" onClick={()=>setRefusal(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:460}}>
+        {!refusal.reason?(<>
+          <h2 className="cf-title">Pause &amp; pivot</h2>
+          <p className="refusal-lead">Don't push. Step back, change something small — the room, the cup, who's asking — and try again in a few minutes.</p>
+          <p className="refusal-med"><strong>{med.name}</strong>{med.dosage?" · "+med.dosage:""}{med.purpose?" · "+med.purpose:""}</p>
+          <label className="cf-label" style={{marginBottom:6}}>What got in the way?</label>
+          <div className="tap-select">{REFUSAL_REASONS.map(r=>(
+            <button key={r.key} type="button" onClick={()=>{recordRefusal(refusal.medId,refusal.slot,refusal.date,r.key);setRefusal({...refusal,reason:r.key})}} className="tap-opt">
+              <span className="tap-opt-icon">{r.icon}</span><span>{r.label}</span></button>))}
+          </div>
+          <div className="cf-actions" style={{marginTop:14}}><button onClick={()=>setRefusal(null)} className="cancel-btn">Cancel</button></div>
+        </>):med.isCritical?(<>
+          <h2 className="cf-title" style={{color:"var(--color-text-danger)"}}>⚠ This one is critical</h2>
+          <p className="refusal-lead">Logged. <strong>{med.name}</strong> is marked critical, so a missed dose needs a decision — not just a record.</p>
+          <div className="refusal-critical">
+            <div className="refusal-critical-title">Do this now</div>
+            <ol className="sos-script-list">
+              <li>Check the label or the prescriber's instructions for what to do about a missed dose.</li>
+              <li>Call the prescriber{med.prescriber?<> — <strong>{med.prescriber}</strong></>:""} or the pharmacy{med.pharmacyPhone?<> at <a href={"tel:"+med.pharmacyPhone} className="link-btn">{med.pharmacyPhone}</a></>:""}.</li>
+              <li>Don't double the next dose unless you're told to.</li>
+            </ol>
+          </div>
+          <div className="cf-actions" style={{marginTop:14}}>
+            {can("view-contacts")&&<button onClick={()=>{setRefusal(null);setCurrentHub("sos");nav("contacts")}} className="save-btn">Find the number</button>}
+            <button onClick={()=>setRefusal(null)} className="cancel-btn">Done</button>
+          </div>
+        </>):(<>
+          <h2 className="cf-title">Logged</h2>
+          <p className="refusal-lead">Noted, and it's not an emergency — <strong>{med.name}</strong> isn't marked critical. Try again at the next window.</p>
+          <div className="cf-actions" style={{marginTop:14}}><button onClick={()=>setRefusal(null)} className="save-btn">Done</button></div>
+        </>)}
+      </div></div>)})()}
     {ecardForm&&can("edit-emergency")&&<EcardFormUI info={ecardForm} setEcardForm={setEcardForm} saveEmergencyInfo={saveEmergencyInfo} ecardPhotoRef={ecardPhotoRef} handlePhotoCapture={handlePhotoCapture}/>}
     {incidentForm&&!isReadOnly&&<IncidentFormUI key={"incident-"+(incidentForm.id||incidentForm.mode)} incidentForm={incidentForm} setIncidentForm={setIncidentForm} saveIncident={saveIncident} deleteIncident={deleteIncident} incidentPhotoRef={incidentPhotoRef} handlePhotoCapture={handlePhotoCapture}/>}
     {expenseForm&&!isReadOnly&&<ExpenseFormUI key={"expense-"+(expenseForm.id||expenseForm.mode)} expenseForm={expenseForm} setExpenseForm={setExpenseForm} saveExpense={saveExpense} deleteExpense={deleteExpense}/>}
@@ -4007,25 +4111,31 @@ export default function App() {
     <div className="shell">
       <main className="main-area-v2">
         <header className="hub-topbar">
-          {!isHubView&&<button onClick={navBack} className="hub-back"><i style={{fontSize:18}}>←</i></button>}
+          <button onClick={()=>setCareMenuOpen(true)} className="topbar-icon" aria-label="Open the Care Hub menu" aria-expanded={careMenuOpen}>☰</button>
+          {!isHubView&&<button onClick={navBack} className="hub-back" aria-label="Back"><i style={{fontSize:18}}>←</i></button>}
           <div className="hub-topbar-text">
             <span className="hub-topbar-title">{getViewTitle()}</span>
             {getBreadcrumb()&&<span className="hub-topbar-crumb">{getBreadcrumb()}</span>}
           </div>
           {isReadOnly&&<span className="client-badge">View Only</span>}
-          <button onClick={()=>{setSearchOpen(true);setSearchQ("")}} className="search-btn">🔍</button>
-          <button onClick={lock} className="top-lock">🔒</button>
+          <button onClick={()=>{setSearchOpen(true);setSearchQ("")}} className="topbar-icon" aria-label="Search">🔍</button>
+          {(()=>{const unread=getUnreadMessages().length;return(
+            <button onClick={()=>{setCurrentHub("today");nav("messages")}} className="topbar-icon topbar-msg" aria-label={unread>0?`Messages, ${unread} unread`:"Messages"}>
+              💬{unread>0&&<span className="msg-badge">{unread>99?"99+":unread}</span>}
+            </button>)})()}
+          <button onClick={lock} className="topbar-icon" aria-label="Lock">🔒</button>
         </header>
 
         <div className="content-v2">
           {(settingsMsg||importResult)&&<div className="import-toast">{settingsMsg||importResult}</div>}
 
           {/* ═══ TODAY HUB ═══ */}
-          {view==="today-hub"&&(<>
+          {/* ═══ TODAY ═══ */}
+          {view==="today"&&(<>
             <div className="hub-welcome">🛡 Care Guardian{(data.settings&&data.settings.team)?" — "+(data.settings.team.name||""):""}</div>
             {clientDisplayName()&&<p className="hub-client">Caring for <strong>{clientDisplayName()}</strong></p>}
-            {getSyncWarning()==="warn"&&<div className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub("team");nav("sync")}}><div className="hub-card-icon" style={{background:"var(--color-background-warning)"}}><span style={{color:"var(--color-text-warning)"}}>📡</span></div><div className="hub-card-body"><div className="hub-card-title">Sync overdue <span className="pill pill-a">{getSyncAge().days}d ago</span></div><div className="hub-card-sub">Sync now to protect your data</div></div><span className="hub-card-arr">›</span></div>}
-            {(()=>{const d=daysSinceRespite();if(d===null||d<14)return null;return(<div className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub("team");nav("caregiver-wellness")}}><div className="hub-card-icon" style={{background:"var(--color-background-danger)"}}><span style={{color:"var(--color-text-danger)"}}>💛</span></div><div className="hub-card-body"><div className="hub-card-title">No respite in {d} days</div><div className="hub-card-sub">Caregiver burnout risk — please take a break</div></div><span className="hub-card-arr">›</span></div>)})()}
+            {getSyncWarning()==="warn"&&<div className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub("care");nav("sync")}}><div className="hub-card-icon" style={{background:"var(--color-background-warning)"}}><span style={{color:"var(--color-text-warning)"}}>📡</span></div><div className="hub-card-body"><div className="hub-card-title">Sync overdue <span className="pill pill-a">{getSyncAge().days}d ago</span></div><div className="hub-card-sub">Sync now to protect your data</div></div><span className="hub-card-arr">›</span></div>}
+            {(()=>{const d=daysSinceRespite();if(d===null||d<14)return null;return(<div className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub("today");nav("caregiver-wellness")}}><div className="hub-card-icon" style={{background:"var(--color-background-danger)"}}><span style={{color:"var(--color-text-danger)"}}>💛</span></div><div className="hub-card-body"><div className="hub-card-title">No respite in {d} days</div><div className="hub-card-sub">Caregiver burnout risk — please take a break</div></div><span className="hub-card-arr">›</span></div>)})()}
             {(()=>{const rems=getReminders();const missed=rems.filter(r=>r.type==="med-missed");const dueMeds=rems.filter(r=>r.type==="med-due");const upcoming=rems.filter(r=>r.type==="med-upcoming");const overdueT=rems.filter(r=>r.type==="task-overdue");const upcomingT=rems.filter(r=>r.type==="task-upcoming");const appts=rems.filter(r=>r.type==="appt");const hasAlerts=missed.length+dueMeds.length+overdueT.length+appts.length>0;
               return(<>
                 {missed.length>0&&<><div className="hub-section-label" style={{color:"#b56576"}}>⚠ Missed medications</div>{missed.map((r,i)=>(<div key={"m"+i} className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#fde2e8"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
@@ -4036,64 +4146,224 @@ export default function App() {
                 {upcomingT.length>0&&<><div className="hub-section-label">Tasks due this week</div>{upcomingT.slice(0,5).map((r,i)=>(<div key={"tw"+i} className="hub-card" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#fdf0d5"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
                 {!hasAlerts&&<><div className="hub-section-label">Status</div><div className="hub-card hub-card-ok"><div className="hub-card-icon" style={{background:"#e8f0df"}}><span style={{color:"#718355"}}>✓</span></div><div className="hub-card-body"><div className="hub-card-title">All clear</div><div className="hub-card-sub">No overdue medications, tasks, or appointments</div></div></div></>}
               </>)})()}
-            <div className="hub-section-label">Daily tasks</div>
-            <div className="hub-card" onClick={()=>{setCurrentHub("records");nav("medadmin")}}><div className="hub-card-icon" style={{background:"var(--color-background-warning)"}}><span style={{color:"var(--color-text-warning)"}}>💊</span></div><div className="hub-card-body"><div className="hub-card-title">Medications</div><div className="hub-card-sub">Today's med admin grid</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-card" onClick={()=>{setCurrentHub("records");nav("calendar")}}><div className="hub-card-icon" style={{background:"var(--color-background-info)"}}><span style={{color:"var(--color-text-info)"}}>▦</span></div><div className="hub-card-body"><div className="hub-card-title">Appointments</div><div className="hub-card-sub">{(data.appointments||[]).length} scheduled</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-card" onClick={()=>{setCurrentHub("team");nav("messages")}}><div className="hub-card-icon" style={{background:"var(--color-background-success)"}}><span style={{color:"var(--color-text-success)"}}>✉</span></div><div className="hub-card-body"><div className="hub-card-title">Messages</div><div className="hub-card-sub">Team chat</div></div><span className="hub-card-arr">›</span></div>
+
+            {/* This week's appointments — the calendar moved here from Records,
+                where a day's schedule was a hub and two taps away. */}
+            {(()=>{
+              const start=new Date();start.setHours(0,0,0,0);
+              const days=[];for(let i=0;i<7;i++){const d=new Date(start);d.setDate(d.getDate()+i);days.push(d)}
+              const any=days.some(d=>getApptsForDate(fmtDate(d.getFullYear(),d.getMonth(),d.getDate())).length>0);
+              return(<>
+                <div className="hub-section-label">📅 This week</div>
+                <div className="week-strip">{days.map((d,i)=>{
+                  const ds=fmtDate(d.getFullYear(),d.getMonth(),d.getDate());
+                  const appts=getApptsForDate(ds);
+                  return(<button key={ds} onClick={()=>{setCalSelected(ds);setCurrentHub("today");nav("calendar")}} className={`week-day ${i===0?"week-day-today":""} ${appts.length?"week-day-has":""}`}>
+                    <span className="week-dow">{DAYS[d.getDay()]}</span>
+                    <span className="week-num">{d.getDate()}</span>
+                    {appts.length>0&&<span className="week-count">{appts.length}</span>}
+                  </button>)})}
+                </div>
+                {!any&&<p className="hint" style={{marginTop:-4}}>Nothing scheduled this week.</p>}
+                <button onClick={()=>{setCurrentHub("today");nav("calendar")}} className="text-btn">View month →</button>
+              </>)})()}
+
             <div className="hub-section-label">Quick actions</div>
-            <div className="hub-card" onClick={()=>{setCurrentHub("today");nav("handoff")}}><div className="hub-card-icon" style={{background:"var(--color-background-info)"}}><span style={{color:"var(--color-text-info)"}}>📋</span></div><div className="hub-card-body"><div className="hub-card-title">Shift handoff</div><div className="hub-card-sub">Summary of recent activity for incoming caregiver</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-card" onClick={()=>{setCurrentHub("records");nav("incidents")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>⚠</span></div><div className="hub-card-body"><div className="hub-card-title">Log incident</div><div className="hub-card-sub">Fall, behavior, medication error</div></div><span className="hub-card-arr">›</span></div>
-            {can("submit-selfreport")&&<div className="hub-card" onClick={()=>{setCurrentHub("team");nav("selfreport")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🗣</span></div><div className="hub-card-body"><div className="hub-card-title">Self-report</div><div className="hub-card-sub">Mood, pain, sleep, voice note</div></div><span className="hub-card-arr">›</span></div>}
-            <div className="hub-card" onClick={()=>{setCurrentHub("today");nav("emergency-card")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🆔</span></div><div className="hub-card-body"><div className="hub-card-title">Emergency info card</div><div className="hub-card-sub">Printable wallet card with vitals</div></div><span className="hub-card-arr">›</span></div>
-            {!isReadOnly&&<div className="hub-card" onClick={()=>{setCurrentHub("today");nav("caregiver-wellness")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>💛</span></div><div className="hub-card-body"><div className="hub-card-title">Caregiver check-in</div><div className="hub-card-sub">Track your stress, sleep, and respite</div></div><span className="hub-card-arr">›</span></div>}
+            <div className="hub-card" onClick={()=>{setCurrentHub("today");nav("handoff")}}><div className="hub-card-icon" style={{background:"var(--color-background-info)"}}><span style={{color:"var(--color-text-info)"}}>📋</span></div><div className="hub-card-body"><div className="hub-card-title">Shift handoff</div><div className="hub-card-sub">Summary for the incoming caregiver</div></div><span className="hub-card-arr">›</span></div>
+            {!isReadOnly&&<div className="hub-card" onClick={()=>{setCurrentHub("today");nav("caregiver-wellness")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>💛</span></div><div className="hub-card-body"><div className="hub-card-title">Caregiver check-in</div><div className="hub-card-sub">Track your own wellbeing</div></div><span className="hub-card-arr">›</span></div>}
+
+            {/* The long-term work, kept visibly separate from today's list so a
+                foundational task never competes with a medication that's due. */}
+            <div className="hub-section-label">The bigger picture</div>
+            <div className="hub-card" onClick={()=>{setCurrentHub("care");nav("care-domains")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🧭</span></div><div className="hub-card-body"><div className="hub-card-title">Care domains</div><div className="hub-card-sub">Physical, cognitive, wellness{can("view-legal")?", legal, financial":""} — the foundational work</div></div><span className="hub-card-arr">›</span></div>
           </>)}
 
-          {/* ═══ CARE PLAN HUB ═══ */}
-          {view==="care-hub"&&(<>
-            <div className="strat-grid">{DOMAINS.filter(d=>can("view-domain",d.key)).map(d=>{const p=getProgress(d.key);const hc=p.pct>=80&&p.recency>=70?"#718355":p.pct>=40||p.recency>=40?"#bc6c25":"#b56576";return(
+          {/* ═══ MEDS ═══ */}
+          {view==="meds"&&(<>
+            <div className="seg-tabs" role="tablist">
+              <button role="tab" aria-selected={medsTab==="schedule"} onClick={()=>setMedsTab("schedule")} className={`seg-tab ${medsTab==="schedule"?"seg-tab-on":""}`}>Today's schedule</button>
+              <button role="tab" aria-selected={medsTab==="cabinet"} onClick={()=>setMedsTab("cabinet")} className={`seg-tab ${medsTab==="cabinet"?"seg-tab-on":""}`}>Cabinet</button>
+            </div>
+            {medsTab==="schedule"&&(<>
+              <p className="page-sub">Tap a cell to cycle: given ✓ · missed ✗ · refused ⊘</p>
+              <div className="med-date-nav">
+                <button onClick={()=>{const d=new Date(medAdminDate+"T12:00:00");d.setDate(d.getDate()-1);setMedAdminDate(fmtDate(d.getFullYear(),d.getMonth(),d.getDate()))}} className="cal-nav-btn" aria-label="Previous day">‹</button>
+                <input type="date" value={medAdminDate} onChange={e=>setMedAdminDate(e.target.value)} className="cf-input" style={{textAlign:"center",fontWeight:700,maxWidth:180}}/>
+                <button onClick={()=>{const d=new Date(medAdminDate+"T12:00:00");d.setDate(d.getDate()+1);setMedAdminDate(fmtDate(d.getFullYear(),d.getMonth(),d.getDate()))}} className="cal-nav-btn" aria-label="Next day">›</button>
+                <button onClick={()=>setMedAdminDate(fmtDate(new Date().getFullYear(),new Date().getMonth(),new Date().getDate()))} className="cc-btn cc-active" style={{marginLeft:8}}>Today</button>
+              </div>
+              {(()=>{const stats=getMedDayStats(medAdminDate);return stats.total>0?(<div className="med-day-stats">
+                <span className="med-stat med-stat-given">✓ {stats.given}</span>
+                <span className="med-stat med-stat-missed">✗ {stats.missed}</span>
+                <span className="med-stat med-stat-refused">⊘ {stats.refused}</span>
+                <span className="med-stat med-stat-pending">○ {stats.pending} pending</span>
+              </div>):null})()}
+              {getMedSchedule().medications.length===0?<div className="contacts-empty"><p>No medications yet. Add them in the Cabinet.</p></div>:
+                <div className="med-cards">{getMedSchedule().medications.map(m=>(
+                  <div key={m.id} className="med-card">
+                    <div className="med-card-head">
+                      <div style={{flex:1,minWidth:0}}>
+                        <div className="med-card-name">{m.name} {m.isCritical&&<span className="med-crit-badge" title="A missed dose matters">critical</span>}</div>
+                        <div className="med-card-sub">{m.dosage}{m.purpose?" · "+m.purpose:""}</div>
+                        {m.visualId&&<div className="med-card-visual">{m.visualId}</div>}
+                      </div>
+                    </div>
+                    <div className="med-slot-grid">{MED_TIME_SLOTS.filter(s=>m.timeSlots.includes(s)).map(s=>{
+                      const status=getMedStatus(m.id,s,medAdminDate);
+                      return(<button key={s} disabled={isReadOnly} onClick={()=>toggleMedAdmin(m.id,s,medAdminDate)} className={`med-slot-btn med-slot-${status||"pending"}`}>
+                        <span className="med-slot-name">{s}</span>
+                        <span className="med-slot-mark">{status==="given"?"✓":status==="missed"?"✗":status==="refused"?"⊘":"○"}</span>
+                      </button>)})}
+                    </div>
+                    {!isReadOnly&&<div className="med-card-actions">
+                      <button onClick={()=>setRefusal({medId:m.id,slot:(m.timeSlots[0]||"Morning"),date:medAdminDate})} className="mini-btn">Refused…</button>
+                      <button onClick={()=>setMedForm({mode:"edit",med:{...EMPTY_MED,...m},id:m.id})} className="mini-btn">Edit</button>
+                    </div>}
+                  </div>))}
+                </div>}
+            </>)}
+            {medsTab==="cabinet"&&(<>
+              <div className="contacts-header"><div><p className="page-sub" style={{margin:0}}>Every medication on record — what it's for, who prescribed it, and when it runs out.</p></div>
+                {!isReadOnly&&<button onClick={()=>setMedForm({mode:"add",med:{...EMPTY_MED}})} className="save-btn">+ Add medication</button>}
+              </div>
+              {getMedSchedule().medications.length===0?<div className="contacts-empty"><p>No medications recorded yet.</p></div>:
+                <div className="cabinet-list">{getMedSchedule().medications.map(m=>{
+                  const days=m.refillDate?Math.ceil((new Date(m.refillDate+"T12:00:00")-new Date().setHours(12,0,0,0))/86400000):null;
+                  return(<div key={m.id} className="cabinet-card">
+                    <div className="cabinet-head">
+                      <div style={{flex:1,minWidth:0}}>
+                        <div className="cabinet-name">{m.name} {m.isCritical&&<span className="med-crit-badge">critical</span>} {m.isRedFlag&&<span className="med-flag-badge" title="Shown to paramedics on the Emergency Info Card">⚑ alert</span>}</div>
+                        <div className="cabinet-sub">{m.dosage}{m.purpose?" · "+m.purpose:""}</div>
+                      </div>
+                      {!isReadOnly&&<button onClick={()=>setMedForm({mode:"edit",med:{...EMPTY_MED,...m},id:m.id})} className="edit-icon edit-icon-visible" aria-label={"Edit "+m.name}>✎</button>}
+                    </div>
+                    <div className="cabinet-meta">
+                      {m.visualId&&<span>💊 {m.visualId}</span>}
+                      {m.timeSlots&&m.timeSlots.length>0&&<span>🕑 {m.timeSlots.join(", ")}</span>}
+                      {m.prescriber&&<span>🩺 {m.prescriber}</span>}
+                      {m.pharmacy&&<span>🏪 {m.pharmacy}{m.pharmacyPhone?" · ":""}{m.pharmacyPhone&&<a href={"tel:"+m.pharmacyPhone} className="link-btn">{m.pharmacyPhone}</a>}</span>}
+                    </div>
+                    {days!==null&&<div className={`cabinet-refill ${days<0?"refill-over":days<=7?"refill-soon":""}`}>
+                      {days<0?`Refill was due ${Math.abs(days)} day${Math.abs(days)===1?"":"s"} ago`:days===0?"Refill due today":`Refill in ${days} day${days===1?"":"s"}`}
+                    </div>}
+                    {m.notes&&<div className="cabinet-notes">{m.notes}</div>}
+                  </div>)})}
+                </div>}
+            </>)}
+          </>)}
+
+          {/* ═══ LOG ═══ */}
+          {view==="log"&&(<>
+            <div className="seg-tabs" role="tablist">
+              <button role="tab" aria-selected={logTab==="mine"} onClick={()=>setLogTab("mine")} className={`seg-tab ${logTab==="mine"?"seg-tab-on":""}`}>My observations</button>
+              {can("submit-selfreport")&&<button role="tab" aria-selected={logTab==="patient"} onClick={()=>setLogTab("patient")} className={`seg-tab ${logTab==="patient"?"seg-tab-on":""}`}>Their report</button>}
+              <button role="tab" aria-selected={logTab==="patterns"} onClick={()=>setLogTab("patterns")} className={`seg-tab ${logTab==="patterns"?"seg-tab-on":""}`}>Patterns</button>
+            </div>
+            {logTab==="mine"&&(<>
+              {can("log-incident")&&<button onClick={()=>setIncidentForm({mode:"add",incident:newIncident()})} className="log-cta">+ Log something now</button>}
+              <p className="hint">Pick what happened and how serious. Everything else is optional — you can add detail later.</p>
+              {getFilteredIncidents().length===0?<div className="contacts-empty"><p>{((data.incidents&&data.incidents.length)||0)===0?"Nothing logged yet.":"No incidents match this filter."}</p></div>:(<>
+                <div className="cc-group" style={{margin:"16px 0"}}><span className="cc-label">Filter:</span>
+                  <button onClick={()=>setIncidentFilter("all")} className={`cc-btn ${incidentFilter==="all"?"cc-active":""}`}>All</button>
+                  {INCIDENT_TYPES.map(t=>(<button key={t.key} onClick={()=>setIncidentFilter(t.key)} className={`cc-btn ${incidentFilter===t.key?"cc-active":""}`}>{t.icon} {t.label}</button>))}
+                </div>
+                <div className="contacts-list">{getFilteredIncidents().map(inc=>{const itype=INCIDENT_TYPES.find(t=>t.key===inc.type);const sev=SEVERITY_LEVELS.find(s=>s.key===inc.severity);return(
+                  <div key={inc.id} className="incident-card" style={{borderLeftColor:(sev&&sev.color)||"var(--color-text-muted)"}}>
+                    <div className="incident-head">
+                      <span className="incident-type">{(itype&&itype.icon)} {(itype&&itype.label)||inc.type}</span>
+                      <span className="o-badge" style={{background:(sev&&sev.bg),color:(sev&&sev.color)}}>{(sev&&sev.label)}</span>
+                      <span className="incident-datetime">{inc.date} {inc.time}</span>
+                      {!isReadOnly&&<button onClick={()=>setIncidentForm({mode:"edit",incident:{...newIncident(),...inc},id:inc.id})} className="edit-icon edit-icon-visible" aria-label="Edit incident">✎</button>}
+                    </div>
+                    {inc.description&&<p className="incident-desc">{inc.description}</p>}
+                    {(()=>{const tr=TRIGGER_OPTIONS.find(t=>t.key===inc.trigger);return tr?<p className="incident-trigger">{tr.icon} Possible trigger: {tr.label}</p>:null})()}
+                    {inc.response&&<p className="incident-response"><strong>Response:</strong> {inc.response}</p>}
+                    <div className="incident-meta">
+                      {inc.injuries&&<span>Injuries: {inc.injuries}</span>}
+                      {inc.providerNotified&&<span>Provider notified: {inc.providerNotified}</span>}
+                    </div>
+                    {(inc.photos||[]).length>0&&<div className="photo-preview-row">{inc.photos.map((p,i)=><MediaThumb key={i} value={p} dek={dekRef.current} altKey={rKeyRef.current}/>)}</div>}
+                  </div>)})}
+                </div>
+              </>)}
+            </>)}
+            {logTab==="patient"&&can("submit-selfreport")&&<p className="hint">Open the full self-report form for the person you care for.<br/><button onClick={()=>{setCurrentHub("log");nav("selfreport")}} className="save-btn" style={{marginTop:12}}>Open self-report →</button></p>}
+            {logTab==="patterns"&&((data.incidents||[]).length<3
+              ?<p className="hint">Patterns appear once at least 3 incidents are logged.</p>
+              :<p className="hint">See trends across every logged incident.<br/><button onClick={()=>{setCurrentHub("log");nav("incident-patterns")}} className="save-btn" style={{marginTop:12}}>Open patterns →</button></p>)}
+          </>)}
+
+          {/* ═══ SOS ═══ Ordered by urgency: script, then card, then plans, then people. */}
+          {view==="sos"&&(<>
+            <a href="tel:911" className="sos-call">📞 Call 911</a>
+            <div className="sos-script">
+              <div className="sos-script-title">Read this to the dispatcher</div>
+              <ol className="sos-script-list">
+                <li>“My address is <strong>{(data.settings&&data.settings.team&&data.settings.team.address)||"[add your address in Settings]"}</strong>.”</li>
+                <li>“The person is <strong>{clientDisplayName()||"[name]"}</strong>, age {(data.settings&&data.settings.team&&data.settings.team.clientAge)||"[age]"}, and has dementia.”</li>
+                <li>“What happened is …” — say only what you saw.</li>
+                {getEmergencyInfo().codeStatus&&<li>“Code status is <strong>{getEmergencyInfo().codeStatus}</strong>.”</li>}
+                {getEmergencyInfo().allergiesText&&<li>“Allergies: <strong>{getEmergencyInfo().allergiesText}</strong>.”</li>}
+                <li>“I have a medication list and an info card ready to hand you.”</li>
+              </ol>
+              <p className="sos-script-note">Stay on the line. Unlock the door if you can do it safely.</p>
+            </div>
+            <div className="hub-card" onClick={()=>{setCurrentHub("sos");nav("emergency-card")}}><div className="hub-card-icon" style={{background:"var(--color-background-danger)"}}><span style={{color:"var(--color-text-danger)"}}>🆔</span></div><div className="hub-card-body"><div className="hub-card-title">Emergency info card</div><div className="hub-card-sub">Diagnoses, medications, allergies, code status{getEmergencyInfo().clientPhoto?", photo":""}</div></div><span className="hub-card-arr">›</span></div>
+            <div className="hub-section-label">If this is happening right now</div>
+            {EMERGENCY_SCENARIOS.map(sc=>(
+              <div key={sc.key} className="hub-card" onClick={()=>{setCurrentHub("sos");nav("emergency")}}><div className="hub-card-icon" style={{background:"var(--color-background-warning)"}}><span style={{color:"var(--color-text-warning)"}}>{sc.icon||"🚨"}</span></div><div className="hub-card-body"><div className="hub-card-title">{sc.label}</div></div><span className="hub-card-arr">›</span></div>))}
+            {can("view-contacts")&&<>
+              <div className="hub-section-label">People to call</div>
+              {(()=>{const cats=[{key:"medical",label:"Medical"},{key:"care",label:"Care team"},{key:"family",label:"Family"},{key:"legal",label:"Legal"},{key:"financial",label:"Financial"},{key:"other",label:"Other"}];
+                const all=data.contacts||[];
+                if(all.length===0)return <p className="hint">No contacts saved yet. <button onClick={()=>{setCurrentHub("sos");nav("contacts")}} className="text-btn">Add some →</button></p>;
+                return(<>{cats.map(cat=>{const list=all.filter(c=>c.category===cat.key);if(!list.length)return null;return(
+                  <div key={cat.key} className="sos-contact-group">
+                    <div className="sos-contact-cat">{cat.label}</div>
+                    {list.map(c=>(<div key={c.id} className="sos-contact">
+                      {c.photo?<MediaImg value={c.photo} dek={dekRef.current} altKey={rKeyRef.current} className="sos-contact-photo" alt=""/>
+                              :<div className="sos-contact-photo sos-contact-initial">{(c.name||"?")[0].toUpperCase()}</div>}
+                      <div className="sos-contact-body"><div className="sos-contact-name">{c.name}</div><div className="sos-contact-role">{c.role||c.org||""}</div></div>
+                      {c.phone&&<a href={"tel:"+c.phone} className="sos-contact-call" aria-label={"Call "+c.name}>📞</a>}
+                    </div>))}
+                  </div>)})}
+                  <button onClick={()=>{setCurrentHub("sos");nav("contacts")}} className="text-btn">Manage contacts →</button>
+                </>)})()}
+            </>}
+          </>)}
+
+          {/* ═══ CARE DOMAINS ═══ The foundational work, reachable from Today
+              and from the Care Hub menu. */}
+          {view==="care-domains"&&(<>
+            <p className="page-sub">The long-term work. Progress here moves slowly by design — this is the ground the daily routine stands on.</p>
+            <div className="strat-grid">{DOMAINS.filter(d=>can("view-domain",d.key)).map(d=>{const p=getProgress(d.key);const hc=p.pct>=80&&p.recency>=70?"var(--color-text-success)":p.pct>=40||p.recency>=40?"var(--color-text-warning)":"var(--color-text-danger)";return(
               <div key={d.key} className="strat-card" onClick={()=>nav(d.key)} style={{borderTopColor:d.color}}>
                 <div className="strat-icon">{d.icon}</div>
                 <div className="strat-pct" style={{color:hc}}>{p.pct}%</div>
                 <div className="strat-label">{getDomLabel(d.key).split(" ")[0]}</div>
                 {p.ongoingTotal>0&&<div className="strat-pulse" style={{color:hc}}>Pulse {p.recency}%</div>}
               </div>)})}</div>
-            <div className="hub-section-label">Health domains</div>
-            {DOMAINS.filter(d=>can("view-domain",d.key)&&["physical","cognitive","wellness"].includes(d.key)).map(d=>{const p=getProgress(d.key);const hc=p.pct>=80&&p.recency>=70?"var(--color-background-success)":p.pct>=40||p.recency>=40?"var(--color-background-warning)":"var(--color-background-danger)";const hl=p.pct>=80&&p.recency>=70?"Healthy":p.pct>=40||p.recency>=40?"Fair":"Attention";const hlc=p.pct>=80&&p.recency>=70?"pill-g":p.pct>=40||p.recency>=40?"pill-a":"pill-r";return(
-              <div key={d.key} className="hub-card" onClick={()=>nav(d.key)}><div className="hub-card-icon" style={{background:hc}}><span style={{fontSize:18}}>{d.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{getDomLabel(d.key)} <span className={"pill "+hlc}>{hl}</span></div><div className="hub-card-sub">Foundation {p.pct}%{p.ongoingTotal>0?" · Pulse "+p.recency+"%":""}</div></div><span className="hub-card-arr">›</span></div>)})}
-            {can("view-legal")&&<><div className="hub-section-label">Legal and financial</div>
-              {DOMAINS.filter(d=>["legal","financial"].includes(d.key)).map(d=>{const p=getProgress(d.key);const hlc=p.pct>=80?"pill-g":p.pct>=40?"pill-a":"pill-r";const hl=p.pct>=80?"Healthy":p.pct>=40?"Fair":"Attention";return(
-              <div key={d.key} className="hub-card" onClick={()=>nav(d.key)}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span style={{fontSize:18}}>{d.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{getDomLabel(d.key)} <span className={"pill "+hlc}>{hl}</span></div><div className="hub-card-sub">Foundation {p.pct}%</div></div><span className="hub-card-arr">›</span></div>)})}</>}
-            <div className="hub-section-label">Monitoring</div>
-            <div className="hub-card" onClick={()=>nav("triggers")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📊</span></div><div className="hub-card-body"><div className="hub-card-title">Escalation triggers</div><div className="hub-card-sub">{Object.values(data.transitionTriggers||{}).filter(Boolean).length} active</div></div><span className="hub-card-arr">›</span></div>
-            {can("view-tracking")&&<div className="hub-card" onClick={()=>nav("tracking")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📈</span></div><div className="hub-card-body"><div className="hub-card-title">Longitudinal tracking</div><div className="hub-card-sub">{(data.statusHistory||[]).length} snapshots</div></div><span className="hub-card-arr">›</span></div>}
-            {can("view-visit")&&<div className="hub-card" onClick={()=>nav("visit")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📋</span></div><div className="hub-card-body"><div className="hub-card-title">Visit prep</div><div className="hub-card-sub">Auto-generated summary</div></div><span className="hub-card-arr">›</span></div>}
-            <div className="hub-card" onClick={()=>nav("emergency")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🚨</span></div><div className="hub-card-body"><div className="hub-card-title">Emergency plans</div><div className="hub-card-sub">6 scenario cards</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-section-label">Documentation</div>
-            <div className="hub-card" onClick={()=>nav("poa-decisions")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>⚖</span></div><div className="hub-card-body"><div className="hub-card-title">POA decisions <span className="pill pill-b">{(data.poaDecisions||[]).length}</span></div><div className="hub-card-sub">Document decisions made under power of attorney</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-card" onClick={()=>nav("capacity")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📝</span></div><div className="hub-card-body"><div className="hub-card-title">Capacity observations <span className="pill pill-b">{(data.capacityLog||[]).length}</span></div><div className="hub-card-sub">Structured ability assessments for legal and clinical use</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-card" onClick={()=>nav("binder")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📖</span></div><div className="hub-card-body"><div className="hub-card-title">Care plan binder</div><div className="hub-card-sub">Printable comprehensive care document</div></div><span className="hub-card-arr">›</span></div>
-            {can("view-postdeath")&&<div className="hub-card" onClick={()=>nav("postdeath")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🕊</span></div><div className="hub-card-body"><div className="hub-card-title">End-of-life planning</div><div className="hub-card-sub">Administrative checklist</div></div><span className="hub-card-arr">›</span></div>}
+            {DOMAINS.filter(d=>can("view-domain",d.key)).map(d=>{const p=getProgress(d.key);const hc=p.pct>=80&&p.recency>=70?"var(--color-background-success)":p.pct>=40||p.recency>=40?"var(--color-background-warning)":"var(--color-background-danger)";const hl=p.pct>=80&&p.recency>=70?"Healthy":p.pct>=40||p.recency>=40?"Fair":"Attention";const hlc=p.pct>=80&&p.recency>=70?"pill-g":p.pct>=40||p.recency>=40?"pill-a":"pill-r";return(
+              <div key={d.key} className="hub-card" onClick={()=>nav(d.key)}><div className="hub-card-icon" style={{background:hc}}><span style={{fontSize:18}}>{d.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{getDomLabel(d.key)} <span className={"pill "+hlc}>{hl}</span></div><div className="hub-card-sub">{p.pct}% complete</div></div><span className="hub-card-arr">›</span></div>)})}
           </>)}
 
-          {/* ═══ RECORDS HUB ═══ */}
-          {view==="records-hub"&&(<>
-            <div className="hub-card" onClick={()=>nav("incidents")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>⚠</span></div><div className="hub-card-body"><div className="hub-card-title">Incidents <span className="pill pill-b">{(data.incidents||[]).length}</span></div><div className="hub-card-sub">Falls, behaviors, medication errors</div></div><span className="hub-card-arr">›</span></div>
-            {(data.incidents||[]).length>=3&&<div className="hub-card" onClick={()=>nav("incident-patterns")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📊</span></div><div className="hub-card-body"><div className="hub-card-title">Incident patterns</div><div className="hub-card-sub">Time-of-day, type trends, weekly view</div></div><span className="hub-card-arr">›</span></div>}
-            <div className="hub-card" onClick={()=>nav("medadmin")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>💊</span></div><div className="hub-card-body"><div className="hub-card-title">Medication admin</div><div className="hub-card-sub">Daily med grid · {getMedSchedule().medications.length} meds</div></div><span className="hub-card-arr">›</span></div>
-            {can("view-expenses")&&<div className="hub-card" onClick={()=>nav("expenses")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>$</span></div><div className="hub-card-body"><div className="hub-card-title">Expenses <span className="pill pill-b">{(data.expenses||[]).length}</span></div><div className="hub-card-sub">Care costs · CSV export</div></div><span className="hub-card-arr">›</span></div>}
-            {can("view-documents")&&<div className="hub-card" onClick={()=>nav("documents")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📄</span></div><div className="hub-card-body"><div className="hub-card-title">Documents <span className="pill pill-b">{(data.savedDocs||[]).length}</span></div><div className="hub-card-sub">Scanner · Library</div></div><span className="hub-card-arr">›</span></div>}
-            {can("view-contacts")&&<div className="hub-card" onClick={()=>nav("contacts")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>☷</span></div><div className="hub-card-body"><div className="hub-card-title">Contacts <span className="pill pill-b">{(data.contacts||[]).length}</span></div><div className="hub-card-sub">Medical, legal, family</div></div><span className="hub-card-arr">›</span></div>}
-            <div className="hub-card" onClick={()=>nav("calendar")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>▦</span></div><div className="hub-card-body"><div className="hub-card-title">Calendar</div><div className="hub-card-sub">Month view · Appointments</div></div><span className="hub-card-arr">›</span></div>
-            {can("view-shifts")&&<div className="hub-card" onClick={()=>nav("schedule")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🗓</span></div><div className="hub-card-body"><div className="hub-card-title">Care schedule <span className="pill pill-b">{(data.careShifts||[]).filter(s=>new Date(s.date)>=new Date(new Date().toDateString())).length}</span></div><div className="hub-card-sub">Shifts, open shifts, swaps, visit logging</div></div><span className="hub-card-arr">›</span></div>}
-          </>)}
-
-          {/* ═══ TEAM HUB ═══ */}
-          {view==="team-hub"&&(<>
-            <div className="hub-card" onClick={()=>nav("messages")}><div className="hub-card-icon" style={{background:"var(--color-background-success)"}}><span style={{color:"var(--color-text-success)"}}>✉</span></div><div className="hub-card-body"><div className="hub-card-title">Messages</div><div className="hub-card-sub">Team chat</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-card" onClick={()=>nav("sync")}><div className="hub-card-icon" style={{background:"var(--color-background-info)"}}><span style={{color:"var(--color-text-info)"}}>📡</span></div><div className="hub-card-body"><div className="hub-card-title">Sync</div><div className="hub-card-sub">{(data._sync&&data._sync.lastSync)?"Last: "+new Date(data._sync.lastSync).toLocaleString():"Not yet synced"}</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-card" onClick={()=>nav("selfreport")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🗣</span></div><div className="hub-card-body"><div className="hub-card-title">Self-reports <span className="pill pill-b">{(data.selfReports||[]).length}</span></div><div className="hub-card-sub">Client wellness updates</div></div><span className="hub-card-arr">›</span></div>
-            {can("manage-settings")&&<div className="hub-card" onClick={()=>nav("settings")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>⚙</span></div><div className="hub-card-body"><div className="hub-card-title">Settings</div><div className="hub-card-sub">Passcodes, state, export</div></div><span className="hub-card-arr">›</span></div>}
-            <div className="hub-card" onClick={()=>nav("help")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>?</span></div><div className="hub-card-body"><div className="hub-card-title">Help</div><div className="hub-card-sub">Feature guide</div></div><span className="hub-card-arr">›</span></div>
+          {/* ═══ DISPLAY SETTINGS ═══ */}
+          {view==="display"&&(<>
+            <p className="page-sub">Make the app easier to read. Changes apply everywhere, immediately.</p>
+            <div className="section">
+              <h3 className="sec-title">Text size</h3>
+              <p className="hint" style={{marginTop:0}}>Buttons and tap targets grow with the text — nothing shrinks below a comfortable size.</p>
+              <div className="tap-select" style={{marginTop:12}}>{TEXT_SIZES.map(t=>{
+                const current=((data.settings&&data.settings.textSize)||"standard")===t.key;
+                return(<button key={t.key} onClick={()=>setData(p=>({...p,settings:{...p.settings,textSize:t.key}}))} aria-pressed={current} className={`tap-opt ${current?"tap-opt-on":""}`}>
+                  <span style={{fontSize:t.key==="standard"?15:t.key==="large"?18:22}}>{t.label}</span></button>)})}
+              </div>
+              <p className="hint" style={{marginTop:12}}>Currently: <strong>{(TEXT_SIZES.find(t=>t.key===((data.settings&&data.settings.textSize)||"standard"))||TEXT_SIZES[0]).label}</strong></p>
+            </div>
+            <div className="section">
+              <h3 className="sec-title">Contrast &amp; theme</h3>
+              <p className="hint" style={{marginTop:0}}>Care Guardian follows your device's light or dark setting automatically. Change it in your device's display settings and the app follows.</p>
+            </div>
           </>)}
 
           {/* ═══ SHIFT HANDOFF ═══ */}
@@ -4464,67 +4734,6 @@ export default function App() {
             {data.log.length>0&&(<div className="log-wrap"><h3 className="log-title">Recent Activity</h3>
               {data.log.slice(0,10).map((e,i)=>{const d=DOMAINS.find(x=>x.key===e.domain);return(<div key={i} className="log-row"><span className="log-dot" style={{background:(d&&d.color)||(e.domain==="contacts"?"#457b9d":e.domain==="calendar"?"#6d6875":"#999")}}/><span className="log-text"><strong>{d?getDomLabel(d.key):e.domain==="contacts"?"Contacts":e.domain==="calendar"?"Calendar":""}</strong> — {e.action}</span><span className="log-time">{e.time}</span></div>)})}
             </div>)}
-          </>)}
-
-          {/* ═══ INCIDENT LOG ═══ */}
-          {view==="incidents"&&(<>
-            <div className="contacts-header"><div><h1 className="page-title">⚠ Incident Log</h1><p className="page-sub" style={{margin:"4px 0 0"}}>Structured record of falls, wandering, behavioral episodes, and medical events. Bring this to every provider visit.</p></div>
-              {!isReadOnly&&<button onClick={()=>setIncidentForm({mode:"add",incident:newIncident()})} className="save-btn">+ Log Incident</button>}
-            </div>
-            <div className="cc-group" style={{marginBottom:20}}><span className="cc-label">Filter:</span>
-              <button onClick={()=>setIncidentFilter("all")} className={`cc-btn ${incidentFilter==="all"?"cc-active":""}`}>All</button>
-              {INCIDENT_TYPES.map(t=>(<button key={t.key} onClick={()=>setIncidentFilter(t.key)} className={`cc-btn ${incidentFilter===t.key?"cc-active":""}`}>{t.icon} {t.label}</button>))}
-            </div>
-            {getFilteredIncidents().length===0?<div className="contacts-empty"><p>{((data.incidents&&data.incidents.length)||0)===0?"No incidents logged yet.":"No incidents match this filter."}</p></div>:
-              <div className="contacts-list">{getFilteredIncidents().map(inc=>{const itype=INCIDENT_TYPES.find(t=>t.key===inc.type);const sev=SEVERITY_LEVELS.find(s=>s.key===inc.severity);return(
-                <div key={inc.id} className="incident-card" style={{borderLeftColor:(sev&&sev.color)||"var(--color-text-muted)"}}>
-                  <div className="incident-head">
-                    <span className="incident-type">{(itype&&itype.icon)} {(itype&&itype.label)||inc.type}</span>
-                    <span className="o-badge" style={{background:(sev&&sev.bg),color:(sev&&sev.color)}}>{(sev&&sev.label)}</span>
-                    <span className="incident-datetime">{inc.date} {inc.time}</span>
-                    {!isReadOnly&&<button onClick={()=>setIncidentForm({mode:"edit",incident:{...newIncident(),...inc},id:inc.id})} className="edit-icon edit-icon-visible">✎</button>}
-                  </div>
-                  {inc.description&&<p className="incident-desc">{inc.description}</p>}
-                  {(()=>{const tr=TRIGGER_OPTIONS.find(t=>t.key===inc.trigger);return tr?<p className="incident-trigger">{tr.icon} Possible trigger: {tr.label}</p>:null})()}
-                  {inc.response&&<p className="incident-response"><strong>Response:</strong> {inc.response}</p>}
-                  <div className="incident-meta">
-                    {inc.injuries&&<span>Injuries: {inc.injuries}</span>}
-                    {inc.providerNotified&&<span>Provider notified: {inc.providerNotified}</span>}
-                  </div>
-                  {inc.photos&&inc.photos.length>0&&<div className="photo-preview-row" style={{marginTop:8}}>{inc.photos.map((p,j)=>(<MediaThumb key={j} value={p} dek={dekRef.current} altKey={rKeyRef.current} kind="img"/>))}</div>}
-                </div>)})}</div>}
-          </>)}
-
-          {/* ═══ MED ADMIN LOG ═══ */}
-          {view==="medadmin"&&(<>
-            <div className="contacts-header"><div><h1 className="page-title">💊 Medication Administration Log</h1><p className="page-sub" style={{margin:"4px 0 0"}}>Track daily medication administration. Tap cells to cycle: ✓ given → ✗ missed → ⊘ refused → clear.</p></div>
-              {!isReadOnly&&<button onClick={()=>setMedForm({mode:"add",med:{...EMPTY_MED}})} className="save-btn">+ Add Medication</button>}
-            </div>
-            <div className="med-date-nav">
-              <button onClick={()=>{const d=new Date(medAdminDate+"T12:00:00");d.setDate(d.getDate()-1);setMedAdminDate(fmtDate(d.getFullYear(),d.getMonth(),d.getDate()))}} className="cal-nav-btn">‹</button>
-              <input type="date" value={medAdminDate} onChange={e=>setMedAdminDate(e.target.value)} className="cf-input" style={{textAlign:"center",fontWeight:700,maxWidth:180}}/>
-              <button onClick={()=>{const d=new Date(medAdminDate+"T12:00:00");d.setDate(d.getDate()+1);setMedAdminDate(fmtDate(d.getFullYear(),d.getMonth(),d.getDate()))}} className="cal-nav-btn">›</button>
-              <button onClick={()=>setMedAdminDate(fmtDate(new Date().getFullYear(),new Date().getMonth(),new Date().getDate()))} className="cc-btn cc-active" style={{marginLeft:8}}>Today</button>
-            </div>
-            {(()=>{const stats=getMedDayStats(medAdminDate);return stats.total>0?(<div className="med-day-stats">
-              <span className="med-stat med-stat-given">✓ {stats.given}</span>
-              <span className="med-stat med-stat-missed">✗ {stats.missed}</span>
-              <span className="med-stat med-stat-refused">⊘ {stats.refused}</span>
-              <span className="med-stat med-stat-pending">○ {stats.pending} pending</span>
-            </div>):null})()}
-            {getMedSchedule().medications.length===0?<div className="contacts-empty"><p>No medications in schedule. Add medications to start tracking.</p></div>:
-              <div className="doc-table-wrap"><table className="doc-table med-table">
-                <thead><tr><th style={{minWidth:140}}>Medication</th><th>Dosage</th>{MED_TIME_SLOTS.map(s=><th key={s} className="med-slot-th">{s}</th>)}{!isReadOnly&&<th></th>}</tr></thead>
-                <tbody>{getMedSchedule().medications.map(m=>(<tr key={m.id}>
-                  <td><strong>{m.name}</strong>{m.notes&&<div className="med-note">{m.notes}</div>}</td>
-                  <td>{m.dosage}</td>
-                  {MED_TIME_SLOTS.map(s=>{const active=m.timeSlots.includes(s);const status=active?getMedStatus(m.id,s,medAdminDate):null;return(
-                    <td key={s} className="med-cell" onClick={()=>{if(active&&!isReadOnly)toggleMedAdmin(m.id,s,medAdminDate)}} style={{cursor:active&&!isReadOnly?"pointer":"default",background:status==="given"?"#e8f0df":status==="missed"?"#fde2e8":status==="refused"?"#fdf0d5":active?"#faf9f7":"#f6f4f0"}}>
-                      {active?(status==="given"?<span className="med-check given">✓</span>:status==="missed"?<span className="med-check missed">✗</span>:status==="refused"?<span className="med-check refused">⊘</span>:<span className="med-check pending">○</span>):<span className="med-check na">—</span>}
-                    </td>)})}
-                  {!isReadOnly&&<td><button onClick={()=>setMedForm({mode:"edit",med:{...EMPTY_MED,...m},id:m.id})} className="edit-icon edit-icon-visible">✎</button></td>}
-                </tr>))}</tbody>
-              </table></div>}
           </>)}
 
           {/* ═══ EXPENSE TRACKER ═══ */}
@@ -5240,7 +5449,7 @@ export default function App() {
           {/* ═══ CONTACT DETAIL ═══ */}
           {view==="contacts"&&contactDetail&&detailContact&&(<>
             <button onClick={()=>setContactDetail(null)} className="back-link">← All Contacts</button>
-            <div className="cd-header" style={{borderLeftColor:(detailCat&&detailCat.color)||"#8d99ae"}}><div className="contact-avatar cd-avatar" style={{background:(detailCat&&detailCat.color)||"#8d99ae"}}>{detailContact.name.charAt(0).toUpperCase()}</div>
+            <div className="cd-header" style={{borderLeftColor:(detailCat&&detailCat.color)||"var(--color-text-muted)"}}>{detailContact.photo?<MediaImg value={detailContact.photo} dek={dekRef.current} altKey={rKeyRef.current} className="contact-avatar cd-avatar" alt=""/>:<div className="contact-avatar cd-avatar" style={{background:(detailCat&&detailCat.color)||"var(--color-text-muted)"}}>{detailContact.name.charAt(0).toUpperCase()}</div>}
               <div style={{flex:1}}><h1 className="page-title" style={{margin:0}}>{detailContact.name}</h1><p className="cd-meta">{[detailContact.role,detailContact.org].filter(Boolean).join(" · ")}</p><span className="o-badge" style={{background:((detailCat&&detailCat.color)||"#8d99ae")+"18",color:(detailCat&&detailCat.color)}}>{(detailCat&&detailCat.icon)} {(detailCat&&detailCat.label)}</span></div>
             </div>
             <div className="cd-info-grid">
@@ -5327,11 +5536,70 @@ export default function App() {
           </>)})()}
         </div>
       </main>
-      <nav className="hub-bar">
-        <button onClick={()=>navHub("today")} className={`hub-btn ${currentHub==="today"?"hub-active":""}`}><span className="hub-btn-icon">☀</span><span className="hub-btn-label">Today</span></button>
-        <button onClick={()=>navHub("care")} className={`hub-btn ${currentHub==="care"?"hub-active":""}`}><span className="hub-btn-icon">♥</span><span className="hub-btn-label">Care plan</span></button>
-        <button onClick={()=>navHub("records")} className={`hub-btn ${currentHub==="records"?"hub-active":""}`}><span className="hub-btn-icon">📁</span><span className="hub-btn-label">Records</span></button>
-        <button onClick={()=>navHub("team")} className={`hub-btn ${currentHub==="team"?"hub-active":""}`}><span className="hub-btn-icon">👥</span><span className="hub-btn-label">Team</span></button>
+      {/* ═══ CARE HUB MENU ═══ Everything administrative or infrequent. Grouped
+          rather than listed flat, because the volume makes a flat list unusable.
+          Every item keeps the can() gate it had before the container changed. */}
+      {careMenuOpen&&(<>
+        <div className="overlay" onClick={()=>setCareMenuOpen(false)}/>
+        <aside className="care-menu" role="dialog" aria-modal="true" aria-label="Care Hub menu">
+          <div className="care-menu-head">
+            <span className="care-menu-title">Care Hub</span>
+            <button onClick={()=>setCareMenuOpen(false)} className="search-close" aria-label="Close menu">×</button>
+          </div>
+          <div className="care-menu-scroll">
+            {(()=>{
+              const go=(v)=>{setCareMenuOpen(false);setCurrentHub("care");nav(v)};
+              const groups=[
+                {label:"Care domains", items:[
+                  ...DOMAINS.filter(d=>can("view-domain",d.key)&&["physical","cognitive","wellness"].includes(d.key)).map(d=>({icon:d.icon,label:getDomLabel(d.key),view:d.key})),
+                  ...(can("view-legal")?[{icon:"⚖",label:getDomLabel("legal"),view:"legal"}]:[]),
+                  ...(can("view-financial")?[{icon:"◈",label:getDomLabel("financial"),view:"financial"}]:[]),
+                ]},
+                {label:"Administration", items:[
+                  ...(can("manage-team")?[{icon:"👥",label:"Team members & roles",view:"settings",sub:"Invite, assign roles, remove"}]:[]),
+                  ...(can("view-expenses")?[{icon:"$",label:"Daily expenses",view:"expenses"}]:[]),
+                  ...(can("manage-sync")?[{icon:"📡",label:"Sync & backup",view:"sync"}]:[]),
+                  {icon:"🅰",label:"Display settings",view:"display",sub:"Text size, contrast"},
+                  ...(can("manage-settings")?[{icon:"⚙",label:"All settings",view:"settings",sub:"Passcodes, state, export & import"}]:[]),
+                ]},
+                {label:"Monitoring", items:[
+                  {icon:"📊",label:"Escalation triggers",view:"triggers"},
+                  ...(can("view-tracking")?[{icon:"📈",label:"Longitudinal tracking",view:"tracking"}]:[]),
+                  ...(can("view-visit")?[{icon:"📋",label:"Visit prep",view:"visit"}]:[]),
+                ]},
+                {label:"Documentation", items:[
+                  {icon:"⚖",label:"POA decisions",view:"poa-decisions"},
+                  {icon:"📝",label:"Capacity observations",view:"capacity"},
+                  {icon:"📖",label:"Care plan binder",view:"binder"},
+                  ...(can("view-postdeath")?[{icon:"🕊",label:"End-of-life planning",view:"postdeath"}]:[]),
+                  ...(can("view-documents")?[{icon:"📄",label:"Medical records & documents",view:"documents",sub:"Import, upload, export"}]:[]),
+                  ...(can("view-shifts")?[{icon:"🗓",label:"Care schedule",view:"schedule"}]:[]),
+                ]},
+                {label:"Other", items:[
+                  {icon:"🗣",label:"Self-reports",view:"selfreport"},
+                  {icon:"?",label:"Help",view:"help",sub:"Feature guide"},
+                ]},
+              ];
+              return groups.filter(g=>g.items.length>0).map(g=>(
+                <div key={g.label} className="care-menu-group">
+                  <div className="care-menu-label">{g.label}</div>
+                  {g.items.map((it,i)=>(
+                    <button key={it.view+i} onClick={()=>go(it.view)} className="care-menu-item">
+                      <span className="care-menu-icon">{it.icon}</span>
+                      <span className="care-menu-body"><span className="care-menu-item-label">{it.label}</span>
+                        {it.sub&&<span className="care-menu-item-sub">{it.sub}</span>}</span>
+                      <span className="hub-card-arr">›</span>
+                    </button>))}
+                </div>));
+            })()}
+          </div>
+        </aside>
+      </>)}
+      <nav className="hub-bar" aria-label="Primary">
+        <button onClick={()=>navRoot("today")} aria-current={currentHub==="today"?"page":undefined} className={`hub-btn ${currentHub==="today"?"hub-active":""}`}><span className="hub-btn-icon">☀</span><span className="hub-btn-label">Today</span></button>
+        <button onClick={()=>navRoot("meds")} aria-current={currentHub==="meds"?"page":undefined} className={`hub-btn ${currentHub==="meds"?"hub-active":""}`}><span className="hub-btn-icon">💊</span><span className="hub-btn-label">Meds</span></button>
+        <button onClick={()=>navRoot("log")} aria-current={currentHub==="log"?"page":undefined} className={`hub-btn ${currentHub==="log"?"hub-active":""}`}><span className="hub-btn-icon">✎</span><span className="hub-btn-label">Log</span></button>
+        <button onClick={()=>navRoot("sos")} aria-current={currentHub==="sos"?"page":undefined} className={`hub-btn hub-btn-sos ${currentHub==="sos"?"hub-active":""}`}><span className="hub-btn-icon">🚨</span><span className="hub-btn-label">SOS</span></button>
       </nav>
     </div>
   </>);
@@ -5748,7 +6016,7 @@ button,input,select,textarea{color:inherit;font-family:inherit}
 .contact-group-title{font-family:var(--font-ui);font-size:15px;font-weight:700;margin:0 0 10px;padding-bottom:6px;border-bottom:1px solid var(--color-background-secondary)}
 .contact-row{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--color-border-subtle);border-radius:10px;background:var(--color-surface);width:100%;text-align:left;transition:all .12s}
 .contact-row:hover{background:var(--color-background);box-shadow:0 2px 8px rgba(0,0,0,.04)}
-.contact-avatar{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:16px;font-family:var(--font-ui);flex-shrink:0}
+.contact-avatar{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--color-text-on-fill);font-weight:700;font-size:16px;font-family:var(--font-ui);flex-shrink:0;object-fit:cover}
 .contact-info{flex:1;min-width:0}.contact-name{font-size:14.5px;font-weight:600;color:var(--color-text-primary);line-height:1.3}
 .contact-role{font-size:12.5px;color:var(--color-text-muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .contact-arrow{font-size:20px;color:var(--color-text-muted);flex-shrink:0}
@@ -6013,6 +6281,102 @@ select.cf-input{background:var(--color-surface)}.cf-actions{display:flex;gap:8px
 .ecard-photo{width:84px;height:84px;object-fit:cover;border-radius:var(--radius-button);border:2px solid var(--color-border);flex-shrink:0}
 .ecard-code-status{font-weight:700;color:var(--color-text-danger)}
 .ecard-redflag{font-weight:700;color:var(--color-text-danger)}
+
+/* ═══ v3 navigation ═══ */
+/* top bar */
+.topbar-icon{background:none;border:none;font-size:20px;cursor:pointer;padding:0 8px;color:var(--color-text-secondary);position:relative;display:flex;align-items:center;justify-content:center;min-width:var(--tap-target-min)}
+.topbar-icon:hover{color:var(--color-action-primary);opacity:1}
+.topbar-msg .msg-badge{position:absolute;top:4px;right:2px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--color-text-danger);color:var(--color-text-on-fill);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;line-height:1}
+
+/* bottom nav */
+.hub-btn-sos .hub-btn-icon{color:var(--color-text-danger)}
+.hub-btn-sos.hub-active{color:var(--color-text-danger)}
+
+/* care hub drawer */
+.care-menu{position:fixed;top:0;left:0;bottom:0;width:min(88vw,380px);background:var(--color-surface);z-index:95;display:flex;flex-direction:column;box-shadow:var(--shadow-modal);animation:slideIn .18s ease-out}
+@keyframes slideIn{from{transform:translateX(-100%)}to{transform:translateX(0)}}
+.care-menu-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--color-border-subtle);flex-shrink:0}
+.care-menu-title{font-family:var(--font-ui);font-size:18px;font-weight:700;color:var(--color-text-primary)}
+.care-menu-scroll{overflow-y:auto;padding:8px 0 24px;-webkit-overflow-scrolling:touch}
+.care-menu-group{padding:4px 0 10px}
+.care-menu-label{font-size:11px;font-weight:700;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.5px;padding:12px 16px 6px}
+.care-menu-item{display:flex;align-items:center;gap:12px;width:100%;padding:12px 16px;border:none;background:none;cursor:pointer;text-align:left;color:var(--color-text-primary)}
+.care-menu-item:hover{background:var(--color-background-secondary);opacity:1}
+.care-menu-icon{font-size:20px;width:28px;text-align:center;flex-shrink:0}
+.care-menu-body{flex:1;min-width:0;display:flex;flex-direction:column}
+.care-menu-item-label{font-size:15px;font-weight:600}
+.care-menu-item-sub{font-size:12px;color:var(--color-text-muted)}
+
+/* segmented tabs (Meds, Log) */
+.seg-tabs{display:flex;gap:4px;background:var(--color-background-secondary);border-radius:var(--radius-button);padding:4px;margin-bottom:16px}
+.seg-tab{flex:1;padding:10px 8px;border:none;border-radius:6px;background:transparent;font-size:14px;font-weight:600;color:var(--color-text-secondary);cursor:pointer}
+.seg-tab-on{background:var(--color-surface);color:var(--color-action-primary);box-shadow:var(--shadow-card)}
+
+/* today — week strip */
+.week-strip{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch}
+.week-day{flex:1;min-width:44px;display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 4px;border:var(--border-input) solid var(--color-border-subtle);border-radius:var(--radius-button);background:var(--color-surface);cursor:pointer;position:relative}
+.week-day-today{border-color:var(--color-action-primary)}
+.week-day-has{background:var(--color-background-info)}
+.week-dow{font-size:11px;color:var(--color-text-muted);font-weight:600}
+.week-num{font-size:17px;font-weight:700;color:var(--color-text-primary)}
+.week-count{position:absolute;top:2px;right:4px;min-width:16px;height:16px;border-radius:8px;background:var(--color-action-primary);color:var(--color-text-on-fill);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center}
+
+/* meds — schedule cards */
+.med-cards{display:flex;flex-direction:column;gap:12px}
+.med-card{background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:var(--radius-card);padding:14px 16px;box-shadow:var(--shadow-card)}
+.med-card-head{display:flex;align-items:flex-start;gap:10px}
+.med-card-name{font-size:16px;font-weight:700;color:var(--color-text-primary)}
+.med-card-sub{font-size:13px;color:var(--color-text-secondary);margin-top:2px}
+.med-card-visual{font-size:12px;color:var(--color-text-muted);margin-top:2px}
+.med-crit-badge{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;background:var(--color-background-danger);color:var(--color-text-danger);padding:2px 7px;border-radius:8px;vertical-align:middle}
+.med-flag-badge{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;background:var(--color-background-warning);color:var(--color-text-warning);padding:2px 7px;border-radius:8px;vertical-align:middle}
+.med-slot-grid{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.med-slot-btn{display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 14px;border:var(--border-input) solid var(--color-border);border-radius:var(--radius-button);background:var(--color-surface);cursor:pointer;min-width:82px}
+.med-slot-btn:disabled{cursor:default;opacity:.7}
+.med-slot-name{font-size:11px;font-weight:600;color:var(--color-text-secondary)}
+.med-slot-mark{font-size:19px;line-height:1}
+.med-slot-given{background:var(--color-background-success);border-color:var(--color-border-success);color:var(--color-text-success)}
+.med-slot-missed{background:var(--color-background-danger);border-color:var(--color-border-danger);color:var(--color-text-danger)}
+.med-slot-refused{background:var(--color-background-warning);border-color:var(--color-border-warning);color:var(--color-text-warning)}
+.med-card-actions{display:flex;gap:8px;margin-top:12px}
+
+/* meds — cabinet */
+.cabinet-list{display:flex;flex-direction:column;gap:12px}
+.cabinet-card{background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:var(--radius-card);padding:14px 16px;box-shadow:var(--shadow-card)}
+.cabinet-head{display:flex;align-items:flex-start;gap:10px}
+.cabinet-name{font-size:16px;font-weight:700;color:var(--color-text-primary);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.cabinet-sub{font-size:13px;color:var(--color-text-secondary);margin-top:2px}
+.cabinet-meta{display:flex;flex-direction:column;gap:4px;margin-top:10px;font-size:12.5px;color:var(--color-text-secondary)}
+.cabinet-refill{margin-top:10px;font-size:13px;font-weight:600;padding:7px 10px;border-radius:var(--radius-button);background:var(--color-background-secondary);color:var(--color-text-secondary)}
+.cabinet-refill.refill-soon{background:var(--color-background-warning);color:var(--color-text-warning)}
+.cabinet-refill.refill-over{background:var(--color-background-danger);color:var(--color-text-danger)}
+.cabinet-notes{margin-top:8px;font-size:13px;color:var(--color-text-secondary);font-style:italic}
+
+/* log */
+.log-cta{width:100%;padding:18px;font-size:17px;font-weight:700;border:none;border-radius:var(--radius-card);background:var(--color-action-primary);color:var(--color-text-on-fill);cursor:pointer;margin-bottom:12px}
+
+/* refusal — pause & pivot */
+.refusal-lead{font-size:15px;line-height:1.55;color:var(--color-text-primary);margin:0 0 12px}
+.refusal-med{font-size:14px;color:var(--color-text-secondary);margin:0 0 14px}
+.refusal-critical{background:var(--color-background-danger);border:1px solid var(--color-border-danger);border-radius:var(--radius-button);padding:14px 16px;margin-top:12px}
+.refusal-critical-title{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--color-text-danger);margin-bottom:8px}
+
+/* sos */
+.sos-call{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:22px;font-size:22px;font-weight:700;border-radius:var(--radius-card);background:var(--color-text-danger);color:var(--color-text-on-fill);text-decoration:none;margin-bottom:16px;min-height:var(--tap-target-min)}
+.sos-script{background:var(--color-surface);border:2px solid var(--color-border-danger);border-radius:var(--radius-card);padding:16px 18px;margin-bottom:20px}
+.sos-script-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--color-text-danger);margin-bottom:10px}
+.sos-script-list{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px}
+.sos-script-list li{font-size:15px;line-height:1.5;color:var(--color-text-primary)}
+.sos-script-note{font-size:13px;color:var(--color-text-secondary);margin:12px 0 0;font-style:italic}
+.sos-contact-group{margin-bottom:14px}
+.sos-contact-cat{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--color-text-muted);padding:6px 0}
+.sos-contact{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--color-border-subtle)}
+.sos-contact-photo{width:44px;height:44px;border-radius:50%;object-fit:cover;flex-shrink:0;border:1px solid var(--color-border-subtle)}
+.sos-contact-initial{display:flex;align-items:center;justify-content:center;background:var(--color-action-primary);color:var(--color-text-on-fill);font-weight:700;font-size:17px}
+.sos-contact-body{flex:1;min-width:0}
+.sos-contact-name{font-size:15px;font-weight:600;color:var(--color-text-primary)}
+.sos-contact-role{font-size:12.5px;color:var(--color-text-muted)}
+.sos-contact-call{width:var(--tap-target-min);height:var(--tap-target-min);border-radius:50%;background:var(--color-background-success);color:var(--color-text-success);display:flex;align-items:center;justify-content:center;font-size:20px;text-decoration:none;flex-shrink:0}
 
 /* print styles for expenses */
 @media print{
