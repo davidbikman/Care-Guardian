@@ -18,10 +18,19 @@ const INCIDENT_TYPES = [
   { key:"other",label:"Other",icon:"📝" },
 ];
 const SEVERITY_LEVELS = [
-  { key:"low",label:"Low",color:"#718355",bg:"#e8f0df" },
-  { key:"moderate",label:"Moderate",color:"#bc6c25",bg:"#fdf0d5" },
-  { key:"high",label:"High",color:"#b56576",bg:"#fde2e8" },
-  { key:"critical",label:"Critical",color:"#8b0000",bg:"#fdd" },
+  { key:"low",label:"Low",color:"var(--color-text-success)",bg:"var(--color-background-success)" },
+  { key:"moderate",label:"Moderate",color:"var(--color-text-warning)",bg:"var(--color-background-warning)" },
+  { key:"high",label:"High",color:"var(--color-text-danger)",bg:"var(--color-background-danger)" },
+  { key:"critical",label:"Critical",color:"var(--color-text-on-fill)",bg:"var(--color-text-danger)" },
+];
+
+/* What was going on around the incident. Separate from type ("what happened")
+   because the pattern that prevents the next one usually lives here. */
+const TRIGGER_OPTIONS = [
+  {key:"fatigue",label:"Fatigue / End of Day",icon:"🌙"},
+  {key:"overstim",label:"Overstimulation",icon:"🔊"},
+  {key:"physical",label:"Physical Need",icon:"🩹"},
+  {key:"routine",label:"Change in Routine",icon:"🔄"},
 ];
 
 const EXPENSE_CATS = [
@@ -35,6 +44,41 @@ const EXPENSE_CATS = [
 ];
 
 const MED_TIME_SLOTS = ["Morning","Midday","Afternoon","Evening","Bedtime","As Needed"];
+
+/* A medication record. Everything past timeSlots was added in v3 — all of it
+   optional, so medications saved before this release load unchanged and simply
+   read as empty. Never assume these keys are present on a stored record. */
+const EMPTY_MED = {
+  name:"", dosage:"", timeSlots:["Morning"], notes:"",
+  purpose:"",        // plain-English "why": "For memory"
+  isCritical:false,  // drives the refusal protocol branch
+  visualId:"",       // pill shape/colour, so the right one is picked up
+  isRedFlag:false,   // blood thinners, antipsychotics — flagged by hand, not
+                     // by matching drug names, which misses generics and
+                     // misfires on lookalikes
+  prescriber:"", pharmacy:"", pharmacyPhone:"", refillDate:"",
+};
+/* Pill appearances offered as taps rather than free text, so the field is
+   actually filled in. Free text stays available underneath. */
+/* A blank incident. trigger is v3 and optional — records logged before this
+   release simply have no trigger, which reads as "not recorded". */
+const newIncident = () => {
+  const d=new Date();
+  return {type:"",severity:"moderate",trigger:"",
+    date:`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`,
+    time:d.toTimeString().slice(0,5),
+    description:"",response:"",injuries:"",providerNotified:""};
+};
+/* Fields a paramedic asks for in the first ninety seconds. Added in v3; a
+   payload without this key reads as all-empty, which is what it was before. */
+const EMPTY_EMERGENCY_INFO = {
+  codeStatus:"",     // DNR / DNI / POLST / Full code
+  allergiesText:"",  // the card used to print a placeholder string here
+  baselineNote:"",   // "what normal looks like", so responders can judge a change
+  clientPhoto:"",    // for a wandering episode — stored via externalizeMedia
+};
+const CODE_STATUS_OPTIONS = ["Full code","DNR","DNI","DNR + DNI","POLST on file"];
+const MED_VISUAL_IDS = ["White round","White oval","Blue round","Blue oval","Pink round","Yellow round","Orange capsule","Red capsule","Green capsule","Clear capsule","Liquid","Patch","Inhaler","Injection"];
 
 const DOC_CATEGORIES = [
   {key:"all",label:"All Documents",icon:"📄"},
@@ -332,7 +376,7 @@ function initState(stateCode) {
   const doms = buildDomains(stateCode||"");
   const domains = {};
   doms.forEach(d => { domains[d.key] = { status:"not-started",notes:"",lastUpdated:null, goals:d.goals.map(g=>({done:false,subs:g.subs.map(()=>({done:false,lastDone:null,typeOverride:null})),customSubs:[],titleOverride:null,subOverrides:{}})) }; });
-  return { domains, contacts:[], appointments:[], messages:[], incidents:[], expenses:[], medSchedule:{medications:[],log:[]}, emergencyPlans:EMERGENCY_SCENARIOS.map(s=>({key:s.key,steps:[...s.steps]})), careShifts:[], availability:{}, transitionTriggers:{}, statusHistory:[], postDeathChecklist:POST_DEATH_SECTIONS.map(s=>s.items.map(()=>false)), selfReports:[], savedDocs:[], caregiverWellness:[], capacityLog:[], poaDecisions:[], log:[], domainOverrides:{}, settings:{caregiverPasscode:"1234",clientPasscode:"0000",deviceId:genDeviceId(),deviceName:"",stateCode:stateCode||"",schemaVersion:SCHEMA_VERSION}, _sync:{} };
+  return { domains, contacts:[], appointments:[], messages:[], incidents:[], expenses:[], medSchedule:{medications:[],log:[]}, emergencyPlans:EMERGENCY_SCENARIOS.map(s=>({key:s.key,steps:[...s.steps]})), careShifts:[], availability:{}, transitionTriggers:{}, statusHistory:[], postDeathChecklist:POST_DEATH_SECTIONS.map(s=>s.items.map(()=>false)), selfReports:[], savedDocs:[], caregiverWellness:[], capacityLog:[], poaDecisions:[], log:[], domainOverrides:{}, emergencyInfo:{...EMPTY_EMERGENCY_INFO}, settings:{caregiverPasscode:"1234",clientPasscode:"0000",deviceId:genDeviceId(),deviceName:"",stateCode:stateCode||"",schemaVersion:SCHEMA_VERSION}, _sync:{} };
 }
 
 /* ═══ Merge engine ═══ */
@@ -760,7 +804,7 @@ function mergeIsOversized(b64, report){ const newRecords=(report&&report.added&&
 // Resolves a media value to a usable src: legacy inline data: URLs render directly; blobref: ids are
 // fetched from the blob store and decrypted (cached by id). Renders the photo thumb or audio player.
 const _mediaCache=new Map();
-function MediaThumb({value, dek, altKey, kind}){
+function useMediaSrc(value, dek, altKey){
   const initial=(typeof value==="string"&&value.startsWith("data:"))?value:((typeof value==="string"&&value.match(BLOBREF_RE)&&_mediaCache.get(value.match(BLOBREF_RE)[1]))||null);
   const [src,setSrc]=useState(initial);
   useEffect(()=>{ let alive=true;
@@ -776,8 +820,17 @@ function MediaThumb({value, dek, altKey, kind}){
     })();
     return()=>{alive=false};
   },[value,dek,altKey]);
+  return src;
+}
+function MediaThumb({value, dek, altKey, kind}){
+  const src=useMediaSrc(value, dek, altKey);
   if(kind==="audio"){ return src ? (<audio src={src} controls style={{height:32,marginTop:6}}/>) : (<span className="hint">Loading audio…</span>); }
   return (<div className="photo-thumb">{src?<img src={src} alt="attachment"/>:<div className="photo-loading"/>}</div>);
+}
+// A bare <img> for the same media values — used where the thumb chrome would be wrong.
+function MediaImg({value, dek, altKey, className, alt}){
+  const src=useMediaSrc(value, dek, altKey);
+  return src ? <img src={src} alt={alt||""} className={className}/> : <div className={className+" photo-loading"}/>;
 }
 
 // Legacy single-blob writers (still used by v2→v3 migration and as the pre-WAL base snapshot)
@@ -1170,8 +1223,11 @@ const ROLES = [
   {key:"carepro",label:"Care Professional",desc:"Care-focused access. No legal, financial, or export.",icon:"🩺"},
   {key:"client-full",label:"Client (Independent)",desc:"Full view including legal and financial. Can export and submit self-reports.",icon:"🟢"},
   {key:"client-restricted",label:"Client (Supported)",desc:"Limited view. Can submit self-reports and view messages.",icon:"🛡"},
+  {key:"observer",label:"Observer",desc:"Read-only. Can view schedules, logs, messages, and documents. Cannot edit, delete, or export.",icon:"👁"},
 ];
 const CAREPRO_DOMAINS = ["physical","cognitive","wellness"];
+/* Observers see the care-facing domains; legal and financial stay closed to them. */
+const OBSERVER_DOMAINS = ["physical","cognitive","wellness"];
 
 /* Text size tiers. Standard = the 18px root from the design tokens. */
 const UI_SCALE_PCT = {standard:100, large:125, larger:150};
@@ -1536,14 +1592,27 @@ const DomainEditModal=({editingDomain,setEditingDomain,setData,addLog})=>{const[
 const IncidentFormUI=({incidentForm,setIncidentForm,saveIncident,deleteIncident,incidentPhotoRef,handlePhotoCapture})=>{const[f,setF]=useState(incidentForm.incident);const[incPhotos,setIncPhotos]=useState(incidentForm.incident.photos||[]);const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
   <div className="cf-overlay" onClick={()=>setIncidentForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()}>
     <h2 className="cf-title">{incidentForm.mode==="edit"?"Edit Incident":"Log Incident"}</h2>
-    <div className="cf-grid">
-      <label className="cf-label">Type<select value={f.type} onChange={e=>upd("type",e.target.value)} className="cf-input">{INCIDENT_TYPES.map(t=><option key={t.key} value={t.key}>{t.icon} {t.label}</option>)}</select></label>
-      <label className="cf-label">Severity<select value={f.severity} onChange={e=>upd("severity",e.target.value)} className="cf-input">{SEVERITY_LEVELS.map(s=><option key={s.key} value={s.key}>{s.label}</option>)}</select></label>
+    <label className="cf-label">What happened</label>
+    <div className="tap-select">{INCIDENT_TYPES.map(t=>(
+      <button key={t.key} type="button" onClick={()=>upd("type",t.key)} aria-pressed={f.type===t.key} className={`tap-opt ${f.type===t.key?"tap-opt-on":""}`}>
+        <span className="tap-opt-icon">{t.icon}</span><span>{t.label}</span></button>))}
+    </div>
+    <label className="cf-label" style={{marginTop:12}}>How serious</label>
+    <div className="tap-select">{SEVERITY_LEVELS.map(sv=>(
+      <button key={sv.key} type="button" onClick={()=>upd("severity",sv.key)} aria-pressed={f.severity===sv.key} className={`tap-opt ${f.severity===sv.key?"tap-opt-on":""}`}
+        style={f.severity===sv.key?{background:sv.bg,color:sv.color,borderColor:sv.color}:undefined}>{sv.label}</button>))}
+    </div>
+    <label className="cf-label" style={{marginTop:12}}>What might have set it off <span className="cf-optional">optional</span></label>
+    <div className="tap-select">{TRIGGER_OPTIONS.map(t=>(
+      <button key={t.key} type="button" onClick={()=>upd("trigger",f.trigger===t.key?"":t.key)} aria-pressed={f.trigger===t.key} className={`tap-opt ${f.trigger===t.key?"tap-opt-on":""}`}>
+        <span className="tap-opt-icon">{t.icon}</span><span>{t.label}</span></button>))}
+    </div>
+    <div className="cf-grid" style={{marginTop:12}}>
       <label className="cf-label">Date<input type="date" value={f.date} onChange={e=>upd("date",e.target.value)} className="cf-input"/></label>
       <label className="cf-label">Time<input type="time" value={f.time} onChange={e=>upd("time",e.target.value)} className="cf-input"/></label>
     </div>
-    <label className="cf-label" style={{marginBottom:10}}>What happened<textarea value={f.description} onChange={e=>upd("description",e.target.value)} className="notes-ta" rows={3} placeholder="Describe the incident…"/></label>
-    <label className="cf-label" style={{marginBottom:10}}>Response / Action taken<textarea value={f.response} onChange={e=>upd("response",e.target.value)} className="notes-ta" rows={2} placeholder="What was done in response?"/></label>
+    <label className="cf-label" style={{marginBottom:10}}>Details <span className="cf-optional">optional</span><textarea value={f.description} onChange={e=>upd("description",e.target.value)} className="notes-ta" rows={3} placeholder="Describe the incident…"/></label>
+    <label className="cf-label" style={{marginBottom:10}}>Response / Action taken <span className="cf-optional">optional</span><textarea value={f.response} onChange={e=>upd("response",e.target.value)} className="notes-ta" rows={2} placeholder="What was done in response?"/></label>
     <div className="cf-grid">
       <label className="cf-label">Injuries (if any)<input value={f.injuries} onChange={e=>upd("injuries",e.target.value)} className="cf-input" placeholder="None, bruise, laceration…"/></label>
       <label className="cf-label">Provider notified<input value={f.providerNotified} onChange={e=>upd("providerNotified",e.target.value)} className="cf-input" placeholder="Dr. name, 911, none…"/></label>
@@ -1556,9 +1625,37 @@ const IncidentFormUI=({incidentForm,setIncidentForm,saveIncident,deleteIncident,
     </div>
     {incPhotos.length>0&&<div className="photo-preview-row" style={{marginBottom:8}}>{incPhotos.map((p,i)=>(<div key={i} className="photo-thumb"><img src={p} alt={"Photo "+(i+1)}/><button onClick={()=>setIncPhotos(prev=>prev.filter((_,j)=>j!==i))} className="photo-remove">×</button></div>))}</div>}
     <div className="cf-actions" style={{marginTop:12}}>
-      <button disabled={!f.description.trim()} onClick={()=>{f.photos=incPhotos;saveIncident(f,incidentForm.id)}} className="save-btn" style={{opacity:f.description.trim()?1:.4}}>Save</button>
+      <button disabled={!f.type} onClick={()=>{f.photos=incPhotos;saveIncident(f,incidentForm.id)}} className="save-btn" style={{opacity:f.type?1:.4}}>Save</button>
       {incidentForm.mode==="edit"&&<button onClick={()=>deleteIncident(incidentForm.id)} className="cd-delete-btn">Delete</button>}
       <button onClick={()=>setIncidentForm(null)} className="cancel-btn">Cancel</button>
+    </div>
+  </div></div>)};
+
+const EcardFormUI=({info,setEcardForm,saveEmergencyInfo,ecardPhotoRef,handlePhotoCapture})=>{
+  const[f,setF]=useState(info);
+  const upd=(k,v)=>setF(p=>({...p,[k]:v}));
+  const setPhoto=(updater)=>{const arr=typeof updater==="function"?updater(f.clientPhoto?[f.clientPhoto]:[]):updater;upd("clientPhoto",(arr&&arr[arr.length-1])||"")};
+  return(
+  <div className="cf-overlay" onClick={()=>setEcardForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:460}}>
+    <h2 className="cf-title">Edit Emergency Info</h2>
+    <label className="cf-label" style={{marginBottom:6}}>Code status</label>
+    <div className="tap-select">{CODE_STATUS_OPTIONS.map(o=>(
+      <button key={o} type="button" onClick={()=>upd("codeStatus",f.codeStatus===o?"":o)} aria-pressed={f.codeStatus===o} className={`tap-opt ${f.codeStatus===o?"tap-opt-on":""}`}>{o}</button>))}
+    </div>
+    <input value={f.codeStatus||""} onChange={e=>upd("codeStatus",e.target.value)} className="cf-input" style={{marginTop:8}} placeholder="…or type it (POLST location, etc.)"/>
+    <label className="cf-label" style={{marginTop:12,marginBottom:10}}>Allergies<textarea value={f.allergiesText||""} onChange={e=>upd("allergiesText",e.target.value)} className="notes-ta" rows={2} placeholder="Penicillin, sulfa, latex… or 'No known allergies'"/></label>
+    <label className="cf-label" style={{marginBottom:10}}>What's normal for this person <span className="cf-optional">baseline</span><textarea value={f.baselineNote||""} onChange={e=>upd("baselineNote",e.target.value)} className="notes-ta" rows={3} placeholder="Usually oriented to person only. Walks with a walker. Speech is slow but clear. Any change from this is new."/></label>
+    <p className="hint" style={{marginTop:-4}}>Responders can't tell a change from a baseline they've never seen. This is what tells them.</p>
+    <label className="cf-label" style={{marginTop:12}}>Photo <span className="cf-optional">for identification during a wandering episode</span></label>
+    <div className="photo-attach-row">
+      <button onClick={()=>ecardPhotoRef.current&&ecardPhotoRef.current.click()} type="button" className="edit-btn" style={{marginTop:0,fontSize:12}}>📷 {f.clientPhoto?"Replace photo":"Add photo"}</button>
+      <input ref={ecardPhotoRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={e=>handlePhotoCapture(e,setPhoto)}/>
+      {f.clientPhoto&&<button onClick={()=>upd("clientPhoto","")} type="button" className="cancel-btn" style={{fontSize:11,padding:"4px 10px"}}>Remove</button>}
+    </div>
+    {f.clientPhoto&&<div className="photo-preview-row" style={{marginBottom:8}}><div className="photo-thumb"><img src={f.clientPhoto} alt="Photo for the emergency card"/></div></div>}
+    <div className="cf-actions" style={{marginTop:12}}>
+      <button onClick={()=>saveEmergencyInfo(f)} className="save-btn">Save</button>
+      <button onClick={()=>setEcardForm(null)} className="cancel-btn">Cancel</button>
     </div>
   </div></div>)};
 
@@ -1587,7 +1684,25 @@ const MedFormUI=({medForm,setMedForm,addMedToSchedule,editMedInSchedule,removeMe
     <label className="cf-label" style={{marginBottom:10}}>Dosage<input value={f.dosage} onChange={e=>setF(p=>({...p,dosage:e.target.value}))} className="cf-input" placeholder="10 mg"/></label>
     <label className="cf-label" style={{marginBottom:10}}>Time Slots</label>
     <div className="med-slot-row">{MED_TIME_SLOTS.map(s=>(<button key={s} onClick={()=>toggleSlot(s)} className={`cc-btn ${f.timeSlots.includes(s)?"cc-active":""}`}>{s}</button>))}</div>
+    <label className="cf-label" style={{marginTop:12,marginBottom:10}}>What it's for <span className="cf-optional">plain English</span><input value={f.purpose||""} onChange={e=>setF(p=>({...p,purpose:e.target.value}))} className="cf-input" placeholder="For memory"/></label>
+    <label className="cf-label" style={{marginBottom:6}}>What it looks like <span className="cf-optional">optional</span></label>
+    <div className="tap-select">{MED_VISUAL_IDS.map(v=>(
+      <button key={v} type="button" onClick={()=>setF(p=>({...p,visualId:p.visualId===v?"":v}))} aria-pressed={f.visualId===v} className={`tap-opt ${f.visualId===v?"tap-opt-on":""}`}>{v}</button>))}
+    </div>
+    <input value={f.visualId||""} onChange={e=>setF(p=>({...p,visualId:e.target.value}))} className="cf-input" style={{marginTop:8}} placeholder="…or describe it yourself"/>
     <label className="cf-label" style={{marginTop:12,marginBottom:10}}>Notes<input value={f.notes||""} onChange={e=>setF(p=>({...p,notes:e.target.value}))} className="cf-input" placeholder="Take with food, etc."/></label>
+    <label className="med-flag"><input type="checkbox" checked={!!f.isCritical} onChange={e=>setF(p=>({...p,isCritical:e.target.checked}))}/>
+      <span><strong>Critical — a missed dose matters.</strong> If this is refused, the prescriber's missed-dose instructions are surfaced instead of just logging it.</span></label>
+    <label className="med-flag"><input type="checkbox" checked={!!f.isRedFlag} onChange={e=>setF(p=>({...p,isRedFlag:e.target.checked}))}/>
+      <span><strong>Flag for paramedics.</strong> Blood thinners, antipsychotics, and anything else an emergency responder must know about. Shows on the Emergency Info Card.</span></label>
+    <details className="med-cabinet-details"><summary>Prescriber, pharmacy &amp; refills</summary>
+      <div className="cf-grid" style={{marginTop:10}}>
+        <label className="cf-label">Prescriber<input value={f.prescriber||""} onChange={e=>setF(p=>({...p,prescriber:e.target.value}))} className="cf-input" placeholder="Dr. Reyes"/></label>
+        <label className="cf-label">Refill due<input type="date" value={f.refillDate||""} onChange={e=>setF(p=>({...p,refillDate:e.target.value}))} className="cf-input"/></label>
+        <label className="cf-label">Pharmacy<input value={f.pharmacy||""} onChange={e=>setF(p=>({...p,pharmacy:e.target.value}))} className="cf-input" placeholder="Walgreens — Burnside"/></label>
+        <label className="cf-label">Pharmacy phone<input type="tel" value={f.pharmacyPhone||""} onChange={e=>setF(p=>({...p,pharmacyPhone:e.target.value}))} className="cf-input" placeholder="503-555-0142"/></label>
+      </div>
+    </details>
     <div className="cf-actions" style={{marginTop:8}}>
       <button disabled={!f.name.trim()||!f.timeSlots.length} onClick={()=>medForm.mode==="edit"?editMedInSchedule(f,medForm.id):addMedToSchedule(f)} className="save-btn" style={{opacity:f.name.trim()&&f.timeSlots.length?1:.4}}>Save</button>
       {medForm.mode==="edit"&&<button onClick={()=>{removeMedFromSchedule(medForm.id);setMedForm(null)}} className="cd-delete-btn">Remove</button>}
@@ -1692,8 +1807,25 @@ export default function App() {
   const isCarePro=role==="carepro";
   const isClientFull=role==="client-full";
   const isClientRestricted=role==="client-restricted";
+  const isObserver=role==="observer";
+  // Clients and observers both see the app read-only. UI edit affordances gate
+  // on this; anything client-specific still gates on isClient.
+  const isReadOnly=isClient||isObserver;
 
   const can=(action,context)=>{
+    // Observer is a hard read-only role. Rather than excluding it in each of the
+    // ~45 cases below — several of which read "anyone who isn't X" and would
+    // silently grant it — permissions are allow-listed here. A permission added
+    // later is therefore denied to observers by default, not accidentally opened.
+    if(isObserver){
+      switch(action){
+        case "view-domain": return OBSERVER_DOMAINS.includes(context);
+        case "view-contacts": case "view-documents": case "view-shifts":
+        case "view-selfreport":
+          return true;
+        default: return false; // every edit-/add-/remove-/delete-/check-/log-/med-admin/export/manage-* action
+      }
+    }
     switch(action){
       case "view-domain": return isCarePro?CAREPRO_DOMAINS.includes(context):true;
       case "view-legal": return !isCarePro&&!isClientRestricted;
@@ -1801,6 +1933,8 @@ export default function App() {
   // Incidents
   const [incidentForm,setIncidentForm]=useState(null);
   const incidentPhotoRef=useRef(null);
+  const [ecardForm,setEcardForm]=useState(null);
+  const ecardPhotoRef=useRef(null);
   const [incidentFilter,setIncidentFilter]=useState("all");
   // Expenses
   const [expenseForm,setExpenseForm]=useState(null);
@@ -2582,6 +2716,17 @@ export default function App() {
   const getExpenseMonths=()=>{const months=new Set();(data.expenses||[]).forEach(e=>{if(e.date)months.add(e.date.slice(0,7))});return[...months].sort().reverse()};
 
   /* ── med admin ── */
+  // Missing key reads as all-empty, so pre-v3 payloads render the card exactly
+  // as they did before rather than throwing on a field that was never stored.
+  const getEmergencyInfo=()=>({...EMPTY_EMERGENCY_INFO,...(data.emergencyInfo||{})});
+  const saveEmergencyInfo=async(info)=>{
+    const photos=await externalizeMedia([info.clientPhoto].filter(Boolean));
+    const next={...EMPTY_EMERGENCY_INFO,...info,clientPhoto:photos[0]||""};
+    setData(p=>addLog({...p,emergencyInfo:next},"emergency_info","Updated emergency info card"));
+    hipaaAudit("update","Updated emergency info card","emergency_info");
+    setEcardForm(null);
+  };
+
   const getMedSchedule=(includeDiscontinued)=>{const ms=data.medSchedule||{medications:[],log:[]};if(includeDiscontinued)return ms;return{...ms,medications:(ms.medications||[]).filter(m=>!m.discontinued)}};
   const addMedToSchedule=(med)=>{setData(p=>{const ms={...(p.medSchedule||{medications:[],log:[]})};ms.medications=[...ms.medications,{...med,id:nextId(),startDate:new Date().toISOString().slice(0,10)}];hipaaAudit("create","Added medication: "+med.name,"medications");
     return addLog({...p,medSchedule:ms},"medadmin",`Added ${med.name} to schedule`)});setMedForm(null)};
@@ -2775,7 +2920,7 @@ export default function App() {
     else if(srType==="sleep"){if(!srText.trim()){setSrErr("Please describe your sleep before submitting.");return}report.text=srText.trim()}
     else if(srType==="audio"){if(!srAudioData&&!srText.trim()){setSrErr("Please record audio or enter text before submitting.");return}report.audioData=srAudioData?await externalizeOne(srAudioData,rKeyRef.current||dekRef.current):null;report.text=srText.trim()}
     if(srPhotos.length>0)report.photos=await externalizeMedia(srPhotos,rKeyRef.current||dekRef.current);
-    report.origin=isClient?"client":"caregiver"; // client-authored reports become append-only and hash-chained
+    report.origin=isReadOnly?"client":"caregiver"; // client-authored reports become append-only and hash-chained
     try{ const mh=[]; for(const p of srPhotos){ if(typeof p==="string"&&p.startsWith("data:"))mh.push(await sha256Hex(p)); } if(srAudioData&&typeof srAudioData==="string"&&srAudioData.startsWith("data:"))mh.push(await sha256Hex(srAudioData)); if(mh.length)report.mediaHashes=mh; }catch{}
     setSrErr("");
     if(clientScopedRef.current){ try{ await appendOutboxReport(report,rKeyRef.current); }catch(e){console.error("Outbox write failed:",e);setSrErr("Couldn't save your update — please try again.");return} }
@@ -3785,12 +3930,13 @@ export default function App() {
           </div>):<div className="search-hint">Type at least 2 characters to search</div>})()}
       </div>
     </div>)}
-    {contactForm&&!isClient&&<ContactFormUI key={"contact-"+(contactForm.id||contactForm.mode)} contactForm={contactForm} setContactForm={setContactForm} saveContact={saveContact}/>}
-    {apptForm&&!isClient&&<ApptFormUI key={"appt-"+(apptForm.id||apptForm.mode)} apptForm={apptForm} setApptForm={setApptForm} saveAppt={saveAppt} deleteAppt={deleteAppt}/>}
-    {editingDomain&&!isClient&&<DomainEditModal key={"domain-"+editingDomain.key} editingDomain={editingDomain} setEditingDomain={setEditingDomain} setData={setData} addLog={addLog}/>}
-    {incidentForm&&!isClient&&<IncidentFormUI key={"incident-"+(incidentForm.id||incidentForm.mode)} incidentForm={incidentForm} setIncidentForm={setIncidentForm} saveIncident={saveIncident} deleteIncident={deleteIncident} incidentPhotoRef={incidentPhotoRef} handlePhotoCapture={handlePhotoCapture}/>}
-    {expenseForm&&!isClient&&<ExpenseFormUI key={"expense-"+(expenseForm.id||expenseForm.mode)} expenseForm={expenseForm} setExpenseForm={setExpenseForm} saveExpense={saveExpense} deleteExpense={deleteExpense}/>}
-    {medForm&&!isClient&&<MedFormUI key={"med-"+(medForm.id||medForm.mode)} medForm={medForm} setMedForm={setMedForm} addMedToSchedule={addMedToSchedule} editMedInSchedule={editMedInSchedule} removeMedFromSchedule={removeMedFromSchedule}/>}
+    {contactForm&&!isReadOnly&&<ContactFormUI key={"contact-"+(contactForm.id||contactForm.mode)} contactForm={contactForm} setContactForm={setContactForm} saveContact={saveContact}/>}
+    {apptForm&&!isReadOnly&&<ApptFormUI key={"appt-"+(apptForm.id||apptForm.mode)} apptForm={apptForm} setApptForm={setApptForm} saveAppt={saveAppt} deleteAppt={deleteAppt}/>}
+    {editingDomain&&!isReadOnly&&<DomainEditModal key={"domain-"+editingDomain.key} editingDomain={editingDomain} setEditingDomain={setEditingDomain} setData={setData} addLog={addLog}/>}
+    {ecardForm&&can("edit-emergency")&&<EcardFormUI info={ecardForm} setEcardForm={setEcardForm} saveEmergencyInfo={saveEmergencyInfo} ecardPhotoRef={ecardPhotoRef} handlePhotoCapture={handlePhotoCapture}/>}
+    {incidentForm&&!isReadOnly&&<IncidentFormUI key={"incident-"+(incidentForm.id||incidentForm.mode)} incidentForm={incidentForm} setIncidentForm={setIncidentForm} saveIncident={saveIncident} deleteIncident={deleteIncident} incidentPhotoRef={incidentPhotoRef} handlePhotoCapture={handlePhotoCapture}/>}
+    {expenseForm&&!isReadOnly&&<ExpenseFormUI key={"expense-"+(expenseForm.id||expenseForm.mode)} expenseForm={expenseForm} setExpenseForm={setExpenseForm} saveExpense={saveExpense} deleteExpense={deleteExpense}/>}
+    {medForm&&!isReadOnly&&<MedFormUI key={"med-"+(medForm.id||medForm.mode)} medForm={medForm} setMedForm={setMedForm} addMedToSchedule={addMedToSchedule} editMedInSchedule={editMedInSchedule} removeMedFromSchedule={removeMedFromSchedule}/>}
     {/* Merge Preview Modal */}
     {/* MFA enrollment */}
     {mfaEnroll&&(<div className="cf-overlay" onClick={()=>{if(mfaEnroll!=="registering"){setMfaEnroll(null);setMfaEnrollPrepared(null)}}}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
@@ -3866,7 +4012,7 @@ export default function App() {
             <span className="hub-topbar-title">{getViewTitle()}</span>
             {getBreadcrumb()&&<span className="hub-topbar-crumb">{getBreadcrumb()}</span>}
           </div>
-          {isClient&&<span className="client-badge">View Only</span>}
+          {isReadOnly&&<span className="client-badge">View Only</span>}
           <button onClick={()=>{setSearchOpen(true);setSearchQ("")}} className="search-btn">🔍</button>
           <button onClick={lock} className="top-lock">🔒</button>
         </header>
@@ -3899,7 +4045,7 @@ export default function App() {
             <div className="hub-card" onClick={()=>{setCurrentHub("records");nav("incidents")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>⚠</span></div><div className="hub-card-body"><div className="hub-card-title">Log incident</div><div className="hub-card-sub">Fall, behavior, medication error</div></div><span className="hub-card-arr">›</span></div>
             {can("submit-selfreport")&&<div className="hub-card" onClick={()=>{setCurrentHub("team");nav("selfreport")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🗣</span></div><div className="hub-card-body"><div className="hub-card-title">Self-report</div><div className="hub-card-sub">Mood, pain, sleep, voice note</div></div><span className="hub-card-arr">›</span></div>}
             <div className="hub-card" onClick={()=>{setCurrentHub("today");nav("emergency-card")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🆔</span></div><div className="hub-card-body"><div className="hub-card-title">Emergency info card</div><div className="hub-card-sub">Printable wallet card with vitals</div></div><span className="hub-card-arr">›</span></div>
-            {!isClient&&<div className="hub-card" onClick={()=>{setCurrentHub("today");nav("caregiver-wellness")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>💛</span></div><div className="hub-card-body"><div className="hub-card-title">Caregiver check-in</div><div className="hub-card-sub">Track your stress, sleep, and respite</div></div><span className="hub-card-arr">›</span></div>}
+            {!isReadOnly&&<div className="hub-card" onClick={()=>{setCurrentHub("today");nav("caregiver-wellness")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>💛</span></div><div className="hub-card-body"><div className="hub-card-title">Caregiver check-in</div><div className="hub-card-sub">Track your stress, sleep, and respite</div></div><span className="hub-card-arr">›</span></div>}
           </>)}
 
           {/* ═══ CARE PLAN HUB ═══ */}
@@ -3983,23 +4129,37 @@ export default function App() {
             <p className="page-sub">Print this card or copy it. Post on the refrigerator, keep in wallet, hand to paramedics.</p>
             <div className="ecard">
               <div className="ecard-header">EMERGENCY MEDICAL INFORMATION</div>
-              <div className="ecard-row"><span className="ecard-label">Name:</span><span>{(data.settings&&data.settings.team&&data.settings.team.clientName)||"[Set in Sync > Team]"}</span></div>
+              <div className="ecard-id-row">
+                {getEmergencyInfo().clientPhoto&&<MediaImg value={getEmergencyInfo().clientPhoto} dek={dekRef.current} altKey={rKeyRef.current} className="ecard-photo" alt="Photo of the person this card describes"/>}
+                <div style={{flex:1}}>
+                  <div className="ecard-row"><span className="ecard-label">Name:</span><span>{(data.settings&&data.settings.team&&data.settings.team.clientName)||"[Set in Sync > Team]"}</span></div>
+                </div>
+              </div>
               <div className="ecard-section">DIAGNOSES</div>
               <div className="ecard-body">{(()=>{const notes=[];DOMAINS.filter(d=>d.key==="physical"||d.key==="cognitive").forEach(d=>{if((data.domains[d.key]&&data.domains[d.key].notes)){notes.push(data.domains[d.key].notes)}});return notes.length>0?notes.join("; "):"[Add in domain notes]"})()}</div>
               <div className="ecard-section">CURRENT MEDICATIONS</div>
               <div className="ecard-body">{getMedSchedule().medications.length>0?getMedSchedule().medications.map(m=>m.name+(m.dosage?" "+m.dosage:"")).join(", "):"[Add in Medication Admin]"}</div>
               <div className="ecard-section">ALLERGIES</div>
-              <div className="ecard-body">[Add allergy information in Physical Health domain notes]</div>
+              <div className="ecard-body">{getEmergencyInfo().allergiesText||"[None recorded — tap Edit to add]"}</div>
+              {getEmergencyInfo().codeStatus&&<><div className="ecard-section">CODE STATUS</div>
+              <div className="ecard-body ecard-code-status">{getEmergencyInfo().codeStatus}</div></>}
+              {(()=>{const flagged=getMedSchedule().medications.filter(m=>m.isRedFlag);return flagged.length>0?(<>
+                <div className="ecard-section">⚑ ALERT MEDICATIONS</div>
+                <div className="ecard-body ecard-redflag">{flagged.map(m=>m.name+(m.dosage?" "+m.dosage:"")).join(", ")}</div>
+              </>):null})()}
+              {getEmergencyInfo().baselineNote&&<><div className="ecard-section">WHAT'S NORMAL FOR THIS PERSON</div>
+              <div className="ecard-body">{getEmergencyInfo().baselineNote}</div></>}
               <div className="ecard-section">EMERGENCY CONTACTS</div>
               <div className="ecard-body">{(data.contacts||[]).filter(c=>c.category==="medical"||c.category==="family").slice(0,4).map(c=>c.name+(c.phone?" — "+c.phone:"")).join(" | ")||"[Add in Contacts]"}</div>
               <div className="ecard-section">ADVANCE DIRECTIVE</div>
               <div className="ecard-body">{(data.domains.legal&&data.domains.legal.goals&&data.domains.legal.goals[1]&&data.domains.legal.goals[1].done)?"Advance directive on file":"[Status unknown — check Legal Safety domain]"}</div>
             </div>
+            {can("edit-emergency")&&<button onClick={()=>setEcardForm(getEmergencyInfo())} className="edit-btn" style={{marginTop:16}}>✎ Edit emergency info</button>}
             <div style={{display:"flex",gap:8,marginTop:16}}><button onClick={()=>{const el=document.querySelector(".ecard");if(el){try{navigator.clipboard.writeText(el.innerText);flash("Card copied to clipboard.")}catch{}}}} className="save-btn">📋 Copy</button><button onClick={()=>window.print()} className="save-btn" style={{background:"#6b6560"}}>🖨 Print</button></div>
           </>)}
 
           {/* ═══ CAREGIVER WELLNESS ═══ */}
-          {view==="caregiver-wellness"&&!isClient&&(<>
+          {view==="caregiver-wellness"&&!isReadOnly&&(<>
             <h1 className="page-title">💛 Caregiver Check-in</h1>
             <p className="page-sub">You matter too. Track your wellbeing so your team can support each other.</p>
             <div className="section">
@@ -4028,6 +4188,10 @@ export default function App() {
               const maxType=Math.max(...Object.values(types));
               // Severity distribution
               const sevs={};incs.forEach(i=>{sevs[i.severity]=(sevs[i.severity]||0)+1});
+              // Trigger distribution — only over incidents that recorded one, so
+              // the older un-triggered records don't read as a "none" majority.
+              const trigs={};let trigTotal=0;incs.forEach(i=>{if(i.trigger){trigs[i.trigger]=(trigs[i.trigger]||0)+1;trigTotal++}});
+              const maxTrig=trigTotal?Math.max(...Object.values(trigs)):0;
               // Time of day (from timestamp)
               const hours=new Array(24).fill(0);
               incs.forEach(i=>{const t=i.timestamp||"";const m=t.match(/(\d+):(\d+)\s*(AM|PM)/i);if(m){let h=parseInt(m[1]);if(m[3].toUpperCase()==="PM"&&h!==12)h+=12;if(m[3].toUpperCase()==="AM"&&h===12)h=0;hours[h]++}});
@@ -4041,6 +4205,14 @@ export default function App() {
                 <div className="section"><h3 className="sec-title">By type</h3>
                   <div className="pattern-bars">{Object.entries(types).sort((a,b)=>b[1]-a[1]).map(([t,c])=>(<div key={t} className="pattern-bar-row"><span className="pattern-bar-label">{t}</span><div className="pattern-bar-track"><div className="pattern-bar-fill" style={{width:(c/maxType*100)+"%",background:"#b56576"}}/></div><span className="pattern-bar-val">{c}</span></div>))}</div>
                 </div>
+                {trigTotal>0&&<div className="section"><h3 className="sec-title">By trigger</h3>
+                  <p className="hint" style={{marginTop:0}}>Across the {trigTotal} of {incs.length} incidents where a trigger was recorded.</p>
+                  <div className="pattern-bars">{Object.entries(trigs).sort((a,b)=>b[1]-a[1]).map(([t,c])=>{const to=TRIGGER_OPTIONS.find(x=>x.key===t);return(
+                    <div key={t} className="pattern-bar-row"><span className="pattern-bar-label">{to?to.icon+" "+to.label:t}</span>
+                      <div className="pattern-bar-track"><div className="pattern-bar-fill" style={{width:(c/maxTrig*100)+"%"}}/></div>
+                      <span className="pattern-bar-count">{c}</span></div>)})}
+                  </div>
+                </div>}
                 <div className="section"><h3 className="sec-title">By severity</h3>
                   <div className="pattern-bars">{Object.entries(sevs).sort((a,b)=>b[1]-a[1]).map(([s,c])=>(<div key={s} className="pattern-bar-row"><span className="pattern-bar-label">{s}</span><div className="pattern-bar-track"><div className="pattern-bar-fill" style={{width:(c/maxType*100)+"%",background:s==="Severe"?"#b56576":s==="Moderate"?"#bc6c25":"#718355"}}/></div><span className="pattern-bar-val">{c}</span></div>))}</div>
                 </div>
@@ -4233,7 +4405,7 @@ export default function App() {
           </>)}
 
           {/* ═══ CAPACITY DOCUMENTATION ═══ */}
-          {view==="capacity"&&!isClient&&(<>
+          {view==="capacity"&&!isReadOnly&&(<>
             <h1 className="page-title">📝 Capacity Observations</h1>
             <p className="page-sub">Document remaining abilities over time. Critical for legal proceedings, care planning, and provider visits.</p>
             <div className="section">
@@ -4269,12 +4441,12 @@ export default function App() {
           {/* ═══ OVERVIEW (legacy, kept for domain card grid) ═══ */}
           {view==="overview"&&(<>
             <h1 className="page-title">Dashboard Overview</h1>
-            <p className="page-sub">{isClient?"You're viewing in read-only mode.":"Tap any domain to see guided steps. Use ✎ to rename categories."}</p>
+            <p className="page-sub">{isReadOnly?"You're viewing in read-only mode.":"Tap any domain to see guided steps. Use ✎ to rename categories."}</p>
             <div className="o-grid">
               {DOMAINS.filter(d=>can("view-domain",d.key)).map(d=>{const prog=getProgress(d.key);const pulseColor=prog.recency>=75?"#718355":prog.recency>=40?"#bc6c25":"#b56576";const healthColor=prog.pct>=80&&prog.recency>=70?"#718355":prog.pct>=40||prog.recency>=40?"#bc6c25":"#b56576";const healthLabel=prog.pct>=80&&prog.recency>=70?"Healthy":prog.pct>=40||prog.recency>=40?"Fair":"Needs Attention";return(
                 <button key={d.key} onClick={()=>nav(d.key)} className="o-card" style={{borderLeftColor:d.color,background:d.bg}}>
                   <div className="o-card-head"><span style={{fontSize:24,color:d.color}}>{d.icon}</span><span className="o-badge" style={{background:healthColor+"18",color:healthColor}}>{healthLabel}</span></div>
-                  <div className="o-card-title-row"><h2 className="o-card-title">{getDomLabel(d.key)}</h2>{!isClient&&<span className="edit-icon edit-icon-visible" onClick={e=>{e.stopPropagation();setEditingDomain({key:d.key,label:getDomLabel(d.key),desc:getDomDesc(d.key)})}}>✎</span>}</div>
+                  <div className="o-card-title-row"><h2 className="o-card-title">{getDomLabel(d.key)}</h2>{!isReadOnly&&<span className="edit-icon edit-icon-visible" onClick={e=>{e.stopPropagation();setEditingDomain({key:d.key,label:getDomLabel(d.key),desc:getDomDesc(d.key)})}}>✎</span>}</div>
                   <p className="o-card-desc">{getDomDesc(d.key)}</p>
                   <div className="dual-track">
                     <div className="dual-track-row"><span className="dual-track-label">☐ Foundation</span><div className="prog-track"><div className="prog-fill" style={{width:`${prog.pct}%`,background:d.color}}/></div><span className="prog-label">{prog.done}/{prog.total}</span></div>
@@ -4297,7 +4469,7 @@ export default function App() {
           {/* ═══ INCIDENT LOG ═══ */}
           {view==="incidents"&&(<>
             <div className="contacts-header"><div><h1 className="page-title">⚠ Incident Log</h1><p className="page-sub" style={{margin:"4px 0 0"}}>Structured record of falls, wandering, behavioral episodes, and medical events. Bring this to every provider visit.</p></div>
-              {!isClient&&<button onClick={()=>setIncidentForm({mode:"add",incident:{type:"fall",severity:"moderate",date:fmtDate(new Date().getFullYear(),new Date().getMonth(),new Date().getDate()),time:new Date().toTimeString().slice(0,5),description:"",response:"",injuries:"",providerNotified:""}})} className="save-btn">+ Log Incident</button>}
+              {!isReadOnly&&<button onClick={()=>setIncidentForm({mode:"add",incident:newIncident()})} className="save-btn">+ Log Incident</button>}
             </div>
             <div className="cc-group" style={{marginBottom:20}}><span className="cc-label">Filter:</span>
               <button onClick={()=>setIncidentFilter("all")} className={`cc-btn ${incidentFilter==="all"?"cc-active":""}`}>All</button>
@@ -4305,14 +4477,15 @@ export default function App() {
             </div>
             {getFilteredIncidents().length===0?<div className="contacts-empty"><p>{((data.incidents&&data.incidents.length)||0)===0?"No incidents logged yet.":"No incidents match this filter."}</p></div>:
               <div className="contacts-list">{getFilteredIncidents().map(inc=>{const itype=INCIDENT_TYPES.find(t=>t.key===inc.type);const sev=SEVERITY_LEVELS.find(s=>s.key===inc.severity);return(
-                <div key={inc.id} className="incident-card" style={{borderLeftColor:(sev&&sev.color)||"#8d99ae"}}>
+                <div key={inc.id} className="incident-card" style={{borderLeftColor:(sev&&sev.color)||"var(--color-text-muted)"}}>
                   <div className="incident-head">
                     <span className="incident-type">{(itype&&itype.icon)} {(itype&&itype.label)||inc.type}</span>
                     <span className="o-badge" style={{background:(sev&&sev.bg),color:(sev&&sev.color)}}>{(sev&&sev.label)}</span>
                     <span className="incident-datetime">{inc.date} {inc.time}</span>
-                    {!isClient&&<button onClick={()=>setIncidentForm({mode:"edit",incident:{...inc},id:inc.id})} className="edit-icon edit-icon-visible">✎</button>}
+                    {!isReadOnly&&<button onClick={()=>setIncidentForm({mode:"edit",incident:{...newIncident(),...inc},id:inc.id})} className="edit-icon edit-icon-visible">✎</button>}
                   </div>
-                  <p className="incident-desc">{inc.description}</p>
+                  {inc.description&&<p className="incident-desc">{inc.description}</p>}
+                  {(()=>{const tr=TRIGGER_OPTIONS.find(t=>t.key===inc.trigger);return tr?<p className="incident-trigger">{tr.icon} Possible trigger: {tr.label}</p>:null})()}
                   {inc.response&&<p className="incident-response"><strong>Response:</strong> {inc.response}</p>}
                   <div className="incident-meta">
                     {inc.injuries&&<span>Injuries: {inc.injuries}</span>}
@@ -4325,7 +4498,7 @@ export default function App() {
           {/* ═══ MED ADMIN LOG ═══ */}
           {view==="medadmin"&&(<>
             <div className="contacts-header"><div><h1 className="page-title">💊 Medication Administration Log</h1><p className="page-sub" style={{margin:"4px 0 0"}}>Track daily medication administration. Tap cells to cycle: ✓ given → ✗ missed → ⊘ refused → clear.</p></div>
-              {!isClient&&<button onClick={()=>setMedForm({mode:"add",med:{name:"",dosage:"",timeSlots:["Morning"],notes:""}})} className="save-btn">+ Add Medication</button>}
+              {!isReadOnly&&<button onClick={()=>setMedForm({mode:"add",med:{...EMPTY_MED}})} className="save-btn">+ Add Medication</button>}
             </div>
             <div className="med-date-nav">
               <button onClick={()=>{const d=new Date(medAdminDate+"T12:00:00");d.setDate(d.getDate()-1);setMedAdminDate(fmtDate(d.getFullYear(),d.getMonth(),d.getDate()))}} className="cal-nav-btn">‹</button>
@@ -4341,15 +4514,15 @@ export default function App() {
             </div>):null})()}
             {getMedSchedule().medications.length===0?<div className="contacts-empty"><p>No medications in schedule. Add medications to start tracking.</p></div>:
               <div className="doc-table-wrap"><table className="doc-table med-table">
-                <thead><tr><th style={{minWidth:140}}>Medication</th><th>Dosage</th>{MED_TIME_SLOTS.map(s=><th key={s} className="med-slot-th">{s}</th>)}{!isClient&&<th></th>}</tr></thead>
+                <thead><tr><th style={{minWidth:140}}>Medication</th><th>Dosage</th>{MED_TIME_SLOTS.map(s=><th key={s} className="med-slot-th">{s}</th>)}{!isReadOnly&&<th></th>}</tr></thead>
                 <tbody>{getMedSchedule().medications.map(m=>(<tr key={m.id}>
                   <td><strong>{m.name}</strong>{m.notes&&<div className="med-note">{m.notes}</div>}</td>
                   <td>{m.dosage}</td>
                   {MED_TIME_SLOTS.map(s=>{const active=m.timeSlots.includes(s);const status=active?getMedStatus(m.id,s,medAdminDate):null;return(
-                    <td key={s} className="med-cell" onClick={()=>{if(active&&!isClient)toggleMedAdmin(m.id,s,medAdminDate)}} style={{cursor:active&&!isClient?"pointer":"default",background:status==="given"?"#e8f0df":status==="missed"?"#fde2e8":status==="refused"?"#fdf0d5":active?"#faf9f7":"#f6f4f0"}}>
+                    <td key={s} className="med-cell" onClick={()=>{if(active&&!isReadOnly)toggleMedAdmin(m.id,s,medAdminDate)}} style={{cursor:active&&!isReadOnly?"pointer":"default",background:status==="given"?"#e8f0df":status==="missed"?"#fde2e8":status==="refused"?"#fdf0d5":active?"#faf9f7":"#f6f4f0"}}>
                       {active?(status==="given"?<span className="med-check given">✓</span>:status==="missed"?<span className="med-check missed">✗</span>:status==="refused"?<span className="med-check refused">⊘</span>:<span className="med-check pending">○</span>):<span className="med-check na">—</span>}
                     </td>)})}
-                  {!isClient&&<td><button onClick={()=>setMedForm({mode:"edit",med:{...m},id:m.id})} className="edit-icon edit-icon-visible">✎</button></td>}
+                  {!isReadOnly&&<td><button onClick={()=>setMedForm({mode:"edit",med:{...EMPTY_MED,...m},id:m.id})} className="edit-icon edit-icon-visible">✎</button></td>}
                 </tr>))}</tbody>
               </table></div>}
           </>)}
@@ -4359,7 +4532,7 @@ export default function App() {
             <div className="contacts-header"><div><h1 className="page-title">$ Expense Tracker</h1><p className="page-sub" style={{margin:"4px 0 0"}}>Track care expenses for Medicaid spend-down documentation and POA fiduciary accountability (ORS 127.045).</p></div>
               <div className="contacts-header-actions">
                 {((data.expenses&&data.expenses.length)||0)>0&&can("export-data")&&<><button onClick={exportExpensesCsv} className="edit-btn" style={{marginTop:0}}>📋 CSV</button><button onClick={printExpenses} className="edit-btn" style={{marginTop:0}}>🖨 Print</button></>}
-                {!isClient&&<button onClick={()=>setExpenseForm({mode:"add",expense:{date:fmtDate(new Date().getFullYear(),new Date().getMonth(),new Date().getDate()),amount:"",category:"medical",description:"",payee:"",receipt:""}})} className="save-btn">+ Add Expense</button>}
+                {!isReadOnly&&<button onClick={()=>setExpenseForm({mode:"add",expense:{date:fmtDate(new Date().getFullYear(),new Date().getMonth(),new Date().getDate()),amount:"",category:"medical",description:"",payee:"",receipt:""}})} className="save-btn">+ Add Expense</button>}
               </div>
             </div>
             {/* summary */}
@@ -4380,7 +4553,7 @@ export default function App() {
             </div>
             {getFilteredExpenses().length===0?<div className="contacts-empty"><p>{((data.expenses&&data.expenses.length)||0)===0?"No expenses recorded yet.":"No expenses match these filters."}</p></div>:
               <div className="doc-table-wrap"><table className="doc-table">
-                <thead><tr><th>Date</th><th>Amount</th><th>Category</th><th>Description</th><th>Payee</th><th>Receipt</th>{!isClient&&<th></th>}</tr></thead>
+                <thead><tr><th>Date</th><th>Amount</th><th>Category</th><th>Description</th><th>Payee</th><th>Receipt</th>{!isReadOnly&&<th></th>}</tr></thead>
                 <tbody>{getFilteredExpenses().map(exp=>{const cat=EXPENSE_CATS.find(c=>c.key===exp.category);return(
                   <tr key={exp.id}>
                     <td style={{whiteSpace:"nowrap"}}>{exp.date}</td>
@@ -4389,7 +4562,7 @@ export default function App() {
                     <td>{exp.description}</td>
                     <td>{exp.payee}</td>
                     <td style={{fontSize:12,color:"#8d99ae"}}>{exp.receipt}</td>
-                    {!isClient&&<td><button onClick={()=>setExpenseForm({mode:"edit",expense:{...exp},id:exp.id})} className="edit-icon edit-icon-visible">✎</button></td>}
+                    {!isReadOnly&&<td><button onClick={()=>setExpenseForm({mode:"edit",expense:{...exp},id:exp.id})} className="edit-icon edit-icon-visible">✎</button></td>}
                   </tr>)})}</tbody>
               </table></div>}
           </>)}
@@ -4397,7 +4570,7 @@ export default function App() {
           {/* ═══ CALENDAR ═══ */}
           {view==="calendar"&&(<>
             <div className="contacts-header"><div><h1 className="page-title">▦ Calendar</h1><p className="page-sub" style={{margin:"4px 0 0"}}>Track appointments and important dates.</p></div>
-              {!isClient&&<button onClick={()=>setApptForm({mode:"add",appt:{title:"",date:calSelected||fmtDate(calYear,calMonth,new Date().getDate()),time:"09:00",notes:""}})} className="save-btn">+ Appointment</button>}
+              {!isReadOnly&&<button onClick={()=>setApptForm({mode:"add",appt:{title:"",date:calSelected||fmtDate(calYear,calMonth,new Date().getDate()),time:"09:00",notes:""}})} className="save-btn">+ Appointment</button>}
             </div>
             <div className="cal-nav"><button onClick={()=>{if(calMonth===0){setCalMonth(11);setCalYear(y=>y-1)}else setCalMonth(m=>m-1)}} className="cal-nav-btn">‹</button><span className="cal-month">{MONTHS[calMonth]} {calYear}</span><button onClick={()=>{if(calMonth===11){setCalMonth(0);setCalYear(y=>y+1)}else setCalMonth(m=>m+1)}} className="cal-nav-btn">›</button></div>
             <div className="cal-grid"><div className="cal-header">{DAYS.map(d=><div key={d} className="cal-dow">{d}</div>)}</div>
@@ -4415,7 +4588,7 @@ export default function App() {
               {getApptsForDate(calSelected).length===0?<p className="hint">No appointments this day.</p>:
                 getApptsForDate(calSelected).map(a=>(<div key={a.id} className="cal-appt-card">
                   <div className="cal-appt-head"><strong>{a.time||"--:--"}</strong> {a.title}
-                    {!isClient&&<button onClick={()=>setApptForm({mode:"edit",appt:{...a},id:a.id})} className="edit-icon edit-icon-visible">✎</button>}
+                    {!isReadOnly&&<button onClick={()=>setApptForm({mode:"edit",appt:{...a},id:a.id})} className="edit-icon edit-icon-visible">✎</button>}
                   </div>
                   {a.notes&&<p className="cal-appt-notes">{a.notes}</p>}
                 </div>))}
@@ -4431,11 +4604,11 @@ export default function App() {
                 <h3 className="emergency-title">{scenario.icon} {scenario.title}</h3>
                 <ol className="emergency-steps">{plan.steps.map((step,si)=>(
                   <li key={si} className="emergency-step">
-                    {!isClient?<input value={step} onChange={e=>updatePlanStep(pi,si,e.target.value)} className="emergency-step-input"/>:<span>{step}</span>}
-                    {!isClient&&<button onClick={()=>removePlanStep(pi,si)} className="remove-sub" style={{flexShrink:0}}>×</button>}
+                    {!isReadOnly?<input value={step} onChange={e=>updatePlanStep(pi,si,e.target.value)} className="emergency-step-input"/>:<span>{step}</span>}
+                    {!isReadOnly&&<button onClick={()=>removePlanStep(pi,si)} className="remove-sub" style={{flexShrink:0}}>×</button>}
                   </li>))}
                 </ol>
-                {!isClient&&<button onClick={()=>addPlanStep(pi)} className="add-sub-trigger" style={{marginTop:6}}>+ Add step</button>}
+                {!isReadOnly&&<button onClick={()=>addPlanStep(pi)} className="add-sub-trigger" style={{marginTop:6}}>+ Add step</button>}
               </div>)})}</div>
           </>)}
 
@@ -4448,7 +4621,7 @@ export default function App() {
             </div>}
             <div className="trigger-list">{TRANSITION_TRIGGERS.map(t=>{const active=getTrigger(t.key);return(
               <label key={t.key} className={`trigger-item ${active?"trigger-active":""}`}>
-                {!isClient?<input type="checkbox" checked={active} onChange={()=>toggleTrigger(t.key)} className="goal-check"/>:<span style={{width:20,textAlign:"center",flexShrink:0}}>{active?"⚠":"○"}</span>}
+                {!isReadOnly?<input type="checkbox" checked={active} onChange={()=>toggleTrigger(t.key)} className="goal-check"/>:<span style={{width:20,textAlign:"center",flexShrink:0}}>{active?"⚠":"○"}</span>}
                 <div style={{flex:1}}><div className="trigger-label">{t.label}</div><div className="trigger-desc">{t.desc}</div></div>
               </label>)})}</div>
           </>)}
@@ -4457,7 +4630,7 @@ export default function App() {
           {view==="tracking"&&(<>
             <h1 className="page-title">📈 Longitudinal Tracking</h1>
             <p className="page-sub">Record periodic snapshots of domain status and progress to track changes over time. Useful for provider visits, APD reassessments, and guardianship documentation.</p>
-            {!isClient&&<button onClick={recordStatusSnapshot} className="save-btn" style={{marginBottom:20}}>📸 Record Snapshot Today</button>}
+            {!isReadOnly&&<button onClick={recordStatusSnapshot} className="save-btn" style={{marginBottom:20}}>📸 Record Snapshot Today</button>}
             {(data.statusHistory||[]).length===0?<div className="contacts-empty"><p>No snapshots recorded yet. Take your first snapshot to begin tracking changes over time.</p></div>:
               <div className="doc-table-wrap"><table className="doc-table">
                 <thead><tr><th>Date</th>{DOMAINS.map(d=><th key={d.key} style={{fontSize:11}}>{d.icon} {getDomLabel(d.key).split(" ")[0]}</th>)}<th>Triggers</th><th>Incidents</th></tr></thead>
@@ -4488,7 +4661,7 @@ export default function App() {
                 <h3 className="sec-title">{section.title} <span className="prog-label">({doneCount}/{section.items.length})</span></h3>
                 <div className="goals-wrap">{section.items.map((item,ii)=>{const done=getPostDeathChecked(si,ii);return(
                   <label key={ii} className="sub-item" style={{background:done?"#f5f9f0":"#faf9f7"}}>
-                    {!isClient?<input type="checkbox" checked={done} onChange={()=>togglePostDeath(si,ii)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:12}}>{done?"✓":"○"}</span>}
+                    {!isReadOnly?<input type="checkbox" checked={done} onChange={()=>togglePostDeath(si,ii)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:12}}>{done?"✓":"○"}</span>}
                     <span className="sub-text" style={{textDecoration:done?"line-through":"none",color:done?"#a09a92":"#3d3730"}}>{item}</span>
                   </label>)})}</div>
               </div>)})}
@@ -4526,7 +4699,7 @@ export default function App() {
 
           {/* ═══ SELF REPORT ═══ */}
           {view==="selfreport"&&(<>
-            <div className="contacts-header"><div><h1 className="page-title">🗣 Self Report</h1><p className="page-sub" style={{margin:"4px 0 0"}}>{isClient?"Share how you're feeling. Your care team will see these updates.":"Client self-reported health and wellness updates."}</p>
+            <div className="contacts-header"><div><h1 className="page-title">🗣 Self Report</h1><p className="page-sub" style={{margin:"4px 0 0"}}>{isReadOnly?"Share how you're feeling. Your care team will see these updates.":"Client self-reported health and wellness updates."}</p>
               {isClient&&srChainStatus&&srChainStatus.status==="ok"&&<p className="page-sub" style={{margin:"4px 0 0",color:"#6F8A5F"}}>🔏 Your updates are permanent — they can't be deleted or changed by anyone.</p>}
               {/* Deliberately NO client-facing tamper warning: integrity failures surface on the caregiver
                   Security & Integrity panel and in the audit log. A "your words may have been altered" alarm
@@ -4763,7 +4936,7 @@ export default function App() {
             return(<>
             <h1 className="page-title">✉ Care Team Messages</h1>
             <p className="page-sub">{hasTeam()?`${getTeam().name} — caring for ${getTeam().clientName}`:"A shared message board for care team coordination. Syncs via encrypted backup or team sync."}</p>
-            {!isClient&&<div className="msg-compose">
+            {!isReadOnly&&<div className="msg-compose">
               {hasTeam()?(<div className="msg-sender"><div className="team-member-avatar" style={{width:28,height:28,fontSize:13}}>{myName?myName[0].toUpperCase():"?"}</div><span className="msg-sender-name">{myName}{myRole&&<span className="msg-sender-role"> · {myRole}</span>}</span></div>
               ):(<input value={msgFrom} onChange={e=>setMsgFrom(e.target.value)} placeholder="Your name" className="cf-input" style={{width:160}}/>)}
               <input value={msgText} onChange={e=>setMsgText(e.target.value)} onKeyDown={e=>e.key==="Enter"&&(hasTeam()?myName:msgFrom.trim())&&msgText.trim()&&sendMessage()} placeholder="Type a message…" className="cf-input" style={{flex:1}}/>
@@ -4785,7 +4958,7 @@ export default function App() {
           {/* ═══ SETTINGS ═══ */}
           {view==="settings"&&(<>
             <h1 className="page-title">⚙ Settings</h1>
-            {isClient?<p className="page-sub">Settings are only available to caregivers.</p>:(<>
+            {isReadOnly?<p className="page-sub">Settings are only available to caregivers.</p>:(<>
               <p className="page-sub">Manage passcodes, export backups, and import health records.</p>
               <div className="section"><h3 className="sec-title">🗺 State / Region</h3>
                 <p className="hint">Choose your state for localized Medicaid thresholds, legal citations, program names, and resources. Generic mode provides universal guidance with no state-specific details.</p>
@@ -4900,7 +5073,7 @@ export default function App() {
           {/* ═══ DOCUMENTS ═══ */}
           {view==="documents"&&(<>
             <div className="contacts-header"><div><h1 className="page-title">📄 Document Scanner</h1><p className="page-sub" style={{margin:"4px 0 0"}}>Upload PDFs or text files. Medications and lab results are extracted automatically — no data leaves your device.</p></div>
-              {!isClient&&<button onClick={()=>(docFileRef.current&&docFileRef.current.click)()} className="save-btn" disabled={docProcessing}>{docProcessing?"Processing…":"↑ Upload Document"}</button>}
+              {!isReadOnly&&<button onClick={()=>(docFileRef.current&&docFileRef.current.click)()} className="save-btn" disabled={docProcessing}>{docProcessing?"Processing…":"↑ Upload Document"}</button>}
             </div>
 
             {/* saved documents library */}
@@ -4917,7 +5090,7 @@ export default function App() {
                     <div className="contact-name">{doc.fileName}</div>
                     <div className="contact-role">{(cat&&cat.label)||doc.category} · {doc.date}{doc.medCount?` · ${doc.medCount} meds`:""}{doc.labCount?` · ${doc.labCount} labs`:""}</div>
                   </div>
-                  {!isClient&&<button onClick={e=>{e.stopPropagation();deleteDoc(doc.id)}} className="remove-sub">×</button>}
+                  {!isReadOnly&&<button onClick={e=>{e.stopPropagation();deleteDoc(doc.id)}} className="remove-sub">×</button>}
                 </div>)})}</div>
             </div>)}
 
@@ -4964,7 +5137,7 @@ export default function App() {
               {/* detected type + category selector + save to library */}
               <div className="doc-type-row">
                 <div className="doc-type-badge">{docResult.docType.icon} Detected: <strong>{docResult.docType.label}</strong> · {docResult.fileName}</div>
-                {!isClient&&<div className="doc-save-row">
+                {!isReadOnly&&<div className="doc-save-row">
                   <select value={docSaveCategory} onChange={e=>setDocSaveCategory(e.target.value)} className="cf-input" style={{width:180,fontSize:13}}>
                     {DOC_CATEGORIES.filter(c=>c.key!=="all").map(c=><option key={c.key} value={c.key}>{c.icon} {c.label}</option>)}
                   </select>
@@ -4977,17 +5150,17 @@ export default function App() {
                 <h3 className="sec-title">💊 Extracted Medications ({docMeds.length})</h3>
                 <p className="hint">Review and edit the table below, then save to your care notes.</p>
                 <div className="doc-table-wrap"><table className="doc-table">
-                  <thead><tr><th>Medication</th><th>Dosage</th><th>Frequency</th><th>Route</th><th>Notes</th>{!isClient&&<th></th>}</tr></thead>
+                  <thead><tr><th>Medication</th><th>Dosage</th><th>Frequency</th><th>Route</th><th>Notes</th>{!isReadOnly&&<th></th>}</tr></thead>
                   <tbody>{docMeds.map(m=>(<tr key={m.id}>
-                    <td>{isClient?m.name:<input value={m.name} onChange={e=>updateDocMed(m.id,"name",e.target.value)} className="doc-cell-input"/>}</td>
-                    <td>{isClient?m.dosage:<input value={m.dosage} onChange={e=>updateDocMed(m.id,"dosage",e.target.value)} className="doc-cell-input doc-cell-sm"/>}</td>
-                    <td>{isClient?m.frequency:<input value={m.frequency} onChange={e=>updateDocMed(m.id,"frequency",e.target.value)} className="doc-cell-input"/>}</td>
-                    <td>{isClient?m.route:<input value={m.route} onChange={e=>updateDocMed(m.id,"route",e.target.value)} className="doc-cell-input doc-cell-sm"/>}</td>
-                    <td>{isClient?m.notes:<input value={m.notes} onChange={e=>updateDocMed(m.id,"notes",e.target.value)} className="doc-cell-input" placeholder="Add note…"/>}</td>
-                    {!isClient&&<td><button onClick={()=>removeDocMed(m.id)} className="remove-sub">×</button></td>}
+                    <td>{isReadOnly?m.name:<input value={m.name} onChange={e=>updateDocMed(m.id,"name",e.target.value)} className="doc-cell-input"/>}</td>
+                    <td>{isReadOnly?m.dosage:<input value={m.dosage} onChange={e=>updateDocMed(m.id,"dosage",e.target.value)} className="doc-cell-input doc-cell-sm"/>}</td>
+                    <td>{isReadOnly?m.frequency:<input value={m.frequency} onChange={e=>updateDocMed(m.id,"frequency",e.target.value)} className="doc-cell-input"/>}</td>
+                    <td>{isReadOnly?m.route:<input value={m.route} onChange={e=>updateDocMed(m.id,"route",e.target.value)} className="doc-cell-input doc-cell-sm"/>}</td>
+                    <td>{isReadOnly?m.notes:<input value={m.notes} onChange={e=>updateDocMed(m.id,"notes",e.target.value)} className="doc-cell-input" placeholder="Add note…"/>}</td>
+                    {!isReadOnly&&<td><button onClick={()=>removeDocMed(m.id)} className="remove-sub">×</button></td>}
                   </tr>))}</tbody>
                 </table></div>
-                {!isClient&&<div className="doc-table-actions">
+                {!isReadOnly&&<div className="doc-table-actions">
                   <button onClick={addDocMed} className="add-sub-trigger" style={{width:"auto",display:"inline-block",padding:"6px 14px"}}>+ Add Row</button>
                   <button onClick={saveMedsToNotes} className="save-btn">Save Medications to {getDomLabel("physical")}</button>
                 </div>}
@@ -4998,18 +5171,18 @@ export default function App() {
                 <h3 className="sec-title">🔬 Extracted Lab Results ({docLabs.length})</h3>
                 <p className="hint">Review values, flags, and reference ranges. Save to care notes when ready.</p>
                 <div className="doc-table-wrap"><table className="doc-table">
-                  <thead><tr><th>Test</th><th>Value</th><th>Unit</th><th>Reference Range</th><th>Flag</th><th>Notes</th>{!isClient&&<th></th>}</tr></thead>
+                  <thead><tr><th>Test</th><th>Value</th><th>Unit</th><th>Reference Range</th><th>Flag</th><th>Notes</th>{!isReadOnly&&<th></th>}</tr></thead>
                   <tbody>{docLabs.map(l=>(<tr key={l.id} className={l.flag?"doc-flagged":""}>
-                    <td>{isClient?l.test:<input value={l.test} onChange={e=>updateDocLab(l.id,"test",e.target.value)} className="doc-cell-input"/>}</td>
-                    <td>{isClient?l.value:<input value={l.value} onChange={e=>updateDocLab(l.id,"value",e.target.value)} className="doc-cell-input doc-cell-sm"/>}</td>
-                    <td>{isClient?l.unit:<input value={l.unit} onChange={e=>updateDocLab(l.id,"unit",e.target.value)} className="doc-cell-input doc-cell-xs"/>}</td>
-                    <td>{isClient?l.range:<input value={l.range} onChange={e=>updateDocLab(l.id,"range",e.target.value)} className="doc-cell-input doc-cell-sm"/>}</td>
-                    <td>{isClient?l.flag:<input value={l.flag} onChange={e=>updateDocLab(l.id,"flag",e.target.value)} className="doc-cell-input doc-cell-xs"/>}</td>
-                    <td>{isClient?l.notes:<input value={l.notes} onChange={e=>updateDocLab(l.id,"notes",e.target.value)} className="doc-cell-input" placeholder="Note…"/>}</td>
-                    {!isClient&&<td><button onClick={()=>removeDocLab(l.id)} className="remove-sub">×</button></td>}
+                    <td>{isReadOnly?l.test:<input value={l.test} onChange={e=>updateDocLab(l.id,"test",e.target.value)} className="doc-cell-input"/>}</td>
+                    <td>{isReadOnly?l.value:<input value={l.value} onChange={e=>updateDocLab(l.id,"value",e.target.value)} className="doc-cell-input doc-cell-sm"/>}</td>
+                    <td>{isReadOnly?l.unit:<input value={l.unit} onChange={e=>updateDocLab(l.id,"unit",e.target.value)} className="doc-cell-input doc-cell-xs"/>}</td>
+                    <td>{isReadOnly?l.range:<input value={l.range} onChange={e=>updateDocLab(l.id,"range",e.target.value)} className="doc-cell-input doc-cell-sm"/>}</td>
+                    <td>{isReadOnly?l.flag:<input value={l.flag} onChange={e=>updateDocLab(l.id,"flag",e.target.value)} className="doc-cell-input doc-cell-xs"/>}</td>
+                    <td>{isReadOnly?l.notes:<input value={l.notes} onChange={e=>updateDocLab(l.id,"notes",e.target.value)} className="doc-cell-input" placeholder="Note…"/>}</td>
+                    {!isReadOnly&&<td><button onClick={()=>removeDocLab(l.id)} className="remove-sub">×</button></td>}
                   </tr>))}</tbody>
                 </table></div>
-                {!isClient&&<div className="doc-table-actions">
+                {!isReadOnly&&<div className="doc-table-actions">
                   <button onClick={saveLabsToNotes} className="save-btn">Save Lab Results to {getDomLabel("physical")}</button>
                 </div>}
               </div>)}
@@ -5018,7 +5191,7 @@ export default function App() {
               {(docResult.sections&&docResult.sections.length)>0&&docResult.docType.key==="clinical"&&(<div className="section">
                 <h3 className="sec-title">📋 Clinical Note Sections</h3>
                 {docResult.sections.map((s,i)=>(<div key={i} className="doc-section-card"><h4 className="doc-section-title">{s.title}</h4><p className="doc-section-body">{s.body}</p></div>))}
-                {!isClient&&<div className="doc-table-actions"><label className="cf-label" style={{flexDirection:"row",alignItems:"center",gap:8}}>Save full text to:
+                {!isReadOnly&&<div className="doc-table-actions"><label className="cf-label" style={{flexDirection:"row",alignItems:"center",gap:8}}>Save full text to:
                   <select className="cf-input" style={{width:180}} onChange={e=>{if(e.target.value)saveRawTextToNotes(e.target.value);e.target.value=""}}><option value="">Select domain…</option>{DOMAINS.map(d=><option key={d.key} value={d.key}>{d.icon} {getDomLabel(d.key)}</option>)}</select>
                 </label></div>}
               </div>)}
@@ -5029,7 +5202,7 @@ export default function App() {
                   <h3 className="sec-title">Raw Extracted Text</h3>
                   <p className="hint">No structured medications or lab results were detected. You can save the raw text to a care domain.</p>
                   <pre className="doc-raw-text">{docResult.rawText.slice(0,3000)}{docResult.rawText.length>3000?"…(truncated)":""}</pre>
-                  {!isClient&&<div className="doc-table-actions"><label className="cf-label" style={{flexDirection:"row",alignItems:"center",gap:8}}>Save to:
+                  {!isReadOnly&&<div className="doc-table-actions"><label className="cf-label" style={{flexDirection:"row",alignItems:"center",gap:8}}>Save to:
                     <select className="cf-input" style={{width:180}} onChange={e=>{if(e.target.value)saveRawTextToNotes(e.target.value);e.target.value=""}}><option value="">Select domain…</option>{DOMAINS.map(d=><option key={d.key} value={d.key}>{d.icon} {getDomLabel(d.key)}</option>)}</select>
                   </label></div>}
                 </div>
@@ -5038,7 +5211,7 @@ export default function App() {
               {/* always show raw text toggle */}
               {(docMeds.length>0||docLabs.length>0)&&(<details className="doc-raw-details"><summary className="doc-raw-summary">View raw extracted text</summary>
                 <pre className="doc-raw-text">{docResult.rawText.slice(0,3000)}{docResult.rawText.length>3000?"…(truncated)":""}</pre>
-                {!isClient&&<div className="doc-table-actions" style={{marginTop:8}}><label className="cf-label" style={{flexDirection:"row",alignItems:"center",gap:8}}>Save raw text to:
+                {!isReadOnly&&<div className="doc-table-actions" style={{marginTop:8}}><label className="cf-label" style={{flexDirection:"row",alignItems:"center",gap:8}}>Save raw text to:
                   <select className="cf-input" style={{width:180}} onChange={e=>{if(e.target.value)saveRawTextToNotes(e.target.value);e.target.value=""}}><option value="">Select domain…</option>{DOMAINS.map(d=><option key={d.key} value={d.key}>{d.icon} {getDomLabel(d.key)}</option>)}</select>
                 </label></div>}
               </details>)}
@@ -5054,7 +5227,7 @@ export default function App() {
           {/* ═══ CONTACTS (list) ═══ */}
           {view==="contacts"&&!contactDetail&&(<>
             <div className="contacts-header"><div><h1 className="page-title">☷ Care Team Contacts</h1></div>
-              {!isClient&&<div className="contacts-header-actions"><button onClick={()=>(fileRef.current&&fileRef.current.click)()} className="edit-btn" style={{marginTop:0}}>↑ Import vCard</button><button onClick={()=>setContactForm({mode:"add",contact:{...EMPTY_CONTACT}})} className="save-btn">+ Add</button></div>}
+              {!isReadOnly&&<div className="contacts-header-actions"><button onClick={()=>(fileRef.current&&fileRef.current.click)()} className="edit-btn" style={{marginTop:0}}>↑ Import vCard</button><button onClick={()=>setContactForm({mode:"add",contact:{...EMPTY_CONTACT}})} className="save-btn">+ Add</button></div>}
             </div>
             <div className="contacts-controls">
               <div className="cc-group"><span className="cc-label">Sort:</span><button onClick={()=>setContactSort("category")} className={`cc-btn ${contactSort==="category"?"cc-active":""}`}>Category</button><button onClick={()=>setContactSort("alpha")} className={`cc-btn ${contactSort==="alpha"?"cc-active":""}`}>A → Z</button></div>
@@ -5075,10 +5248,10 @@ export default function App() {
               {detailContact.email&&<div className="cd-info-item"><span className="cd-info-label">Email</span><span className="cd-info-value">{detailContact.email}</span></div>}
               {(detailContact.customFields||[]).map((cf,i)=>(<div key={i} className="cd-info-item"><span className="cd-info-label">{cf.label}</span><span className="cd-info-value">{cf.value||"—"}</span></div>))}
             </div>
-            {!isClient&&<div className="cd-actions"><button onClick={()=>setContactForm({mode:"edit",contact:{...detailContact,customFields:[...(detailContact.customFields||[])]},id:detailContact.id})} className="edit-btn" style={{marginTop:0}}>✎ Edit</button><button onClick={()=>{if(window.confirm(`Remove ${detailContact.name}?`))deleteContact(detailContact.id)}} className="cd-delete-btn">Remove</button></div>}
+            {!isReadOnly&&<div className="cd-actions"><button onClick={()=>setContactForm({mode:"edit",contact:{...detailContact,customFields:[...(detailContact.customFields||[])]},id:detailContact.id})} className="edit-btn" style={{marginTop:0}}>✎ Edit</button><button onClick={()=>{if(window.confirm(`Remove ${detailContact.name}?`))deleteContact(detailContact.id)}} className="cd-delete-btn">Remove</button></div>}
             <div className="section"><h3 className="sec-title">Notes Received</h3>
-              {!isClient&&<div className="cd-note-add"><textarea value={contactNoteText} onChange={e=>setContactNoteText(e.target.value)} className="notes-ta" rows={2} placeholder="Note from this contact…"/><button onClick={()=>addContactNote(detailContact.id,contactNoteText)} disabled={!contactNoteText.trim()} className="save-btn" style={{marginTop:8,opacity:contactNoteText.trim()?1:.4}}>Save Note</button></div>}
-              {(detailContact.notes&&detailContact.notes.length)>0?<div className="cd-notes-list">{detailContact.notes.map((n,i)=>(<div key={i} className="cd-note-card"><div className="cd-note-top"><span className="cd-note-date">{n.date}</span>{!isClient&&<button onClick={()=>deleteContactNote(detailContact.id,i)} className="remove-sub">×</button>}</div><p className="cd-note-text">{n.text}</p></div>))}</div>:<p className="contacts-empty" style={{marginTop:12}}>No notes yet.</p>}
+              {!isReadOnly&&<div className="cd-note-add"><textarea value={contactNoteText} onChange={e=>setContactNoteText(e.target.value)} className="notes-ta" rows={2} placeholder="Note from this contact…"/><button onClick={()=>addContactNote(detailContact.id,contactNoteText)} disabled={!contactNoteText.trim()} className="save-btn" style={{marginTop:8,opacity:contactNoteText.trim()?1:.4}}>Save Note</button></div>}
+              {(detailContact.notes&&detailContact.notes.length)>0?<div className="cd-notes-list">{detailContact.notes.map((n,i)=>(<div key={i} className="cd-note-card"><div className="cd-note-top"><span className="cd-note-date">{n.date}</span>{!isReadOnly&&<button onClick={()=>deleteContactNote(detailContact.id,i)} className="remove-sub">×</button>}</div><p className="cd-note-text">{n.text}</p></div>))}</div>:<p className="contacts-empty" style={{marginTop:12}}>No notes yet.</p>}
             </div>
           </>)}
 
@@ -5086,7 +5259,7 @@ export default function App() {
           {activeDom&&activeData&&(()=>{const prog=getProgress(activeDom.key);const pulseColor=prog.recency>=75?"#718355":prog.recency>=40?"#bc6c25":"#b56576";return(<>
             <div className="domain-header" style={{borderLeftColor:activeDom.color,background:activeDom.bg}}>
               <div className="domain-header-top"><div>
-                <div className="domain-title-row"><h1 className="page-title" style={{margin:0}}>{activeDom.icon} {getDomLabel(activeDom.key)}</h1>{!isClient&&<button className="edit-icon edit-icon-visible" onClick={()=>setEditingDomain({key:activeDom.key,label:getDomLabel(activeDom.key),desc:getDomDesc(activeDom.key)})}>✎</button>}</div>
+                <div className="domain-title-row"><h1 className="page-title" style={{margin:0}}>{activeDom.icon} {getDomLabel(activeDom.key)}</h1>{!isReadOnly&&<button className="edit-icon edit-icon-visible" onClick={()=>setEditingDomain({key:activeDom.key,label:getDomLabel(activeDom.key),desc:getDomDesc(activeDom.key)})}>✎</button>}</div>
                 <p className="page-sub" style={{margin:"6px 0 0"}}>{getDomDesc(activeDom.key)}</p>
               </div><div className="domain-pct" style={{color:activeDom.color}}>{prog.pct}%</div></div>
               <div className="dual-track" style={{marginTop:14}}>
@@ -5100,12 +5273,12 @@ export default function App() {
               <div className="goals-wrap">{activeDom.goals.map((goal,gi)=>{const gd=activeData.goals[gi];const sp=getSubProgress(activeDom.key,gi);const isOpen=expanded[gi];return(
                 <div key={gi} className="goal-card" style={{borderLeftColor:gd.done?"#718355":activeDom.color,background:gd.done?"#f9fcf6":"#fff"}}>
                   <div className="goal-head" onClick={()=>toggle(gi)}>
-                    {!isClient&&<input type="checkbox" checked={gd.done} onChange={e=>{e.stopPropagation();toggleGoal(activeDom.key,gi)}} className="goal-check"/>}
-                    {isClient&&<span style={{width:20,textAlign:"center",flexShrink:0}}>{gd.done?"✓":"○"}</span>}
+                    {!isReadOnly&&<input type="checkbox" checked={gd.done} onChange={e=>{e.stopPropagation();toggleGoal(activeDom.key,gi)}} className="goal-check"/>}
+                    {isReadOnly&&<span style={{width:20,textAlign:"center",flexShrink:0}}>{gd.done?"✓":"○"}</span>}
                     <div style={{flex:1,minWidth:0}}>
-                      {!isClient&&(editing&&editing.type)==="goal"&&editing.gi===gi?(
+                      {!isReadOnly&&(editing&&editing.type)==="goal"&&editing.gi===gi?(
                         <div className="inline-edit" onClick={e=>e.stopPropagation()}><input ref={editRef} value={editText} onChange={e=>setEditText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveEdit();if(e.key==="Escape")cancelEdit()}} className="inline-edit-input"/><button onClick={saveEdit} className="inline-edit-save">✓</button><button onClick={cancelEdit} className="inline-edit-cancel">✕</button></div>
-                      ):(<div className="goal-title-row"><div className="goal-title" style={{textDecoration:gd.done?"line-through":"none",color:gd.done?"#8d99ae":"#3d3730"}}>{getGoalTitle(activeDom.key,gi)}</div>{!isClient&&<button className="edit-icon" onClick={e=>{e.stopPropagation();startEdit("goal",gi,null,getGoalTitle(activeDom.key,gi))}}>✎</button>}</div>)}
+                      ):(<div className="goal-title-row"><div className="goal-title" style={{textDecoration:gd.done?"line-through":"none",color:gd.done?"#8d99ae":"#3d3730"}}>{getGoalTitle(activeDom.key,gi)}</div>{!isReadOnly&&<button className="edit-icon" onClick={e=>{e.stopPropagation();startEdit("goal",gi,null,getGoalTitle(activeDom.key,gi))}}>✎</button>}</div>)}
                       <div className="sub-prog-row"><div className="sub-prog-track"><div className="sub-prog-fill" style={{width:`${sp.pct}%`,background:gd.done?"#718355":activeDom.color}}/></div><span className="sub-prog-label">{sp.done}/{sp.total}</span></div>
                     </div><span className="chevron" style={{transform:isOpen?"rotate(180deg)":"rotate(0)"}}>▾</span>
                   </div>
@@ -5114,13 +5287,13 @@ export default function App() {
                       return(<div key={si} className={`sub-item sub-typed ${isDone?"sub-done":""} ${isOverdue||isStale?"sub-overdue":""}`}>
                         <div className="sub-type-badge" style={{color:tt.color}} title={`${tt.label}${interval?" — every "+interval+" days":""}`}>{tt.icon}</div>
                         {type==="O"?(
-                          !isClient?<input type="checkbox" checked={st.done} onChange={()=>toggleSub(activeDom.key,gi,si)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:12}}>{st.done?"✓":"○"}</span>
+                          !isReadOnly?<input type="checkbox" checked={st.done} onChange={()=>toggleSub(activeDom.key,gi,si)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:12}}>{st.done?"✓":"○"}</span>
                         ):(
-                          !isClient?<button onClick={()=>toggleSub(activeDom.key,gi,si)} className="sub-attend-btn" title="Mark as attended today" style={{background:age!==null&&age<7?"#e8f0df":"transparent",borderColor:age!==null&&age<7?"#718355":"#e5e1db"}}>✓</button>
+                          !isReadOnly?<button onClick={()=>toggleSub(activeDom.key,gi,si)} className="sub-attend-btn" title="Mark as attended today" style={{background:age!==null&&age<7?"#e8f0df":"transparent",borderColor:age!==null&&age<7?"#718355":"#e5e1db"}}>✓</button>
                           :<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:12}}>{age!==null&&age<7?"✓":"○"}</span>
                         )}
                         <div style={{flex:1,minWidth:0}}>
-                          {!isClient&&(editing&&editing.type)==="sub"&&editing.gi===gi&&editing.si===si?(<div className="inline-edit" onClick={e=>e.preventDefault()}><input ref={editRef} value={editText} onChange={e=>setEditText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveEdit();if(e.key==="Escape")cancelEdit()}} className="inline-edit-input"/><button onClick={e=>{e.preventDefault();saveEdit()}} className="inline-edit-save">✓</button><button onClick={e=>{e.preventDefault();cancelEdit()}} className="inline-edit-cancel">✕</button></div>
+                          {!isReadOnly&&(editing&&editing.type)==="sub"&&editing.gi===gi&&editing.si===si?(<div className="inline-edit" onClick={e=>e.preventDefault()}><input ref={editRef} value={editText} onChange={e=>setEditText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveEdit();if(e.key==="Escape")cancelEdit()}} className="inline-edit-input"/><button onClick={e=>{e.preventDefault();saveEdit()}} className="inline-edit-save">✓</button><button onClick={e=>{e.preventDefault();cancelEdit()}} className="inline-edit-cancel">✕</button></div>
                           ):(<span className="sub-text" style={{textDecoration:isDone?"line-through":"none",color:isDone?"#a09a92":"#3d3730"}}>{getSubText(activeDom.key,gi,si)}</span>)}
                           {type!=="O"&&<div className="sub-recency" style={{color:age!==null?getRecencyColor(age,interval):"#c5c0b8"}}>{getRecencyLabel(age)}{type==="R"&&interval?` (every ${interval}d)`:""}
                           </div>}
@@ -5130,10 +5303,10 @@ export default function App() {
                         {can("remove-subtask")&&<button onClick={()=>removeSub(activeDom.key,gi,si)} className="remove-sub" title="Remove this sub-task">×</button>}
                       </div>)})}
                     {/* Show removed subs count with restore option */}
-                    {(()=>{const removedCount=goal.subs.filter((_,si)=>getSubState(activeDom.key,gi,si).removed).length;return removedCount>0&&!isClient?(<details className="removed-subs-details"><summary className="removed-subs-summary">{removedCount} removed sub-task{removedCount>1?"s":""}</summary><div className="removed-subs-list">{goal.subs.map((subDef,si)=>{const st=getSubState(activeDom.key,gi,si);if(!st.removed)return null;return(<div key={si} className="sub-item sub-removed"><span className="sub-text" style={{color:"#c5c0b8",flex:1}}>{getSubText(activeDom.key,gi,si)}</span><button onClick={()=>restoreSub(activeDom.key,gi,si)} className="edit-btn" style={{marginTop:0,fontSize:11,padding:"3px 10px"}}>Restore</button></div>)})}</div></details>):null})()}                    {gd.customSubs.map((cs,ci)=>(<label key={`c${ci}`} className="sub-item sub-custom" style={{background:cs.done?"#f5f9f0":"#faf9f7"}}>
-                      {!isClient?<input type="checkbox" checked={cs.done} onChange={()=>toggleCustomSub(activeDom.key,gi,ci)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:12}}>{cs.done?"✓":"○"}</span>}
+                    {(()=>{const removedCount=goal.subs.filter((_,si)=>getSubState(activeDom.key,gi,si).removed).length;return removedCount>0&&!isReadOnly?(<details className="removed-subs-details"><summary className="removed-subs-summary">{removedCount} removed sub-task{removedCount>1?"s":""}</summary><div className="removed-subs-list">{goal.subs.map((subDef,si)=>{const st=getSubState(activeDom.key,gi,si);if(!st.removed)return null;return(<div key={si} className="sub-item sub-removed"><span className="sub-text" style={{color:"#c5c0b8",flex:1}}>{getSubText(activeDom.key,gi,si)}</span><button onClick={()=>restoreSub(activeDom.key,gi,si)} className="edit-btn" style={{marginTop:0,fontSize:11,padding:"3px 10px"}}>Restore</button></div>)})}</div></details>):null})()}                    {gd.customSubs.map((cs,ci)=>(<label key={`c${ci}`} className="sub-item sub-custom" style={{background:cs.done?"#f5f9f0":"#faf9f7"}}>
+                      {!isReadOnly?<input type="checkbox" checked={cs.done} onChange={()=>toggleCustomSub(activeDom.key,gi,ci)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:12}}>{cs.done?"✓":"○"}</span>}
                       <span className="sub-text" style={{flex:1,textDecoration:cs.done?"line-through":"none",color:cs.done?"#a09a92":"#3d3730"}}>{cs.text}</span>
-                      {!isClient&&<button onClick={e=>{e.preventDefault();removeCustomSub(activeDom.key,gi,ci)}} className="remove-sub">×</button>}
+                      {!isReadOnly&&<button onClick={e=>{e.preventDefault();removeCustomSub(activeDom.key,gi,ci)}} className="remove-sub">×</button>}
                     </label>))}
                     {can("add-custom-sub")&&(addSubFor===gi?(<div className="add-sub-row"><input ref={subRef} value={newSubText} onChange={e=>setNewSubText(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addCustomSub(activeDom.key,gi,newSubText)} placeholder="Sub-task…" className="add-sub-input"/><button onClick={()=>addCustomSub(activeDom.key,gi,newSubText)} className="add-sub-btn">Add</button><button onClick={()=>{setAddSubFor(null);setNewSubText("")}} className="add-sub-cancel">Cancel</button></div>):(<button onClick={()=>{setAddSubFor(gi);setNewSubText("")}} className="add-sub-trigger">+ Add sub-task</button>))}
                   </div>}
@@ -5141,8 +5314,8 @@ export default function App() {
             </div>
 
             <div className="section"><h3 className="sec-title">Caregiver Notes</h3>
-              {!isClient&&editNotes?(<div><textarea ref={notesRef} value={notesDraft} onChange={e=>setNotesDraft(e.target.value)} className="notes-ta" rows={4}/><div className="notes-actions"><button onClick={()=>saveNotesData(activeDom.key,notesDraft)} className="save-btn">Save</button><button onClick={()=>setEditNotes(false)} className="cancel-btn">Cancel</button></div></div>
-              ):(<div><p className="notes-display">{activeData.notes||"No notes yet."}</p>{!isClient&&<button onClick={()=>{setNotesDraft(activeData.notes);setEditNotes(true)}} className="edit-btn">Edit Notes</button>}</div>)}
+              {!isReadOnly&&editNotes?(<div><textarea ref={notesRef} value={notesDraft} onChange={e=>setNotesDraft(e.target.value)} className="notes-ta" rows={4}/><div className="notes-actions"><button onClick={()=>saveNotesData(activeDom.key,notesDraft)} className="save-btn">Save</button><button onClick={()=>setEditNotes(false)} className="cancel-btn">Cancel</button></div></div>
+              ):(<div><p className="notes-display">{activeData.notes||"No notes yet."}</p>{!isReadOnly&&<button onClick={()=>{setNotesDraft(activeData.notes);setEditNotes(true)}} className="edit-btn">Edit Notes</button>}</div>)}
             </div>
             {activeData.lastUpdated&&<p className="last-up">Last updated: {activeData.lastUpdated}</p>}
 
@@ -5818,6 +5991,28 @@ select.cf-input{background:var(--color-surface)}.cf-actions{display:flex;gap:8px
 /* doc library */
 .doc-type-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:20px}
 .doc-save-row{display:flex;gap:8px;align-items:center}
+
+/* tap-select — type/severity/trigger/pill-shape chips. Options are visible and
+   one tap away; a <select> hid them behind two interactions. */
+.tap-select{display:flex;flex-wrap:wrap;gap:var(--space-xs)}
+.tap-opt{display:inline-flex;align-items:center;gap:6px;padding:10px 14px;border:var(--border-input) solid var(--color-border);border-radius:var(--radius-button);background:var(--color-surface);color:var(--color-text-primary);font-size:14px;font-weight:600;line-height:1.2;text-align:left}
+.tap-opt:hover{border-color:var(--color-action-primary);opacity:1}
+.tap-opt-on{border-color:var(--color-action-primary);background:var(--color-background-info);color:var(--color-text-info)}
+.tap-opt-icon{font-size:18px;line-height:1}
+.incident-trigger{font-size:13px;color:var(--color-text-secondary);margin:4px 0 0;font-style:italic}
+.cf-optional{font-weight:400;color:var(--color-text-muted);font-size:12px}
+
+/* medication flags & cabinet fields */
+.med-flag{display:flex;gap:10px;align-items:flex-start;margin-top:12px;padding:12px;border:1px solid var(--color-border-subtle);border-radius:var(--radius-button);background:var(--color-background-secondary);font-size:13px;line-height:1.45;color:var(--color-text-secondary);cursor:pointer}
+.med-flag input{width:20px;height:20px;flex-shrink:0;margin-top:1px}
+.med-cabinet-details{margin-top:12px;border:1px solid var(--color-border-subtle);border-radius:var(--radius-button);padding:10px 12px}
+.med-cabinet-details summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--color-action-primary);min-height:var(--tap-target-min);display:flex;align-items:center}
+
+/* emergency card additions */
+.ecard-id-row{display:flex;gap:14px;align-items:flex-start}
+.ecard-photo{width:84px;height:84px;object-fit:cover;border-radius:var(--radius-button);border:2px solid var(--color-border);flex-shrink:0}
+.ecard-code-status{font-weight:700;color:var(--color-text-danger)}
+.ecard-redflag{font-weight:700;color:var(--color-text-danger)}
 
 /* print styles for expenses */
 @media print{
