@@ -158,6 +158,26 @@ Optional browser notifications (Notification API) check every 15 minutes for due
 | **Client (Supported)** 🛡 | Self-reports, messages, schedule, medications, care domains — via a cryptographically scoped key that cannot decrypt anything else (see Cryptographic Role Scoping). | Client |
 | **Observer** 👁 | Read-only. Views care domains, contacts, documents, schedules and messages. Cannot edit, add, delete, administer medications, or export. | Caregiver |
 
+## Backup & Restore
+
+One encrypted `.care` file, one backup passcode, one place. Automatic saving
+(File System Access, Chromium browsers) and the manual **Save a copy now**
+button write the identical artifact with the identical passcode — previously
+these were separate features with separate passcode fields and different
+minimum-length rules, which meant a restore could be attempted with the wrong
+secret at the worst possible moment.
+
+- **Backups** is its own destination, gated on `export-data`, so Family and
+  Independent Client roles can reach it. It previously lived inside Settings,
+  which is admin-only — the backup reminder pointed there and Independent
+  Clients hit a "caregivers only" dead end.
+- **Restore** is reachable from the first screen of a fresh install
+  ("Already have a backup file? Restore it"). Before, the recovery screen only
+  appeared when wrapped keys survived locally, which is never true on a new
+  device — so a backup file could not actually be restored onto one.
+- **Merging a teammate's file** lives on Team Sync, not under a "Backup"
+  heading. It is a sync operation and was implying it was how you recover.
+
 ## Usability & Accessibility
 
 The interface is built on a semantic design-token layer: components reference

@@ -30,34 +30,34 @@ A small **save indicator** in the corner shows "Saving…" while a change is bei
 
 ### Backing Up Your Data (important)
 
-Your data lives on this device, encrypted. That means **you are responsible for keeping a backup** — there is no copy on a company server to fall back on (that is what keeps your information private). Make a backup regularly:
+Your data lives on this device, encrypted. That means **you are responsible for keeping a backup** — there is no copy on a company server to fall back on, and that is exactly what keeps your information private.
 
-1. Go to **Team → Settings**.
-2. Under the backup section, enter an **export passcode** (remember it — you'll need it to restore).
-3. Tap **Export Encrypted** to download a `.care` file.
-4. Keep that file somewhere safe — your computer, a USB drive, or your own cloud storage (iCloud, Google Drive, Dropbox). The file is fully encrypted, so cloud storage is fine.
+Everything backup-related is in one place: **Care Hub menu → Backups**.
 
-The app will remind you with a banner if it has been more than a week since your last backup.
+**One file, one passcode.** Care Guardian makes a single encrypted `.care` file. Whether it saves automatically or you press the button yourself, it's the same file protected by the same **backup passcode**. That passcode is not your sign-in passcode, and it's the one you'll be asked for if you ever restore. Choose it once, on the Backups screen — at least 6 characters.
 
-### Continuous Automatic Backup (Chrome, Edge, Brave)
+**Automatic backup (Chrome, Edge, Brave).** Tap **Turn on automatic backup** and pick where the file lives — your computer, or a synced folder like iCloud Drive, Google Drive or Dropbox. From then on every change is saved there automatically. The file is fully encrypted, so cloud storage is fine.
 
-If you use Chrome, Edge, or Brave, you can set up backup that happens automatically:
+*About "Paused":* for your security the browser forgets its permission to write to the file each time you fully close and reopen the app. You'll see **Paused** and a **Resume** button — one tap restarts it. This is normal, not an error.
 
-1. Go to **Team → Settings → Continuous Backup**.
-2. Choose a backup passcode (at least 6 characters — remember it).
-3. Tap **Set up continuous backup** and choose where to save the file (your computer, or a synced cloud folder like iCloud Drive, Google Drive, or Dropbox).
+**Save a copy any time.** Tap **Save a copy now** to download the file whenever you want one — before a trip, or to keep a copy off this device. iPhone and iPad don't support the automatic option yet, so on those devices this button is how you back up.
 
-From then on, every change is saved to that file automatically and encrypted. A small status shows **Active** when it's working.
+The app reminds you with a banner if it has been more than a week, and that banner takes you straight to this screen.
 
-**About "Paused":** For your security, the browser forgets its permission to write to your file each time you fully close and reopen the app. When that happens you'll see **Paused** and a **Resume** button — one tap re-authorizes it. This is normal and not an error. If you ever don't click Resume, your manual backup (above) is always there as a fallback.
+### Restoring Onto a New or Wiped Device
 
-iPhone and iPad don't support this automatic feature yet — on those devices, use the manual backup above and add the app to your home screen.
+1. Open Care Guardian on the new device.
+2. On the very first screen, tap **"Already have a backup file? Restore it"**.
+3. Choose your `.care` file and enter your **backup passcode**.
+4. Set new sign-in passcodes for this device, and everything comes back.
+
+If you're restoring a file made before this release, the app may have asked you for a separate "export passcode" at the time — use whichever passcode you typed when you saved that particular file.
 
 ### If You See "Your local data was cleared"
 
 Phone and tablet browsers sometimes delete a website's stored data when the device runs low on space — this is the browser's doing, not a bug in Care Guardian. If it happens, you'll see a recovery screen rather than losing access silently.
 
-**To recover:** have your most recent `.care` backup file ready, enter the backup passcode you used when you created it, choose the file, and then set new passcodes. Your records will be restored.
+**To recover:** have your most recent `.care` backup file ready, enter your backup passcode, choose the file, and then set new passcodes. Your records will be restored.
 
 **To reduce the chance of this happening:** add Care Guardian to your home screen (tap your browser's Share button, then "Add to Home Screen"). Installed apps get more durable storage. And keep current backups — a recent backup means an eviction costs you minutes, not data.
 

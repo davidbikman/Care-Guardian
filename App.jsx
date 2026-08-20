@@ -372,6 +372,9 @@ const genDeviceId=()=>"dev-"+Math.random().toString(36).slice(2,10)+"-"+Date.now
 // already writes-then-flips-pointer atomically, so a future schema migration writes to the inactive slot,
 // verifies the AES-GCM tag, then flips, never leaving a half-migrated vault.
 const SCHEMA_VERSION = 3;
+/* Minimum length for the backup passcode. One rule, applied wherever it is set —
+   the automatic and manual paths write the same file and carry the same risk. */
+const BACKUP_PW_MIN = 6;
 function initState(stateCode) {
   const doms = buildDomains(stateCode||"");
   const domains = {};
@@ -1901,7 +1904,13 @@ export default function App() {
     }
   };
 
-  const switchState=(newCode)=>{const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{const existing=data.domains[d.key];if(existing&&existing.goals){newDomains[d.key]={...existing,goals:d.goals.map((g,gi)=>{const eg=existing.goals[gi];if(eg)return{...eg,subs:g.subs.map((s,si)=>eg.subs[si]||{done:false,lastDone:null,typeOverride:null}),titleOverride:eg.titleOverride,subOverrides:eg.subOverrides,customSubs:eg.customSubs||[]};return{done:false,subs:g.subs.map(()=>({done:false,lastDone:null,typeOverride:null})),customSubs:[],titleOverride:null,subOverrides:{}}})}}else{newDomains[d.key]={status:"not-started",notes:"",lastUpdated:null,goals:d.goals.map(g=>({done:false,subs:g.subs.map(()=>({done:false,lastDone:null,typeOverride:null})),customSubs:[],titleOverride:null,subOverrides:{}}))}}});setData(p=>({...p,domains:newDomains,settings:{...p.settings,stateCode:newCode}}));flash(newCode?"Switched to "+(AVAILABLE_STATES.find(s=>s.code===newCode)||{}).name+" mode.":"Switched to Generic mode.")};
+  const switchState=(newCode)=>{
+    // Rebuilds every care domain from the new region's template, so it is not a
+    // preference toggle: gate it, and make the caregiver mean it.
+    if(!can("manage-settings")){flash("Only an admin can change the region.");return}
+    const label=(AVAILABLE_STATES.find(x=>x.code===newCode)||{}).name||"Generic";
+    if(!window.confirm(`Switch to ${label}?\n\nThis rebuilds the care plan from that region's template. Notes and completed items you've already recorded are kept, but the goals and tasks themselves change.`))return;
+const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{const existing=data.domains[d.key];if(existing&&existing.goals){newDomains[d.key]={...existing,goals:d.goals.map((g,gi)=>{const eg=existing.goals[gi];if(eg)return{...eg,subs:g.subs.map((s,si)=>eg.subs[si]||{done:false,lastDone:null,typeOverride:null}),titleOverride:eg.titleOverride,subOverrides:eg.subOverrides,customSubs:eg.customSubs||[]};return{done:false,subs:g.subs.map(()=>({done:false,lastDone:null,typeOverride:null})),customSubs:[],titleOverride:null,subOverrides:{}}})}}else{newDomains[d.key]={status:"not-started",notes:"",lastUpdated:null,goals:d.goals.map(g=>({done:false,subs:g.subs.map(()=>({done:false,lastDone:null,typeOverride:null})),customSubs:[],titleOverride:null,subOverrides:{}}))}}});setData(p=>({...p,domains:newDomains,settings:{...p.settings,stateCode:newCode}}));flash(newCode?"Switched to "+(AVAILABLE_STATES.find(s=>s.code===newCode)||{}).name+" mode.":"Switched to Generic mode.")};
   const [view,setView]=useState("today");
   const [currentHub,setCurrentHub]=useState("today");
   const [careMenuOpen,setCareMenuOpen]=useState(false);
@@ -1924,7 +1933,7 @@ export default function App() {
   // Messages
   const [msgFrom,setMsgFrom]=useState(""); const [msgText,setMsgText]=useState("");
   // Settings
-  const [exportPw,setExportPw]=useState(""); const [importPw,setImportPw]=useState("");
+  const [importPw,setImportPw]=useState(""); // passcode for a teammate's file, on Team Sync
   const [settingsMsg,setSettingsMsg]=useState(null);
   const [newCaregiverPw,setNewCaregiverPw]=useState(""); const [newClientPw,setNewClientPw]=useState("");
   // Merge
@@ -2193,7 +2202,10 @@ export default function App() {
 
   const cloudDisconnect=async()=>{await clearSyncHandle();setCloudHandle(null);setCloudFileName(null);setCloudConnected(false);setSyncStatus({type:"success",msg:"Disconnected from cloud sync."})};
 
-  /* ── Continuous encrypted backup (File System Access) ── */
+  /* ── Encrypted backup ── */
+  // One passcode protects the backup file, whether it was written automatically
+  // or saved by hand: both produce the same .care file, and the restore screen
+  // asks for this one secret by this one name.
   const [backupPw,setBackupPw]=useState("");
   const getBackupPasscode=()=>(data.settings&&data.settings.backupPasscode)||"";
   // Encrypt the full vault with the backup passcode and write it to the handle. Self-contained .care file.
@@ -2211,12 +2223,14 @@ export default function App() {
   const setupContinuousBackup=async()=>{
     if(!can("export-data")){flash("You don't have permission to configure backups.");return}
     if(!hasFileSystemAccess){flash("Continuous backup needs Chrome, Edge, or Brave. On other browsers, use manual backup below.");return}
-    if(!backupPw.trim()||backupPw.trim().length<6){flash("Choose a backup passcode of at least 6 characters. You'll need it to restore.");return}
+    const existing=getBackupPasscode();
+    const chosen=(existing||backupPw).trim();
+    if(!chosen||chosen.length<BACKUP_PW_MIN){flash(`Choose a backup passcode of at least ${BACKUP_PW_MIN} characters. You'll need it to restore.`);return}
     try{
       const handle=await window.showSaveFilePicker({suggestedName:"care-guardian-backup.care",types:[{description:"Care Guardian Backup",accept:{"application/json":[".care"]}}]});
       const perm=await checkHandlePermission(handle,true);
       if(perm!=="granted"){flash("Backup needs write access to that file to continue.");return}
-      const pw=backupPw.trim();
+      const pw=chosen;
       setBackupBusy(true);
       await writeBackupToHandle(handle,pw);
       await saveBackupHandle(handle);
@@ -2520,14 +2534,26 @@ export default function App() {
 
   /* ── settings / export ── */
   const flash=(msg)=>{setSettingsMsg(msg);setTimeout(()=>setSettingsMsg(null),4000)};
-  const handleEncryptedExport=async()=>{if(!can("export-data"))return;hipaaAudit("export","Encrypted backup exported","all");if(!exportPw.trim()){flash("Enter an export passcode.");return}try{
+  // Manual save. Uses the same passcode and produces the same file as the
+  // automatic backup — previously this asked for a separate "export passcode"
+  // with no minimum length, and the restore screen only ever named the other one.
+  const handleEncryptedExport=async()=>{
+    if(!can("export-data")){flash("You don't have permission to save a backup.");return}
+    const stored=getBackupPasscode();
+    const pw=(stored||backupPw).trim();
+    if(!pw){flash("Set a backup passcode first — it's what restores your data.");return}
+    if(pw.length<BACKUP_PW_MIN){flash(`Choose a backup passcode of at least ${BACKUP_PW_MIN} characters. You'll need it to restore.`);return}
+    hipaaAudit("export","Encrypted backup saved","all");
+    try{
     // Include export metadata inside encrypted payload for integrity (M5)
     const exportMeta={exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId)||"unknown",exportedByName:(data.settings&&data.settings.deviceName)||"",formatVersion:"2.0"};
     const exportData={...data,_sync:{...(data._sync||{}),...exportMeta},_exportMeta:exportMeta};
-    const b64=await encryptData(await packageWithBlobs(exportData,dekRef.current,rKeyRef.current),exportPw);downloadFile(JSON.stringify({encrypted:true,version:"2.0",data:b64}),"care-guardian-backup.care");
-    setData(p=>({...p,settings:{...p.settings,lastBackupAt:new Date().toISOString()}}));
-    setShowBackupReminder(false);
-    flash("Encrypted backup downloaded. Keep it somewhere safe — it's your recovery copy.")}catch(e){flash("Export failed: "+e.message)}};
+    const b64=await encryptData(await packageWithBlobs(exportData,dekRef.current,rKeyRef.current),pw);downloadFile(JSON.stringify({encrypted:true,version:"2.0",data:b64}),"care-guardian-backup.care");
+    // Remember it, so a later restore is answered by the same passcode the app
+    // asked for here, and so the automatic backup can reuse it.
+    setData(p=>({...p,settings:{...p.settings,backupPasscode:pw,lastBackupAt:new Date().toISOString()}}));
+    setBackupPw("");setShowBackupReminder(false);
+    flash("Backup saved. Keep the file somewhere you can find it — that plus your backup passcode is a full recovery.")}catch(e){flash("Couldn't save the backup: "+e.message)}};
   const handleNonSensitiveExport=()=>{if(!can("export-data"))return;hipaaAudit("export","Non-sensitive summary exported","summary");const safe={domainOverrides:data.domainOverrides,domainStatus:{},settings:{}}; DOMAINS.forEach(d=>{const prog=getProgress(d.key);const health=prog.pct>=80&&prog.recency>=70?"Healthy":prog.pct>=40||prog.recency>=40?"Fair":"Needs Attention";safe.domainStatus[d.key]={health,foundation:prog.pct+"%",carePulse:prog.recency+"%",progress:prog}});downloadFile(JSON.stringify(safe,null,2),"care-guardian-summary.json");flash("Summary exported (no PHI).")};
   const handleEncryptedImport=async(e)=>{if(clientScopedRef.current){flash("Sync and import aren't available in client sign-in.");return}const file=(e.target.files&&e.target.files[0]);if(!file)return;try{const text=await file.text();if(rawTextTooLarge(text)){flash("This backup is too large to open safely.");e.target.value="";return}const json=JSON.parse(text);if(!json.encrypted){flash("Not an encrypted backup.");return}if(payloadHardTooLarge(json.data)){flash("This backup is too large to load safely ("+mb(b64Bytes(json.data))+" MB).");e.target.value="";return}const restored=await ingestBlobs(await decryptData(json.data,importPw),dekRef.current,rKeyRef.current);
     // Validate and sanitize (M4)
@@ -2551,7 +2577,7 @@ export default function App() {
   const handleRecoveryFile=async(e)=>{
     const file=(e.target.files&&e.target.files[0]);if(!file)return;
     setRecoveryErr("");
-    if(!recoveryPw.trim()){setRecoveryErr("Enter the passcode you used when creating this backup.");e.target.value="";return}
+    if(!recoveryPw.trim()){setRecoveryErr("Enter the backup passcode for this file.");e.target.value="";return}
     try{
       const text=await file.text();if(rawTextTooLarge(text)){setRecoveryErr("This backup is too large to open safely on this device.");e.target.value="";return}const json=JSON.parse(text);
       if(!json.encrypted){setRecoveryErr("That doesn't look like a Care Guardian backup file.");e.target.value="";return}
@@ -3398,7 +3424,7 @@ export default function App() {
 
   /* ── nav ── */
   const toggle=(gi)=>setExpanded(p=>({...p,[gi]:!p[gi]}));
-  const PHI_VIEWS={"meds":"medications","log":"incidents","sos":"emergency_info","care-domains":"domains","contacts":"contacts","documents":"documents","selfreport":"self_reports","poa-decisions":"poa_decisions","capacity":"capacity","physical":"domains","cognitive":"domains","wellness":"domains","legal":"domains","financial":"domains","emergency-card":"emergency_info","binder":"care_plan","handoff":"shift_data"};
+  const PHI_VIEWS={"backups":"all","meds":"medications","log":"incidents","sos":"emergency_info","care-domains":"domains","contacts":"contacts","documents":"documents","selfreport":"self_reports","poa-decisions":"poa_decisions","capacity":"capacity","physical":"domains","cognitive":"domains","wellness":"domains","legal":"domains","financial":"domains","emergency-card":"emergency_info","binder":"care_plan","handoff":"shift_data"};
   // PHI access is audited on every route into a PHI view — including the bottom
   // nav, which reaches the Meds/Log/SOS roots without going through nav().
   const auditView=(v)=>{if(PHI_VIEWS[v]&&authed)hipaaAudit("view","Accessed "+v,PHI_VIEWS[v])};
@@ -3409,7 +3435,7 @@ export default function App() {
   const nav=(v)=>{if(NAV_ROOTS.includes(v)){navRoot(v);return}auditView(v);setNavStack(p=>[...p,{view,hub:currentHub}]);setView(v);setExpanded({});setEditNotes(false);setAddSubFor(null);cancelEdit();setContactForm(null);setContactDetail(null);setEditingDomain(null);setApptForm(null);setCalSelected(null);setDocResult(null);setDocMeds([]);setDocLabs([]);setIncidentForm(null);setExpenseForm(null);setMedForm(null);setViewingDoc(null)};
   const navBack=()=>{if(navStack.length>0){const prev=navStack[navStack.length-1];setNavStack(p=>p.slice(0,-1));setView(prev.view);setCurrentHub(prev.hub)}else{navRoot(NAV_ROOTS.includes(currentHub)?currentHub:"today")}};
   const isHubView=NAV_ROOTS.includes(view);
-  const getViewTitle=()=>{const t={today:"Today",meds:"Medications",log:"Log",sos:"SOS","care-domains":"Care domains",physical:"Physical health",cognitive:"Cognitive health",wellness:"Wellness",legal:"Legal safety",financial:"Financial security",expenses:"Expenses",calendar:"Calendar",contacts:"Contacts",documents:"Documents",triggers:"Escalation triggers",tracking:"Tracking",visit:"Visit prep",emergency:"Emergency plans",postdeath:"After death",messages:"Messages",sync:"Sync",selfreport:"Self-report",settings:"Settings",help:"Help",overview:"Overview",handoff:"Shift Handoff","emergency-card":"Emergency Card","caregiver-wellness":"Caregiver Check-in","incident-patterns":"Incident Patterns",display:"Display settings",capacity:"Capacity Observations",binder:"Care Plan Binder","poa-decisions":"POA Decisions",schedule:"Care Schedule",availability:"My Availability"};return t[view]||"Care Guardian"};
+  const getViewTitle=()=>{const t={today:"Today",meds:"Medications",log:"Log",sos:"SOS","care-domains":"Care domains",backups:"Backups",physical:"Physical health",cognitive:"Cognitive health",wellness:"Wellness",legal:"Legal safety",financial:"Financial security",expenses:"Expenses",calendar:"Calendar",contacts:"Contacts",documents:"Documents",triggers:"Escalation triggers",tracking:"Tracking",visit:"Visit prep",emergency:"Emergency plans",postdeath:"After death",messages:"Messages",sync:"Sync",selfreport:"Self-report",settings:"Settings",help:"Help",overview:"Overview",handoff:"Shift Handoff","emergency-card":"Emergency Card","caregiver-wellness":"Caregiver Check-in","incident-patterns":"Incident Patterns",display:"Display settings",capacity:"Capacity Observations",binder:"Care Plan Binder","poa-decisions":"POA Decisions",schedule:"Care Schedule",availability:"My Availability"};return t[view]||"Care Guardian"};
   const getBreadcrumb=()=>{const h={today:"Today",meds:"Medications",log:"Log",sos:"SOS",care:"Care Hub"};if(isHubView)return null;return h[currentHub]||null};
 
   // Universal search
@@ -3429,7 +3455,8 @@ export default function App() {
     {label:"Care Schedule",hub:"care",view:"schedule",icon:"🗓",keywords:"schedule shift open swap claim visit clock availability roster assignment"},
     {label:"Messages",hub:"today",view:"messages",icon:"✉",keywords:"message chat text communication team"},
     {label:"Self-Reports",hub:"log",view:"selfreport",icon:"🗣",keywords:"self report mood pain sleep voice concern"},
-    {label:"Sync",hub:"care",view:"sync",icon:"📡",keywords:"sync backup export import cloud server team invite"},
+    {label:"Backups",hub:"care",view:"backups",icon:"🛟",keywords:"backup restore save copy export recover lost device passcode encrypted care file"},
+    {label:"Team Sync",hub:"care",view:"sync",icon:"📡",keywords:"sync cloud server team invite merge device name"},
     {label:"Settings",hub:"care",view:"settings",icon:"⚙",keywords:"settings passcode password state region device"},
     {label:"Help",hub:"care",view:"help",icon:"?",keywords:"help guide how to feature"},
     {label:"Physical Health",hub:"care",view:"physical",icon:"♥",keywords:"physical health mobility fall nutrition dental vision sleep"},
@@ -3855,17 +3882,21 @@ export default function App() {
     <style dangerouslySetInnerHTML={{__html:CSS}}/>
     <div className="auth-wrap"><div className="auth-card" style={{maxWidth:"min(100%,23.33rem)"}}>
       <div style={{fontSize:"2.8148rem",marginBottom:10}}>⚠️</div>
-      <h1 className="auth-title">{recoveryReason==="forgot"?"Can't sign in?":"Your local data was cleared"}</h1>
-      {recoveryReason==="forgot"?(<p className="auth-sub" style={{textAlign:"left",lineHeight:1.5}}>If you've forgotten the passcodes for this browser, you have two options: restore from an encrypted backup file (you'll need that backup's password), or erase this browser's stored data and set up again. <strong>Without a backup, erased data cannot be recovered.</strong></p>):(<p className="auth-sub" style={{textAlign:"left",lineHeight:1.5}}>Your device's browser appears to have cleared Care Guardian's stored data. This can happen on iPhones and iPads when the device runs low on storage. <strong>Your information is not lost if you have a backup file.</strong></p>)}
+      <h1 className="auth-title">{recoveryReason==="forgot"?"Can't sign in?":recoveryReason==="newdevice"?"Restore onto this device":"Your local data was cleared"}</h1>
+      {recoveryReason==="newdevice"?(<p className="auth-sub" style={{textAlign:"left",lineHeight:1.5}}>Choose the <code>.care</code> backup file from your other device and enter its backup passcode. Everything comes back — records, medications, contacts and documents.</p>):recoveryReason==="forgot"?(<p className="auth-sub" style={{textAlign:"left",lineHeight:1.5}}>If you've forgotten the passcodes for this browser, you have two options: restore from an encrypted backup file (you'll need that backup's password), or erase this browser's stored data and set up again. <strong>Without a backup, erased data cannot be recovered.</strong></p>):(<p className="auth-sub" style={{textAlign:"left",lineHeight:1.5}}>Your device's browser appears to have cleared Care Guardian's stored data. This can happen on iPhones and iPads when the device runs low on storage. <strong>Your information is not lost if you have a backup file.</strong></p>)}
       <div className="recovery-box">
         <p className="recovery-label">Restore from your encrypted backup</p>
-        <input type="password" value={recoveryPw} onChange={e=>{setRecoveryPw(e.target.value);setRecoveryErr("")}} placeholder="Backup passcode" className="auth-input" style={{marginBottom:8}}/>
+        <input type="password" value={recoveryPw} onChange={e=>{setRecoveryPw(e.target.value);setRecoveryErr("")}} placeholder="Backup passcode" className="auth-input" style={{marginBottom:8,letterSpacing:"normal",textAlign:"left",fontFamily:"var(--font-ui)"}}/>
+        {/* Backups saved before this release could carry either of two passcodes —
+            the app used to ask for a separate one on each path. Say so, rather than
+            leaving someone guessing at the one moment it has to work. */}
+        <p className="auth-note" style={{textAlign:"left",marginBottom:8}}>This is your <strong>backup</strong> passcode, not your sign-in passcode. If the file is an older one, it may be the passcode you typed when you exported it.</p>
         <input ref={recoveryFileRef} type="file" accept=".care,.json" style={{display:"none"}} onChange={handleRecoveryFile}/>
         <button onClick={()=>{if(!recoveryPw.trim()){setRecoveryErr("Enter the passcode you used when creating this backup.");return}recoveryFileRef.current&&recoveryFileRef.current.click()}} className="auth-btn">Choose backup file (.care)</button>
         {recoveryErr&&<p className="auth-error">{recoveryErr}</p>}
       </div>
-      <p className="auth-footer" style={{marginTop:16}}>No backup file? You can start fresh — but previously stored information cannot be recovered without a backup.</p>
-      <button onClick={async()=>{if(recoveryReason==="forgot"&&!window.confirm("This permanently erases ALL Care Guardian data stored in this browser. Without a backup file, it cannot be recovered. Erase and start over?"))return;await wipeAllLocalData(true);setRecoveryReason("dataloss");setDataLossDetected(false);setSetupMode(true)}} className="text-btn">{recoveryReason==="forgot"?"Erase this browser's data & start over":"Start fresh instead"}</button>
+      <p className="auth-footer" style={{marginTop:16}}>{recoveryReason==="newdevice"?"Haven't got the file to hand? You can set this device up now and restore later.":"No backup file? You can start fresh — but previously stored information cannot be recovered without a backup."}</p>
+      <button onClick={async()=>{if(recoveryReason==="forgot"&&!window.confirm("This permanently erases ALL Care Guardian data stored in this browser. Without a backup file, it cannot be recovered. Erase and start over?"))return;if(recoveryReason==="newdevice"){setDataLossDetected(false);setRecoveryReason("dataloss");return}await wipeAllLocalData(true);setRecoveryReason("dataloss");setDataLossDetected(false);setSetupMode(true)}} className="text-btn">{recoveryReason==="newdevice"?"← Back to setup":recoveryReason==="forgot"?"Erase this browser's data & start over":"Start fresh instead"}</button>
     </div></div>
   </>);
 
@@ -3900,6 +3931,7 @@ export default function App() {
           <h1 className="auth-title">Your family's privacy comes first</h1>
           <p className="onb-body">Care Guardian does not use the cloud. We have no servers, and we can never see your data. Everything you type stays exactly where it belongs: <strong>right here on your device.</strong></p>
           <button onClick={()=>setOnbStep(isStandalone?2:1)} className="auth-btn">Get started</button>
+          <button onClick={()=>{setRecoveryReason("newdevice");setDataLossDetected(true)}} className="text-btn">Already have a backup file? Restore it →</button>
           <Dots/>
         </>)}
 
@@ -4020,7 +4052,7 @@ export default function App() {
     {storageAtRisk&&(<div className="nudge-banner nudge-risk">
       <span className="nudge-icon">⚠️</span>
       <div className="nudge-body"><strong>This browser hasn't granted durable storage.</strong> Your records could be cleared if the device runs low on space. Add the app to your home screen and keep a recent backup so nothing is lost.{backupStatus==="active"?" Your continuous backup is protecting you in the meantime.":""}</div>
-      <button className="nudge-act" onClick={()=>{setCurrentHub("care");nav("settings")}}>Back up</button>
+      <button className="nudge-act" onClick={()=>{setCurrentHub("care");nav("backups")}}>Back up</button>
       <button className="nudge-x" onClick={()=>setStorageAtRisk(false)}>×</button>
     </div>)}
     {/* Truthful durability indicator — "saved" only after the edit's append has committed */}
@@ -4040,7 +4072,7 @@ export default function App() {
     </div>):(<div className="nudge-banner nudge-backup">
       <span className="nudge-icon">💾</span>
       <div className="nudge-body"><strong>Time to back up.</strong> {(data.settings&&data.settings.lastBackupAt)?"It's been a while since your last backup.":"You haven't made a backup yet."} A downloaded backup file survives even if your browser clears its storage — it's how you recover everything.</div>
-      <button className="nudge-act" onClick={()=>{setShowBackupReminder(false);setCurrentHub("care");nav("settings")}}>Back up now</button>
+      <button className="nudge-act" onClick={()=>{setShowBackupReminder(false);setCurrentHub("care");nav("backups")}}>Back up now</button>
       <button className="nudge-x" onClick={()=>setShowBackupReminder(false)}>×</button>
     </div>))}
     {searchOpen&&(<div className="search-overlay" onClick={()=>setSearchOpen(false)}>
@@ -4407,6 +4439,66 @@ export default function App() {
               </div>)})}</div>
             {DOMAINS.filter(d=>can("view-domain",d.key)).map(d=>{const p=getProgress(d.key);const hc=p.pct>=80&&p.recency>=70?"var(--color-background-success)":p.pct>=40||p.recency>=40?"var(--color-background-warning)":"var(--color-background-danger)";const hl=p.pct>=80&&p.recency>=70?"Healthy":p.pct>=40||p.recency>=40?"Fair":"Attention";const hlc=p.pct>=80&&p.recency>=70?"pill-g":p.pct>=40||p.recency>=40?"pill-a":"pill-r";return(
               <div key={d.key} className="hub-card" onClick={()=>nav(d.key)}><div className="hub-card-icon" style={{background:hc}}><span style={{fontSize:"1.3333rem"}}>{d.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{getDomLabel(d.key)} <span className={"pill "+hlc}>{hl}</span></div><div className="hub-card-sub">{p.pct}% complete</div></div><span className="hub-card-arr">›</span></div>)})}
+          </>)}
+
+          {/* ═══ BACKUPS ═══ One file, one passcode, and the restore path named
+              here rather than only on a screen people hope never to see. */}
+          {view==="backups"&&(<>
+            {!can("export-data")?<p className="page-sub">Backups are managed by the people who can export data.</p>:(<>
+            <p className="page-sub">One encrypted file holds everything. Keep it somewhere you can find it, and remember the backup passcode — together they are a full recovery.</p>
+
+            {(()=>{const pw=getBackupPasscode();return(<>
+              {!pw&&(<div className="section">
+                <h3 className="sec-title">Choose a backup passcode</h3>
+                <p className="hint" style={{marginTop:0}}>This is the one passcode you'll be asked for if you ever restore. It isn't your sign-in passcode. At least {BACKUP_PW_MIN} characters.</p>
+                <input value={backupPw} onChange={e=>setBackupPw(e.target.value)} className="cf-input" type="password" placeholder="Backup passcode" style={{maxWidth:"min(100%,18rem)"}}/>
+              </div>)}
+
+              <div className="section">
+                <h3 className="sec-title">🛟 Automatic backup</h3>
+                {!hasFileSystemAccess?(
+                  <p className="hint" style={{marginTop:0}}>This browser can't save automatically. Chrome, Edge and Brave can. On this browser, use <strong>Save a copy now</strong> below — it does the same job, you just press it yourself.</p>
+                ):(<>
+                  <p className="hint" style={{marginTop:0}}>Saves an encrypted copy every time something changes, so a browser clearing its storage never costs you your records.</p>
+                  {backupStatus==="active"&&(<div className="backup-status backup-active">
+                    <span className="backup-dot"></span>
+                    <div className="backup-status-body"><strong>On</strong> — saving automatically to <code>{backupFileName||"your backup file"}</code>{lastAutoBackupAt&&<span className="backup-when">last saved {new Date(lastAutoBackupAt).toLocaleTimeString()}</span>}</div>
+                    <button onClick={disableContinuousBackup} className="backup-link">Turn off</button>
+                  </div>)}
+                  {backupStatus==="paused"&&(<div className="backup-status backup-paused">
+                    <span className="backup-dot"></span>
+                    <div className="backup-status-body"><strong>Paused</strong> — your browser asks permission again each time you reopen the app. One tap restarts it.</div>
+                    <button onClick={resumeBackup} className="backup-btn" disabled={backupBusy}>Resume</button>
+                  </div>)}
+                  {backupStatus==="off"&&(<button onClick={setupContinuousBackup} className="save-btn" disabled={backupBusy}>🛟 Turn on automatic backup</button>)}
+                </>)}
+              </div>
+
+              <div className="section">
+                <h3 className="sec-title">Save a copy now</h3>
+                <p className="hint" style={{marginTop:0}}>Downloads the same encrypted file, whenever you want one — before a trip, or to keep a copy off this device. The file is fully encrypted, so storing it in iCloud, Google Drive or Dropbox is safe.</p>
+                <button onClick={handleEncryptedExport} className="save-btn">↓ Save a copy now</button>
+                {(data.settings&&data.settings.lastBackupAt)&&<p className="hint" style={{marginTop:8}}>Last backup: {new Date(data.settings.lastBackupAt).toLocaleString()}</p>}
+              </div>
+
+              <div className="section">
+                <h3 className="sec-title">If this device is lost or wiped</h3>
+                <ol className="sos-script-list">
+                  <li>Open Care Guardian on the new device.</li>
+                  <li>On the first screen, tap <strong>“Already have a backup file? Restore it”</strong>.</li>
+                  <li>Pick your <code>.care</code> file and enter your <strong>backup passcode</strong> — the one above.</li>
+                  <li>Set new sign-in passcodes, and you're back.</li>
+                </ol>
+                <p className="hint">Without that file, erased records can't be recovered — no one, including us, can read or reset your data.</p>
+              </div>
+
+              <div className="section">
+                <h3 className="sec-title">Share progress without health details</h3>
+                <p className="hint" style={{marginTop:0}}>Exports domain names, status and progress only — no contacts, notes, medications or health information. For a funder, a supervisor, or anyone who needs the shape of things without the record.</p>
+                <button onClick={handleNonSensitiveExport} className="edit-btn" style={{marginTop:0}}>↓ Export summary (no health info)</button>
+              </div>
+            </>)})()}
+            </>)}
           </>)}
 
           {/* ═══ DISPLAY SETTINGS ═══ */}
@@ -5087,6 +5179,22 @@ export default function App() {
               </>)}
             </div>
 
+            {/* Device name belongs beside the roster it labels, not in a settings
+                page the people reading the roster can't open. */}
+            <div className="section">
+              <h3 className="sec-title">📱 This device</h3>
+              <p className="hint" style={{marginTop:0}}>Name this device so your team can tell whose updates are whose.</p>
+              <label className="cf-label" style={{maxWidth:"min(100%,22.22rem)"}}>Device name<input value={(data.settings&&data.settings.deviceName)||""} onChange={e=>setData(p=>({...p,settings:{...p.settings,deviceName:e.target.value}}))} className="cf-input" placeholder="e.g., David's phone, Sarah's laptop"/></label>
+              {(data._sync&&data._sync.lastMerge)&&<p className="hint" style={{marginTop:8}}>Last merge: {new Date(data._sync.lastMerge).toLocaleString()} from {data._sync.mergedFromName||data._sync.mergedFrom||"unknown"}</p>}
+            </div>
+            {/* Merging a teammate's file is a sync job. It used to sit under a
+                heading that said "Backup", which implied it was how you recover. */}
+            {!isReadOnly&&<div className="section">
+              <h3 className="sec-title">📥 Bring in a teammate's updates</h3>
+              <p className="hint" style={{marginTop:0}}>If someone sends you their file instead of syncing, open it here. New items are added and more recent changes win — you'll see exactly what changes before anything is applied.</p>
+              <div className="settings-row"><input value={importPw} onChange={e=>setImportPw(e.target.value)} className="cf-input" placeholder="Their passcode for the file" type="password" style={{maxWidth:"min(100%,13rem)"}}/><button onClick={()=>(importFileRef.current&&importFileRef.current.click)()} className="save-btn">↑ Choose file &amp; preview</button></div>
+              <p className="hint" style={{marginTop:10}}>Recovering your own data after losing a device is a different job — that's on the Backups screen.</p>
+            </div>}
             {/* Sync passcode */}
             {hasTeam()&&<div className="section">
               <h3 className="sec-title">🔐 Sync Passcode</h3>
@@ -5229,8 +5337,8 @@ export default function App() {
           {/* ═══ SETTINGS ═══ */}
           {view==="settings"&&(<>
             <h1 className="page-title">⚙ Settings</h1>
-            {isReadOnly?<p className="page-sub">Settings are only available to caregivers.</p>:(<>
-              <p className="page-sub">Manage passcodes, export backups, and import health records.</p>
+            {!can("manage-settings")?<p className="page-sub">Settings are managed by your team's admin. Backups are on the Backups screen, in the Care Hub menu.</p>:(<>
+              <p className="page-sub">Passcodes, region, and the security record for this install.</p>
               <div className="section"><h3 className="sec-title">🗺 State / Region</h3>
                 <p className="hint">Choose your state for localized Medicaid thresholds, legal citations, program names, and resources. Generic mode provides universal guidance with no state-specific details.</p>
                 <div className="state-selector">
@@ -5245,14 +5353,7 @@ export default function App() {
                 </div>
                 <button onClick={updatePasscodes} className="save-btn" style={{marginTop:12}}>Update Passcodes</button>
               </div>
-              }<div className="section"><h3 className="sec-title">📡 Device Identity & Sync</h3>
-                <p className="hint">Each device has a unique ID used during sync. Set a name so team members know whose backup is whose.</p>
-                <div className="cf-grid" style={{maxWidth:"min(100%,22.22rem)"}}>
-                  <label className="cf-label">Device name<input value={(data.settings&&data.settings.deviceName)||""} onChange={e=>setData(p=>({...p,settings:{...p.settings,deviceName:e.target.value}}))} className="cf-input" placeholder="e.g., David's phone, Sarah's laptop"/></label>
-                  <label className="cf-label">Device ID<input value={(data.settings&&data.settings.deviceId)||""} readOnly className="cf-input" style={{color:"var(--color-text-muted)",fontSize:"0.8889rem"}}/></label>
-                </div>
-                {(data._sync&&data._sync.lastMerge)&&<p className="hint" style={{marginTop:8}}>Last merge: {new Date(data._sync.lastMerge).toLocaleString()} from {data._sync.mergedFromName||data._sync.mergedFrom||"unknown"}</p>}
-              </div>
+              }
               <div className="section"><h3 className="sec-title">🔒 Security &amp; Integrity</h3>
                 <div className="integrity-row">
                   <span className="integrity-label">Audit log integrity</span>
@@ -5302,42 +5403,6 @@ export default function App() {
                   </>)
                 ):<p className="hint" style={{marginTop:2}}>Multi-factor sign-in is available for professional roles (Admin, Care Professional).</p>}
               </div>
-              <div className="section"><h3 className="sec-title">🛟 Continuous Backup</h3>
-                <p className="hint">Automatically save an encrypted copy to a file on your device or cloud folder every time your data changes — so a browser clearing its storage never costs you your records. {hasFileSystemAccess?"":"(Requires Chrome, Edge, or Brave. On this browser, use manual backup below.)"}</p>
-                {backupStatus==="active"&&(<div className="backup-status backup-active">
-                  <span className="backup-dot"></span>
-                  <div className="backup-status-body"><strong>Active</strong> — saving automatically to <code>{backupFileName||"your backup file"}</code>{lastAutoBackupAt&&<span className="backup-when">last saved {new Date(lastAutoBackupAt).toLocaleTimeString()}</span>}</div>
-                  <button onClick={disableContinuousBackup} className="backup-link">Turn off</button>
-                </div>)}
-                {backupStatus==="paused"&&(<div className="backup-status backup-paused">
-                  <span className="backup-dot"></span>
-                  <div className="backup-status-body"><strong>Paused</strong> — your browser cleared this session's permission to write the backup file. This is expected each time you reopen the app.</div>
-                  <button onClick={resumeBackup} className="backup-btn" disabled={backupBusy}>Resume</button>
-                </div>)}
-                {backupStatus==="off"&&hasFileSystemAccess&&can("export-data")&&(<div className="settings-row">
-                  <input value={backupPw} onChange={e=>setBackupPw(e.target.value)} className="cf-input" placeholder="Choose a backup passcode (min 6)" type="password" style={{width:240}}/>
-                  <button onClick={setupContinuousBackup} className="save-btn" disabled={backupBusy} style={{background:"var(--color-action-primary)"}}>🛟 Set up continuous backup</button>
-                </div>)}
-                {backupStatus==="off"&&<p className="hint" style={{marginTop:8,fontStyle:"italic"}}>Remember your backup passcode — it's what restores your data if the browser clears it. The backup file is fully encrypted, so storing it in iCloud, Google Drive, or Dropbox is safe.</p>}
-                {backupStatus!=="off"&&<p className="hint" style={{marginTop:8,fontStyle:"italic"}}>Note: browser security requires you to re-authorize file access each session — the unlock is one click when you see "Resume." Your manual backup below always works as a fallback.</p>}
-              </div>
-              <div className="section"><h3 className="sec-title">Encrypted Backup & Sync</h3>
-                <p className="hint">Export your data with AES-256-GCM encryption. Import merges intelligently — new items are added, more recent changes win. Your passcodes and device ID are never overwritten.</p>
-                <div className="settings-row"><input value={exportPw} onChange={e=>setExportPw(e.target.value)} className="cf-input" placeholder="Export passcode" type="password" style={{width:200}}/><button onClick={handleEncryptedExport} className="save-btn">↓ Export Encrypted</button></div>
-                <div className="settings-row" style={{marginTop:12}}><input value={importPw} onChange={e=>setImportPw(e.target.value)} className="cf-input" placeholder="Import passcode" type="password" style={{width:200}}/><button onClick={()=>(importFileRef.current&&importFileRef.current.click)()} className="save-btn" style={{background:"var(--color-action-primary)"}}>↑ Import & Merge</button></div>
-                <p className="hint" style={{marginTop:12}}>Workflow: team member exports → shares file via text/Signal/AirDrop/Drive → you import → merge preview shows changes → you confirm.</p>
-              </div>
-              <div className="section"><h3 className="sec-title">Summary Export (No PHI)</h3>
-                <p className="hint">Exports domain names, status, and progress only. No contacts, notes, or health information.</p>
-                <button onClick={handleNonSensitiveExport} className="edit-btn" style={{marginTop:0}}>↓ Export Summary</button>
-              </div>
-              <div className="section"><h3 className="sec-title">Import Health Records (FHIR R4)</h3>
-                <p className="hint">Import a FHIR R4 JSON Bundle to extract practitioners, conditions, and medications.</p>
-                <button onClick={()=>(fhirFileRef.current&&fhirFileRef.current.click)()} className="edit-btn" style={{marginTop:0}}>↑ Import FHIR Bundle</button>
-              </div>
-              <div className="section"><h3 className="sec-title">Data</h3>
-                <p className="hint">Storage key: {SKEY} · Device: {(data.settings&&data.settings.deviceName)||(data.settings&&data.settings.deviceId)||"unnamed"} · Contacts: {(data.contacts&&data.contacts.length)||0} · Appointments: {(data.appointments&&data.appointments.length)||0} · Messages: {(data.messages&&data.messages.length)||0} · Incidents: {(data.incidents&&data.incidents.length)||0} · Expenses: {(data.expenses&&data.expenses.length)||0} · Meds: {getMedSchedule().medications.length} · Self-reports: {(data.selfReports&&data.selfReports.length)||0} · Docs: {(data.savedDocs&&data.savedDocs.length)||0}</p>
-              </div>
             </>)}
           </>)}
 
@@ -5346,6 +5411,11 @@ export default function App() {
             <div className="contacts-header"><div><h1 className="page-title">📄 Document Scanner</h1><p className="page-sub" style={{margin:"4px 0 0"}}>Upload PDFs or text files. Medications and lab results are extracted automatically — no data leaves your device.</p></div>
               {!isReadOnly&&<button onClick={()=>(docFileRef.current&&docFileRef.current.click)()} className="save-btn" disabled={docProcessing}>{docProcessing?"Processing…":"↑ Upload Document"}</button>}
             </div>
+            {!isReadOnly&&<div className="section" style={{marginBottom:16}}>
+              <h3 className="sec-title">Import health records (FHIR R4)</h3>
+              <p className="hint" style={{marginTop:0}}>If your clinic or portal exports a FHIR R4 bundle, open it here to pull in practitioners, conditions and medications.</p>
+              <button onClick={()=>(fhirFileRef.current&&fhirFileRef.current.click)()} className="edit-btn" style={{marginTop:0}}>↑ Import FHIR bundle</button>
+            </div>}
 
             {/* saved documents library */}
             {((data.savedDocs&&data.savedDocs.length)||0)>0&&!docResult&&!viewingDoc&&(<div className="section">
@@ -5621,7 +5691,8 @@ export default function App() {
                 {label:"Administration", items:[
                   ...(can("manage-team")?[{icon:"👥",label:"Team members & roles",view:"settings",sub:"Invite, assign roles, remove"}]:[]),
                   ...(can("view-expenses")?[{icon:"$",label:"Daily expenses",view:"expenses"}]:[]),
-                  ...(can("manage-sync")?[{icon:"📡",label:"Sync & backup",view:"sync"}]:[]),
+                  ...(can("export-data")?[{icon:"🛟",label:"Backups",view:"backups",sub:"Save and restore your records"}]:[]),
+                  ...(can("manage-sync")?[{icon:"📡",label:"Team sync",view:"sync"}]:[]),
                   {icon:"🅰",label:"Display settings",view:"display",sub:"Text size, contrast"},
                   ...(can("manage-settings")?[{icon:"⚙",label:"All settings",view:"settings",sub:"Passcodes, state, export & import"}]:[]),
                 ]},
