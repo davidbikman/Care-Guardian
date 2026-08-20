@@ -2212,7 +2212,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
   // Debounced automatic write whenever data changes and backup is active.
   useEffect(()=>{
     if(!authed||backupStatus!=="active"||!backupHandle)return;
-    const pw=getBackupPasscode();if(!pw)return;
+    const pw=getRecoveryKey()||getBackupPasscode();if(!pw)return;
     if(backupTimerRef.current)clearTimeout(backupTimerRef.current);
     backupTimerRef.current=setTimeout(async()=>{
       try{
@@ -2311,7 +2311,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
     const perm=await checkHandlePermission(backupHandle,true);
     if(perm==="granted"){
       setBackupStatus("active");
-      const pw=getBackupPasscode();
+      const pw=getRecoveryKey()||getBackupPasscode();
       if(pw){try{setBackupBusy(true);await writeBackupToHandle(backupHandle,pw);const now=new Date().toISOString();setLastAutoBackupAt(now);setData(p=>({...p,settings:{...p.settings,lastBackupAt:now}}))}catch{}finally{setBackupBusy(false)}}
       flash("Backup resumed.");
     }else{flash("Write access was not granted, so backup is still paused.")}
