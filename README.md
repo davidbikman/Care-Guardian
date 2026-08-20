@@ -178,6 +178,44 @@ secret at the worst possible moment.
 - **Merging a teammate's file** lives on Team Sync, not under a "Backup"
   heading. It is a sync operation and was implying it was how you recover.
 
+## Keys and Codes
+
+Seven distinct secrets became three. Two are memorised (caregiver and client
+passcodes); one is generated and saved (the Recovery Key). The invite code and
+team key are handled once at join time and never recalled.
+
+- **Recovery Key** — 125 bits, generated at setup, never invented. It opens
+  backup files and, when MFA is enabled, is the same string as the passkey
+  backstop, so a caregiver files away one key rather than two.
+- **Team key** — generated at team creation and stored in the vault, replacing
+  a shared passcode that every member had to agree on and re-type *every
+  session on every device* (`saveSyncPasscode` kept it in memory only, so the
+  screen's "set up once, then just press Sync" was not true). Teams created
+  before this can adopt a generated key from the Sync screen.
+- **Invite codes** no longer carry the client's name. The payload is base64,
+  which reads as ciphertext and is not, and these are sent by text message.
+  Secrets stay out of it, as an earlier review round decided; the name is now
+  out for the same reason. v1 codes still parse.
+
+### Backup file format (v3.0)
+
+The payload is encrypted under a random per-file key, and that file key is
+stored wrapped under each factor the caregiver actually holds:
+
+| Wrap | Factor | Present when |
+|---|---|---|
+| `recovery` | Recovery Key | always |
+| `passcode` | Caregiver passcode | passcode length ≥ `BACKUP_PW_MIN` (6) |
+
+Restore tries each wrap with whatever secret it is given, so either factor
+opens the file. The passcode wrap is gated because a backup can be copied and
+attacked offline: the gate holds the floor exactly where the old dedicated
+backup passcode put it, while adding a far stronger factor above it. The
+passcode is held in a session ref captured at unlock and cleared on lock — it
+is never persisted, and `settings.caregiverPasscode` is not maintained by the
+current key architecture. Built from the existing `encryptData`/`decryptData`
+primitives; no new cryptography. Files written as v2.0 still open unchanged.
+
 ## Usability & Accessibility
 
 The interface is built on a semantic design-token layer: components reference

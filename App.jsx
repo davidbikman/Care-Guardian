@@ -375,6 +375,49 @@ const SCHEMA_VERSION = 3;
 /* Minimum length for the backup passcode. One rule, applied wherever it is set —
    the automatic and manual paths write the same file and carry the same risk. */
 const BACKUP_PW_MIN = 6;
+
+/* A backup file used to be encrypted directly under a passphrase the caregiver
+   invented for the purpose — one more secret, remembered only at the moment of
+   crisis. Instead the payload is encrypted under a random file key, and that
+   file key is stored wrapped under each factor the person already holds:
+
+     recovery — their Recovery Key (125 bits, generated, saved once)
+     passcode — their caregiver passcode, only when it clears BACKUP_PW_MIN
+
+   Restore tries each wrap with whatever secret it is given, so either factor
+   opens the file. The passcode wrap is gated because the file is offline-
+   attackable wherever it is stored; the gate keeps the floor exactly where the
+   old dedicated backup passcode already put it, while adding a far stronger
+   factor above it. Built from encryptData/decryptData only — no new crypto.  */
+const BACKUP_FORMAT = "3.0";
+
+async function buildBackupFile(payloadCipherFn, recoveryKey, passcode){
+  const fileKey = genRecoveryCode();
+  const data = await payloadCipherFn(fileKey);
+  const wraps = {};
+  if(recoveryKey) wraps.recovery = await encryptData(fileKey, recoveryKey);
+  if(passcode && passcode.length >= BACKUP_PW_MIN) wraps.passcode = await encryptData(fileKey, passcode);
+  if(!Object.keys(wraps).length) throw new Error("No way to lock this backup — set a Recovery Key first.");
+  return { encrypted:true, version:BACKUP_FORMAT, wraps, data };
+}
+
+/* Open a backup with one secret, whichever factor it happens to be. Files
+   written before this release have no wraps and were encrypted directly, so
+   they are tried that way too — the live install is full of them. */
+async function openBackupFile(file, secret){
+  if(file && file.wraps){
+    for(const w of [file.wraps.recovery, file.wraps.passcode]){
+      if(!w) continue;
+      try{
+        const fileKey = await decryptData(w, secret);
+        if(typeof fileKey === "string") return await decryptData(file.data, fileKey);
+      }catch{ /* wrong factor for this wrap — try the next */ }
+    }
+    throw new Error("That key or passcode didn't open this backup.");
+  }
+  return await decryptData(file.data, secret); // v2.0 and earlier
+}
+
 function initState(stateCode) {
   const doms = buildDomains(stateCode||"");
   const domains = {};
@@ -1754,15 +1797,17 @@ const CreateTeamForm=({data,flash,createTeam,setTeamSetupMode})=>{const[tn,setTn
     <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!tn.trim()||!cn.trim()||!mn.trim()){flash("Please fill in all fields.");return}createTeam(tn,cn,mn,mr)}} className="save-btn">Create Team</button><button onClick={()=>setTeamSetupMode(null)} className="cancel-btn">Cancel</button></div>
   </div>)};
 
-const JoinTeamForm=({data,joinCode,setJoinCode,parseInviteCode,flash,joinTeamFromCode,setTeamSetupMode})=>{const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[mr,setMr]=useState("");const[rk,setRk]=useState("family");return(
+const JoinTeamForm=({data,joinCode,setJoinCode,parseInviteCode,flash,joinTeamFromCode,setTeamSetupMode})=>{const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[tk,setTk]=useState("");const[mr,setMr]=useState("");const[rk,setRk]=useState("family");return(
   <div className="team-form">
     <h4 className="sync-sub-title">Join an Existing Team</h4>
     <label className="cf-label">Invite code<input value={joinCode} onChange={e=>setJoinCode(e.target.value)} className="cf-input" placeholder="Paste the code from your team member" style={{fontFamily:"monospace",fontSize:"0.8889rem"}}/></label>
-    {joinCode&&parseInviteCode(joinCode)&&<p className="hint" style={{color:"var(--color-text-success)"}}>✓ Team: <strong>{parseInviteCode(joinCode).teamName}</strong> · Caring for: <strong>{parseInviteCode(joinCode).clientName}</strong></p>}
+    {joinCode&&parseInviteCode(joinCode)&&<p className="hint" style={{color:"var(--color-text-success)"}}>✓ Team: <strong>{parseInviteCode(joinCode).teamName}</strong></p>}
+    <label className="cf-label">Team key<input value={tk} onChange={e=>setTk(e.target.value)} className="cf-input" placeholder="The key sent to you separately" style={{fontFamily:"var(--font-code)"}}/></label>
+    <p className="hint" style={{marginTop:-4}}>Your team sends this on its own, apart from the invite code. You'll only ever enter it here.</p>
     <label className="cf-label">Your name<input value={mn} onChange={e=>setMn(e.target.value)} className="cf-input" placeholder="e.g., Sarah"/></label>
     <label className="cf-label">Your role title<input value={mr} onChange={e=>setMr(e.target.value)} className="cf-input" placeholder="e.g., Weekend Caregiver, Son, Home Health Aide"/></label>
     <label className="cf-label">Access level<select value={rk} onChange={e=>setRk(e.target.value)} className="cf-select">{ROLES.filter(r=>r.key!=="admin"&&!r.key.startsWith("client")).map(r=>(<option key={r.key} value={r.key}>{r.icon} {r.label} — {r.desc}</option>))}</select></label>
-    <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!joinCode.trim()||!mn.trim()){flash("Please enter the invite code and your name.");return}joinTeamFromCode(joinCode,mn,mr,rk)}} className="save-btn">Join Team</button><button onClick={()=>{setTeamSetupMode(null);setJoinCode("")}} className="cancel-btn">Cancel</button></div>
+    <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!joinCode.trim()||!mn.trim()){flash("Please enter the invite code and your name.");return}joinTeamFromCode(joinCode,mn,mr,rk,tk)}} className="save-btn">Join Team</button><button onClick={()=>{setTeamSetupMode(null);setJoinCode("")}} className="cancel-btn">Cancel</button></div>
   </div>)};
 
 /* ═══════════════ COMPONENT ═══════════════ */
@@ -1773,6 +1818,11 @@ export default function App() {
   const [setupMode,setSetupMode]=useState(false);
   const [setupCgPw,setSetupCgPw]=useState("");
   const [dataLossDetected,setDataLossDetected]=useState(false);
+  /* The caregiver passcode, held only for this session so a backup written now
+     can carry a passcode wrap. Never persisted; cleared on lock with the DEK.
+     Only used when it clears BACKUP_PW_MIN — a short sign-in PIN must not become
+     the cheapest way into a file that can be copied and attacked offline. */
+  const cgPasscodeRef=useRef("");
   const [recoveryReason,setRecoveryReason]=useState("dataloss"); // "dataloss" (eviction) | "forgot" (user-initiated from unlock)
   const [recoveryData,setRecoveryData]=useState(null);
   const [recoveryPw,setRecoveryPw]=useState("");
@@ -1793,11 +1843,9 @@ export default function App() {
   const dekRef=useRef(null);
   const rKeyRef=useRef(null);            // restricted-zone key (DEK_R); caregiver sessions derive it, scoped client sessions hold ONLY it
   const clientScopedRef=useRef(false);   // true → this session is cryptographically scoped: persist projection ONLY, never vault/WAL/audit
-  const [clientScoped,setClientScoped]=useState(false);
   const [srChainStatus,setSrChainStatus]=useState(null); // client self-report chain verification result
   const [outboxOversized,setOutboxOversized]=useState(0); // bytes; >0 → quarantined pending review
   const auditKeyRef=useRef(null);
-  const [auditEntries,setAuditEntries]=useState([]);
   const [storageInfo,setStorageInfo]=useState(null);
   const [auditChainStatus,setAuditChainStatus]=useState(null); // {status, brokenAtSeq, chained, total}
   const [storageAtRisk,setStorageAtRisk]=useState(false);       // persistent storage not granted → eviction risk
@@ -1819,7 +1867,6 @@ export default function App() {
   const [mfaAddPasskey,setMfaAddPasskey]=useState(false);
   const [mfaAddPc,setMfaAddPc]=useState("");
   const [mfaAddBusy,setMfaAddBusy]=useState(false);
-  const [auditCount,setAuditCount]=useState(0);
   const lastActivityRef=useRef(Date.now());
   const [data,setData]=useState(()=>initState(""));
   const DOMAINS=buildDomains((data.settings&&data.settings.stateCode)||"");
@@ -1926,7 +1973,6 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
   const [contactSort,setContactSort]=useState("category"); const [contactFilter,setContactFilter]=useState("all");
   const [contactForm,setContactForm]=useState(null); const [contactDetail,setContactDetail]=useState(null);
   const [contactNoteText,setContactNoteText]=useState("");
-  const [importResult,setImportResult]=useState(null);
   // Calendar
   const [calYear,setCalYear]=useState(new Date().getFullYear()); const [calMonth,setCalMonth]=useState(new Date().getMonth());
   const [calSelected,setCalSelected]=useState(null); const [apptForm,setApptForm]=useState(null);
@@ -1938,13 +1984,11 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
   const [newCaregiverPw,setNewCaregiverPw]=useState(""); const [newClientPw,setNewClientPw]=useState("");
   // Merge
   const [mergePreview,setMergePreview]=useState(null); // {merged, report, sourceName}
-  const mergeFileRef=useRef(null);
   // Sync
   const [syncPasscode,setSyncPasscode]=useState(""); // memory only — never persisted
   const [syncPullUrl,setSyncPullUrl]=useState("");
   const [syncPullText,setSyncPullText]=useState("");
   const [syncStatus,setSyncStatus]=useState(null); // {type:"success"|"error",msg}
-  const [syncPushing,setSyncPushing]=useState(false);
   const [syncPulling,setSyncPulling]=useState(false);
   const syncFileRef=useRef(null);
   // Cloud sync
@@ -2206,16 +2250,35 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
   // One passcode protects the backup file, whether it was written automatically
   // or saved by hand: both produce the same .care file, and the restore screen
   // asks for this one secret by this one name.
-  const [backupPw,setBackupPw]=useState("");
+  // One saved key. It opens backup files, and when MFA is on it is the same
+  // string as the passkey backstop — so a caregiver holds one, not two.
+  // The caregiver passcode is only offered as a backup wrap when it clears the
+  // same floor the dedicated backup passcode had. A backup file can be copied
+  // and attacked offline, so a 4-character sign-in PIN must not become the
+  // weakest way into it — below the floor, the Recovery Key is the only factor.
+  const caregiverPasscodeForWrap=()=>{
+    const pc=cgPasscodeRef.current||"";
+    return pc.length>=BACKUP_PW_MIN?pc:"";
+  };
+  const getRecoveryKey=()=>(data.settings&&data.settings.recoveryKey)||"";
+  const ensureRecoveryKey=()=>{
+    const existing=getRecoveryKey();
+    if(existing)return existing;
+    const key=genRecoveryCode();
+    setData(p=>({...p,settings:{...p.settings,recoveryKey:key}}));
+    return key;
+  };
   const getBackupPasscode=()=>(data.settings&&data.settings.backupPasscode)||"";
   // Encrypt the full vault with the backup passcode and write it to the handle. Self-contained .care file.
   const writeBackupToHandle=async(handle,passcode)=>{
     if(!handle||!passcode)return false;
     const exportMeta={exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId)||"",exportedByName:(data.settings&&data.settings.deviceName)||"",formatVersion:"2.0",source:"auto-backup"};
     const payload={...data,_sync:{...(data._sync||{}),...exportMeta},_exportMeta:exportMeta};
-    const b64=await encryptData(await packageWithBlobs(payload,dekRef.current,rKeyRef.current),passcode);
+    const file=await buildBackupFile(
+      async(fileKey)=>await encryptData(await packageWithBlobs(payload,dekRef.current,rKeyRef.current),fileKey),
+      getRecoveryKey()||passcode, caregiverPasscodeForWrap());
     const writable=await handle.createWritable();
-    await writable.write(JSON.stringify({encrypted:true,version:"2.0",data:b64}));
+    await writable.write(JSON.stringify(file));
     await writable.close();
     return true;
   };
@@ -2223,9 +2286,8 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
   const setupContinuousBackup=async()=>{
     if(!can("export-data")){flash("You don't have permission to configure backups.");return}
     if(!hasFileSystemAccess){flash("Continuous backup needs Chrome, Edge, or Brave. On other browsers, use manual backup below.");return}
-    const existing=getBackupPasscode();
-    const chosen=(existing||backupPw).trim();
-    if(!chosen||chosen.length<BACKUP_PW_MIN){flash(`Choose a backup passcode of at least ${BACKUP_PW_MIN} characters. You'll need it to restore.`);return}
+    const chosen=getRecoveryKey()||getBackupPasscode();
+    if(!chosen){flash("Create your Recovery Key first — it's what locks the backup file.");return}
     try{
       const handle=await window.showSaveFilePicker({suggestedName:"care-guardian-backup.care",types:[{description:"Care Guardian Backup",accept:{"application/json":[".care"]}}]});
       const perm=await checkHandlePermission(handle,true);
@@ -2236,8 +2298,8 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
       await saveBackupHandle(handle);
       setBackupHandle(handle);setBackupFileName(handle.name);setBackupStatus("active");
       const now=new Date().toISOString();setLastAutoBackupAt(now);
-      setData(p=>({...p,settings:{...p.settings,backupPasscode:pw,lastBackupAt:now,continuousBackup:true}}));
-      setBackupPw("");setShowBackupReminder(false);
+      setData(p=>({...p,settings:{...p.settings,lastBackupAt:now,continuousBackup:true}}));
+      setShowBackupReminder(false);
       hipaaAudit("export","Continuous backup configured","all");
       flash("Continuous backup active. Your data will be saved automatically.");
     }catch(e){if(e&&e.name==="AbortError"){/* user cancelled picker */}else{flash("Couldn't set up backup: "+(e&&e.message||"unknown error"))}}
@@ -2388,6 +2450,11 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
       clientName:clientName.trim(),
       createdAt:new Date().toISOString(),
       members:[{deviceId:(data.settings&&data.settings.deviceId),name:myName.trim(),role:myRole.trim(),role_key:"admin",joinedAt:new Date().toISOString(),lastSync:null}],
+      // Minted here rather than invented by the family. 125 bits, stored in the
+      // vault, transferred once when someone joins — never remembered, never
+      // re-typed. The passcode it replaces had to be agreed by committee and
+      // re-entered every session on every device.
+      key:genRecoveryCode(),
     };
     setData(p=>({...p,settings:{...p.settings,team,deviceName:myName.trim(),clientTier:"client-full"}}));
     setTeamSetupMode(null);
@@ -2396,7 +2463,10 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
 
   const generateInviteCode=()=>{
     const team=getTeam();if(!team)return"";
-    const payload={v:1,t:team.name,c:team.clientName,i:team.id,u:getServerUrl()||"",s:(data.settings&&data.settings.stateCode)||""}; // API key intentionally excluded (H7) — share separately
+    // Secrets stay out of this by an earlier decision (H7) — it travels by text.
+    // The client's name is out for the same reason: base64 is not encryption,
+    // and an invite forwarded to the wrong number should not name the patient.
+    const payload={v:2,t:team.name,i:team.id,u:getServerUrl()||"",s:(data.settings&&data.settings.stateCode)||""};
     return"CG:"+btoa(JSON.stringify(payload));
   };
 
@@ -2404,17 +2474,19 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
     try{
       const b64=code.trim().replace(/^CG:/,"");
       const payload=JSON.parse(atob(b64));
-      if(payload.v&&payload.v!==1)return null;return{teamName:payload.t,clientName:payload.c,teamId:payload.i,serverUrl:payload.u,stateCode:payload.s};
+      if(payload.v&&payload.v!==1&&payload.v!==2)return null;
+      return{teamName:payload.t,clientName:payload.c||"",teamId:payload.i,serverUrl:payload.u,stateCode:payload.s};
     }catch{return null}
   };
 
-  const joinTeamFromCode=(code,myName,myRole,myRoleKey)=>{
+  const joinTeamFromCode=(code,myName,myRole,myRoleKey,teamKey)=>{
     const parsed=parseInviteCode(code);
     if(!parsed){setSyncStatus({type:"error",msg:"Invalid invite code."});return}
     const team={
       id:parsed.teamId,
       name:parsed.teamName,
       clientName:parsed.clientName,
+      key:(teamKey||"").trim().toUpperCase()||undefined,
       createdAt:new Date().toISOString(),
       members:[{deviceId:(data.settings&&data.settings.deviceId),name:myName.trim(),role:myRole.trim(),role_key:myRoleKey||"family",joinedAt:new Date().toISOString(),lastSync:null}],
     };
@@ -2457,8 +2529,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
       auditTipRef.current={seq:entry.seq,hash:entry.hash};
       saveAuditTip(entry.seq,entry.hash);
       await writeAuditEntry(entry,auditKeyRef.current);
-      setAuditEntries(p=>[entry,...p].slice(0,500));
-      setAuditCount(p=>p+1);
+      
     }).catch(e=>console.error("Audit write failed:",e));
   };
 
@@ -2539,23 +2610,24 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
   // with no minimum length, and the restore screen only ever named the other one.
   const handleEncryptedExport=async()=>{
     if(!can("export-data")){flash("You don't have permission to save a backup.");return}
-    const stored=getBackupPasscode();
-    const pw=(stored||backupPw).trim();
-    if(!pw){flash("Set a backup passcode first — it's what restores your data.");return}
-    if(pw.length<BACKUP_PW_MIN){flash(`Choose a backup passcode of at least ${BACKUP_PW_MIN} characters. You'll need it to restore.`);return}
+    const pw=getRecoveryKey()||getBackupPasscode();
+    if(!pw){flash("Create your Recovery Key first — it's what locks the backup.");return}
     hipaaAudit("export","Encrypted backup saved","all");
     try{
     // Include export metadata inside encrypted payload for integrity (M5)
     const exportMeta={exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId)||"unknown",exportedByName:(data.settings&&data.settings.deviceName)||"",formatVersion:"2.0"};
     const exportData={...data,_sync:{...(data._sync||{}),...exportMeta},_exportMeta:exportMeta};
-    const b64=await encryptData(await packageWithBlobs(exportData,dekRef.current,rKeyRef.current),pw);downloadFile(JSON.stringify({encrypted:true,version:"2.0",data:b64}),"care-guardian-backup.care");
+    const file=await buildBackupFile(
+      async(fileKey)=>await encryptData(await packageWithBlobs(exportData,dekRef.current,rKeyRef.current),fileKey),
+      getRecoveryKey()||pw, caregiverPasscodeForWrap());
+    downloadFile(JSON.stringify(file),"care-guardian-backup.care");
     // Remember it, so a later restore is answered by the same passcode the app
     // asked for here, and so the automatic backup can reuse it.
-    setData(p=>({...p,settings:{...p.settings,backupPasscode:pw,lastBackupAt:new Date().toISOString()}}));
-    setBackupPw("");setShowBackupReminder(false);
+    setData(p=>({...p,settings:{...p.settings,lastBackupAt:new Date().toISOString()}}));
+    setShowBackupReminder(false);
     flash("Backup saved. Keep the file somewhere you can find it — that plus your backup passcode is a full recovery.")}catch(e){flash("Couldn't save the backup: "+e.message)}};
   const handleNonSensitiveExport=()=>{if(!can("export-data"))return;hipaaAudit("export","Non-sensitive summary exported","summary");const safe={domainOverrides:data.domainOverrides,domainStatus:{},settings:{}}; DOMAINS.forEach(d=>{const prog=getProgress(d.key);const health=prog.pct>=80&&prog.recency>=70?"Healthy":prog.pct>=40||prog.recency>=40?"Fair":"Needs Attention";safe.domainStatus[d.key]={health,foundation:prog.pct+"%",carePulse:prog.recency+"%",progress:prog}});downloadFile(JSON.stringify(safe,null,2),"care-guardian-summary.json");flash("Summary exported (no PHI).")};
-  const handleEncryptedImport=async(e)=>{if(clientScopedRef.current){flash("Sync and import aren't available in client sign-in.");return}const file=(e.target.files&&e.target.files[0]);if(!file)return;try{const text=await file.text();if(rawTextTooLarge(text)){flash("This backup is too large to open safely.");e.target.value="";return}const json=JSON.parse(text);if(!json.encrypted){flash("Not an encrypted backup.");return}if(payloadHardTooLarge(json.data)){flash("This backup is too large to load safely ("+mb(b64Bytes(json.data))+" MB).");e.target.value="";return}const restored=await ingestBlobs(await decryptData(json.data,importPw),dekRef.current,rKeyRef.current);
+  const handleEncryptedImport=async(e)=>{if(clientScopedRef.current){flash("Sync and import aren't available in client sign-in.");return}const file=(e.target.files&&e.target.files[0]);if(!file)return;try{const text=await file.text();if(rawTextTooLarge(text)){flash("This backup is too large to open safely.");e.target.value="";return}const json=JSON.parse(text);if(!json.encrypted){flash("Not an encrypted backup.");return}if(payloadHardTooLarge(json.data)){flash("This backup is too large to load safely ("+mb(b64Bytes(json.data))+" MB).");e.target.value="";return}const restored=await ingestBlobs(await openBackupFile(json,importPw),dekRef.current,rKeyRef.current);
     // Validate and sanitize (M4)
     const validation=validateImportSchema(restored);
     if(!validation.valid){flash("Import rejected: "+validation.errors.join("; "));e.target.value="";return}
@@ -2565,23 +2637,15 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
     setMergePreview({merged,report,sourceName,oversized:mergeIsOversized(json.data,report),floodBytes:b64Bytes(json.data)});
   }catch{flash("Import failed. Check passcode.")}e.target.value=""};
   const applyMerge=()=>{if(!mergePreview)return;const r=mergePreview.report;const parts=[];if(r.added.length)parts.push(r.added.length+" added");if(r.updated.length)parts.push(r.updated.length+" updated");if(r.kept.length)parts.push(r.kept.length+" kept");if(r.conflicts&&r.conflicts.length)parts.push(r.conflicts.length+" flagged");setData(mergePreview.merged);flash("Merge complete: "+(parts.join(", ")||"no changes")+".");setMergePreview(null)};
-  const handleFullReplace=async(e)=>{if(clientScopedRef.current){flash("Sync and import aren't available in client sign-in.");return}const file=(e.target.files&&e.target.files[0]);if(!file)return;try{const text=await file.text();if(rawTextTooLarge(text)){flash("This backup is too large to open safely.");e.target.value="";return}const json=JSON.parse(text);if(!json.encrypted){flash("Not an encrypted backup.");return}if(payloadHardTooLarge(json.data)){flash("This backup is too large to load safely ("+mb(b64Bytes(json.data))+" MB).");e.target.value="";return}const restored=await ingestBlobs(await decryptData(json.data,importPw),dekRef.current,rKeyRef.current);
-    const validation=validateImportSchema(restored);
-    if(!validation.valid){flash("Replace rejected: "+validation.errors.join("; "));e.target.value="";return}
-    const sanitized=sanitizeImportData(restored);
-    hipaaAudit("import","Full vault replace from backup","import");
-    setData(sanitized);flash("Full replace complete.")}catch{flash("Import failed. Check passcode.")}e.target.value=""};
-
-  // Recovery from backup after browser eviction (pre-auth)
   const recoveryFileRef=useRef(null);
   const handleRecoveryFile=async(e)=>{
     const file=(e.target.files&&e.target.files[0]);if(!file)return;
     setRecoveryErr("");
-    if(!recoveryPw.trim()){setRecoveryErr("Enter the backup passcode for this file.");e.target.value="";return}
+    if(!recoveryPw.trim()){setRecoveryErr("Enter your Recovery Key (or the passcode for this file).");e.target.value="";return}
     try{
       const text=await file.text();if(rawTextTooLarge(text)){setRecoveryErr("This backup is too large to open safely on this device.");e.target.value="";return}const json=JSON.parse(text);
       if(!json.encrypted){setRecoveryErr("That doesn't look like a Care Guardian backup file.");e.target.value="";return}
-      const restored=await decryptData(json.data,recoveryPw);
+      const restored=await openBackupFile(json,recoveryPw.trim());
       const recoveredBlobs=(restored&&restored._blobs)||null; // hold blobs aside; they're written under the NEW key at setup
       if(restored)delete restored._blobs;
       const validation=validateImportSchema(restored);
@@ -2596,12 +2660,23 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
   };
 
   /* ── Sync handlers ── */
-  const getSyncPasscode=()=>(data.settings&&data.settings.syncPasscode)||syncPasscode;
-  const saveSyncPasscode=(pw)=>{setSyncPasscode(pw)}; // kept in memory only for session duration
+  const getSyncPasscode=()=>{
+    const t=getTeam();
+    if(t&&t.key)return t.key;                                   // generated at team creation
+    return (data.settings&&data.settings.syncPasscode)||syncPasscode; // pre-v3 teams
+  };
+  // A team created before the generated key existed can adopt one, which ends
+  // the per-session re-typing for everyone who joins from then on.
+  const adoptTeamKey=()=>{
+    const t=getTeam();if(!t||t.key)return;
+    const key=genRecoveryCode();
+    setData(p=>({...p,settings:{...p.settings,team:{...p.settings.team,key}}}));
+    flash("This team now has a generated key. Share it with each member once — they won't have to type a sync passcode again.");
+  };
 
   const syncPush=async(method)=>{
     const pw=getSyncPasscode();if(!pw.trim()){setSyncStatus({type:"error",msg:"Set a team sync passcode first."});return}
-    setSyncPushing(true);setSyncStatus(null);
+    setSyncStatus(null);
     try{
       const exportData={...data,_sync:{...(data._sync||{}),exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId),exportedByName:(data.settings&&data.settings.deviceName)||""}};
       const b64=await encryptData(await packageWithBlobs(exportData,dekRef.current,rKeyRef.current),pw);
@@ -2614,7 +2689,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
         setSyncStatus({type:"success",msg:"Sync file downloaded. Drop it in your team's shared folder."});
       }
     }catch(e){setSyncStatus({type:"error",msg:"Push failed: "+e.message})}
-    setSyncPushing(false);
+    
   };
 
   const syncPullFromText=async(text)=>{if(clientScopedRef.current){flash("Sync and import aren't available in client sign-in.");return}
@@ -2624,7 +2699,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
       if(rawTextTooLarge(text)){setSyncStatus({type:"error",msg:"This sync data is too large to open safely and was not parsed. Check the source device."});setSyncPulling(false);return}
       const json=JSON.parse(text);if(!json.encrypted){throw new Error("Not encrypted sync data")}
       if(payloadHardTooLarge(json.data)){setSyncStatus({type:"error",msg:"This sync data is too large to load safely ("+mb(b64Bytes(json.data))+" MB) and was not opened. Check the source device."});setSyncPulling(false);return}
-      const restored=await ingestBlobs(await decryptData(json.data,pw),dekRef.current,rKeyRef.current);
+      const restored=await ingestBlobs(await openBackupFile(json,pw),dekRef.current,rKeyRef.current);
       // Validate and sanitize imported data (M4)
       const validation=validateImportSchema(restored);
       if(!validation.valid){setSyncStatus({type:"error",msg:"Import rejected: "+validation.errors.join("; ")});setSyncPulling(false);return}
@@ -2678,7 +2753,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
         if(tier==="client-restricted"&&rKeyRef.current){ wk.r=await wrapDEK(rKeyRef.current,clPw); wk.clientScope="r"; } // restricted tier: client passcode wraps the scoped key only
         else { wk.r=await wrapDEK(dekRef.current,clPw); delete wk.clientScope; }
       }
-      saveWrappedKeys(wk);flash("Passcode(s) updated.");
+      saveWrappedKeys(wk);if(cgPw)cgPasscodeRef.current=cgPw;flash("Passcode(s) updated.");
     }catch(e){flash("Failed to update passcodes: "+e.message)}
     setNewCaregiverPw("");setNewClientPw("")
   };
@@ -3067,7 +3142,6 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
     e.target.value="";
   };
 
-  const getSrStorageKB=()=>{const sr=data.selfReports||[];let bytes=0;sr.forEach(r=>{bytes+=JSON.stringify(r).length});return Math.round(bytes/1024)};
 
   // Caregiver wellness
   const submitCaregiverCheckin=()=>{
@@ -3537,7 +3611,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
     return results;
   };
   const persistAuditTipToVault=()=>{ const t=auditTipRef.current; if(t&&t.seq){ setData(p=>((p.settings&&p.settings.auditTip&&p.settings.auditTip.seq>=t.seq)?p:{...p,settings:{...p.settings,auditTip:{seq:t.seq,hash:t.hash}}})); } };
-  const lock=()=>{persistAuditTipToVault();if(rKeyRef.current&&!clientScopedRef.current){try{writeProjection(data,rKeyRef.current)}catch{}}hipaaAudit("logout","Session locked","");dekRef.current=null;auditKeyRef.current=null;rKeyRef.current=null;clientScopedRef.current=false;_scopedWriteLock=false;setClientScoped(false);_mediaCache.clear();setAuditEntries([]);setSyncPasscode("");setAuthed(false);setAuthMode(null);setPc("");navRoot("today")};
+  const lock=()=>{persistAuditTipToVault();if(rKeyRef.current&&!clientScopedRef.current){try{writeProjection(data,rKeyRef.current)}catch{}}hipaaAudit("logout","Session locked","");dekRef.current=null;cgPasscodeRef.current="";auditKeyRef.current=null;rKeyRef.current=null;clientScopedRef.current=false;_scopedWriteLock=false;_mediaCache.clear();setSyncPasscode("");setAuthed(false);setAuthMode(null);setPc("");navRoot("today")};
 
   // Sync reminder & forced lock
   const SYNC_WARN_DAYS=7;const SYNC_LOCK_DAYS=14;const SYNC_LOCK_ACTIONS=50;
@@ -3578,7 +3652,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
           saveWrappedKeys(wk);
           await saveVaultData(await encryptWithDEK(cleanData,dek));
           clearLegacyData();await requestPersistentStorage();
-          dekRef.current=dek;
+          dekRef.current=dek;cgPasscodeRef.current=pc;
         // Derive separate audit key and load audit log from IndexedDB
         try{
           const aKey=await deriveAuditKey(pc);
@@ -3587,7 +3661,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
           setAuditEntries(entries);
           const cnt=await getAuditCount();
           const si=await getStorageEstimate();setStorageInfo(si);
-          setAuditCount(cnt);
+          
         }catch(e){console.error("Audit key derivation failed:",e)}setData(cleanData);setAuthed(true);setAuthMode(mode);setPcErr(false);setAuthAttempts(0);
           flash("Data migrated to encrypted storage.");return;
         }
@@ -3631,7 +3705,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
   };
   // Shared post-unwrap routine: load vault via snapshot+WAL, seed refs, load audit log, verify chain.
   const finishUnlock=async(dek,mode,pc)=>{
-    _scopedWriteLock=false;clientScopedRef.current=false;setClientScoped(false);
+    _scopedWriteLock=false;clientScopedRef.current=false;
     const loaded=await loadVaultV4(dek);
     if(!loaded){setDataLossDetected(true);return false} // every slot failed to decrypt → treat as data loss
     dekRef.current=dek;
@@ -3639,7 +3713,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
     lastCkptSeqRef.current=loaded.baseSeq;
     ckptSlotRef.current=loaded.baseSlot==="snapB"?"snapA":"snapB";
     prevPersistedRef.current=loaded.state;
-    try{const aKey=await deriveAuditKey(pc);auditKeyRef.current=aKey;const aKeyLegacy=await deriveAuditKey(pc,KDF_ITER_LEGACY);const entries=await readAuditLog([aKey,aKeyLegacy],500);setAuditEntries(entries);const cnt=await getAuditCount();setAuditCount(cnt);const si=await getStorageEstimate();setStorageInfo(si);const chained=entries.filter(e=>typeof e.seq==="number"&&e.hash);if(chained.length){const last=chained.sort((a,b)=>a.seq-b.seq)[chained.length-1];auditTipRef.current={seq:last.seq,hash:last.hash}}const cs=await verifyAuditChain(entries,(loaded.state.settings&&loaded.state.settings.auditTip)||null);setAuditChainStatus(cs);if(cs.status==="ok"&&cs.tip)saveAuditTip(cs.tip.seq,cs.tip.hash);}catch(e){console.error("Audit key derivation failed:",e)}
+    try{const aKey=await deriveAuditKey(pc);auditKeyRef.current=aKey;const aKeyLegacy=await deriveAuditKey(pc,KDF_ITER_LEGACY);const entries=await readAuditLog([aKey,aKeyLegacy],500);setAuditEntries(entries);const cnt=await getAuditCount();const si=await getStorageEstimate();setStorageInfo(si);const chained=entries.filter(e=>typeof e.seq==="number"&&e.hash);if(chained.length){const last=chained.sort((a,b)=>a.seq-b.seq)[chained.length-1];auditTipRef.current={seq:last.seq,hash:last.hash}}const cs=await verifyAuditChain(entries,(loaded.state.settings&&loaded.state.settings.auditTip)||null);setAuditChainStatus(cs);if(cs.status==="ok"&&cs.tip)saveAuditTip(cs.tip.seq,cs.tip.hash);}catch(e){console.error("Audit key derivation failed:",e)}
     if(loaded.state.settings){ const sv=loaded.state.settings.schemaVersion; if(sv==null){loaded.state.settings.schemaVersion=SCHEMA_VERSION} else if(sv>SCHEMA_VERSION){setNewerSchema(true)} } // newer build wrote this vault → warn, don't clobber
     // ── Cryptographic role scoping: derive (or create) the restricted-zone key, ingest any client-written
     //    self-reports from the encrypted outbox, and refresh the client projection. ──
@@ -3686,7 +3760,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
     const skeleton=initState((proj.settings&&proj.settings.stateCode)||"");
     delete skeleton.settings.caregiverPasscode;delete skeleton.settings.clientPasscode;
     const merged={...skeleton,...proj,domains:{...skeleton.domains,...(proj.domains||{})},settings:{...skeleton.settings,...(proj.settings||{})}};
-    dekRef.current=rKey;rKeyRef.current=rKey;clientScopedRef.current=true;_scopedWriteLock=true;setClientScoped(true);
+    dekRef.current=rKey;rKeyRef.current=rKey;clientScopedRef.current=true;_scopedWriteLock=true;
     prevPersistedRef.current=merged;
     setData(merged);setAuthed(true);setAuthMode("client");setPcErr(false);setAuthAttempts(0);
     try{ setSrChainStatus(await verifySrChain(merged.selfReports,(merged.settings&&merged.settings.selfReportTip)||null)); }catch{}
@@ -3739,7 +3813,10 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
     try{
       const prfSalt=crypto.getRandomValues(new Uint8Array(32));
       const {credentialId, prfOutput}=await mfaRegisterPasskey(myName(), prfSalt);
-      const code=genRecoveryCode();
+      // Reuse the Recovery Key the caregiver already saved, so enabling MFA does
+      // not hand them a second 25-character string to file away. Only mints a
+      // fresh one if this install somehow has none.
+      const code=getRecoveryKey()||ensureRecoveryKey()||genRecoveryCode();
       const {cMfa, cRecovery}=await buildMfaWraps(dek, mfaEnrollPc, prfOutput, code);
       // SAFETY: verify both new factors recover the exact DEK before we ever drop the passcode-only wrap
       const v1=await unwrapWithPasskey(cMfa, mfaEnrollPc, prfOutput);
@@ -3811,7 +3888,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
   };
   const regenerateRecoveryCode=async(pc)=>{
     if(!dekRef.current)return;
-    try{ const code=genRecoveryCode(); const cRecovery=await buildRecoveryWrap(dekRef.current, pc, code); const ko=loadWrappedKeys(); ko.wk.cRecovery=cRecovery; saveWrappedKeys(ko.wk); setNewRecoveryCode(code); hipaaAudit("security","Recovery code regenerated","security"); }
+    try{ const code=genRecoveryCode(); setData(p=>({...p,settings:{...p.settings,recoveryKey:code}})); const cRecovery=await buildRecoveryWrap(dekRef.current, pc, code); const ko=loadWrappedKeys(); ko.wk.cRecovery=cRecovery; saveWrappedKeys(ko.wk); setNewRecoveryCode(code); hipaaAudit("security","Recovery code regenerated","security"); }
     catch(e){ flash("Couldn't regenerate the recovery code."); }
   };
 
@@ -3886,11 +3963,11 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
       {recoveryReason==="newdevice"?(<p className="auth-sub" style={{textAlign:"left",lineHeight:1.5}}>Choose the <code>.care</code> backup file from your other device and enter its backup passcode. Everything comes back — records, medications, contacts and documents.</p>):recoveryReason==="forgot"?(<p className="auth-sub" style={{textAlign:"left",lineHeight:1.5}}>If you've forgotten the passcodes for this browser, you have two options: restore from an encrypted backup file (you'll need that backup's password), or erase this browser's stored data and set up again. <strong>Without a backup, erased data cannot be recovered.</strong></p>):(<p className="auth-sub" style={{textAlign:"left",lineHeight:1.5}}>Your device's browser appears to have cleared Care Guardian's stored data. This can happen on iPhones and iPads when the device runs low on storage. <strong>Your information is not lost if you have a backup file.</strong></p>)}
       <div className="recovery-box">
         <p className="recovery-label">Restore from your encrypted backup</p>
-        <input type="password" value={recoveryPw} onChange={e=>{setRecoveryPw(e.target.value);setRecoveryErr("")}} placeholder="Backup passcode" className="auth-input" style={{marginBottom:8,letterSpacing:"normal",textAlign:"left",fontFamily:"var(--font-ui)"}}/>
+        <input type="password" value={recoveryPw} onChange={e=>{setRecoveryPw(e.target.value);setRecoveryErr("")}} placeholder="Recovery Key" className="auth-input" style={{marginBottom:8,letterSpacing:"normal",textAlign:"left",fontFamily:"var(--font-ui)"}}/>
         {/* Backups saved before this release could carry either of two passcodes —
             the app used to ask for a separate one on each path. Say so, rather than
             leaving someone guessing at the one moment it has to work. */}
-        <p className="auth-note" style={{textAlign:"left",marginBottom:8}}>This is your <strong>backup</strong> passcode, not your sign-in passcode. If the file is an older one, it may be the passcode you typed when you exported it.</p>
+        <p className="auth-note" style={{textAlign:"left",marginBottom:8}}>Your <strong>Recovery Key</strong> — the one saved with your papers. A long caregiver passcode also works, and older files may want the backup passcode you typed at the time.</p>
         <input ref={recoveryFileRef} type="file" accept=".care,.json" style={{display:"none"}} onChange={handleRecoveryFile}/>
         <button onClick={()=>{if(!recoveryPw.trim()){setRecoveryErr("Enter the passcode you used when creating this backup.");return}recoveryFileRef.current&&recoveryFileRef.current.click()}} className="auth-btn">Choose backup file (.care)</button>
         {recoveryErr&&<p className="auth-error">{recoveryErr}</p>}
@@ -4220,7 +4297,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
         </header>
 
         <div className="content-v2">
-          {(settingsMsg||importResult)&&<div className="import-toast">{settingsMsg||importResult}</div>}
+          {settingsMsg&&<div className="import-toast">{settingsMsg}</div>}
           <ViewErrorBoundary viewKey={view}>
 
           {/* ═══ TODAY HUB ═══ */}
@@ -4447,12 +4524,24 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
             {!can("export-data")?<p className="page-sub">Backups are managed by the people who can export data.</p>:(<>
             <p className="page-sub">One encrypted file holds everything. Keep it somewhere you can find it, and remember the backup passcode — together they are a full recovery.</p>
 
-            {(()=>{const pw=getBackupPasscode();return(<>
-              {!pw&&(<div className="section">
-                <h3 className="sec-title">Choose a backup passcode</h3>
-                <p className="hint" style={{marginTop:0}}>This is the one passcode you'll be asked for if you ever restore. It isn't your sign-in passcode. At least {BACKUP_PW_MIN} characters.</p>
-                <input value={backupPw} onChange={e=>setBackupPw(e.target.value)} className="cf-input" type="password" placeholder="Backup passcode" style={{maxWidth:"min(100%,18rem)"}}/>
-              </div>)}
+            {(()=>{const rk=getRecoveryKey();const pcWrap=!!caregiverPasscodeForWrap();return(<>
+              <div className="section">
+                <h3 className="sec-title">🔑 Your Recovery Key</h3>
+                {rk?(<>
+                  <p className="hint" style={{marginTop:0}}>Save this somewhere away from this device — printed, in a password manager, or with your important papers. It opens your backup files{pcWrap?", and it's the backstop if you forget your passcode":""}.</p>
+                  <div className="recovery-code-box">{rk}</div>
+                  <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:10}}>
+                    <button className="mini-btn" onClick={()=>{try{navigator.clipboard.writeText(rk);flash("Recovery Key copied.")}catch{flash("Couldn't copy — write it down from the screen.")}}}>Copy</button>
+                    <button className="mini-btn" onClick={()=>window.print()}>Print</button>
+                  </div>
+                  <p className="hint" style={{marginTop:10}}>{pcWrap
+                    ? "Your backups can also be opened with your caregiver passcode, because it's long enough to hold up if the file is ever copied."
+                    : `Your backups open with this key only. Your caregiver passcode is shorter than ${BACKUP_PW_MIN} characters, and a short passcode on a file someone could copy is not enough to rely on.`}</p>
+                </>):(<>
+                  <p className="hint" style={{marginTop:0}}>You don't have one yet. It's generated for you — nothing to invent or remember, just to keep.</p>
+                  <button className="save-btn" onClick={()=>{ensureRecoveryKey();flash("Recovery Key created. Save it somewhere safe.")}}>Create my Recovery Key</button>
+                </>)}
+              </div>
 
               <div className="section">
                 <h3 className="sec-title">🛟 Automatic backup</h3>
@@ -4470,14 +4559,15 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
                     <div className="backup-status-body"><strong>Paused</strong> — your browser asks permission again each time you reopen the app. One tap restarts it.</div>
                     <button onClick={resumeBackup} className="backup-btn" disabled={backupBusy}>Resume</button>
                   </div>)}
-                  {backupStatus==="off"&&(<button onClick={setupContinuousBackup} className="save-btn" disabled={backupBusy}>🛟 Turn on automatic backup</button>)}
+                  {backupStatus==="off"&&(<button onClick={setupContinuousBackup} className="save-btn" disabled={backupBusy||!rk}>🛟 Turn on automatic backup</button>)}
+                  {!rk&&<p className="hint" style={{marginTop:8}}>Create your Recovery Key first — it's what locks the file.</p>}
                 </>)}
               </div>
 
               <div className="section">
                 <h3 className="sec-title">Save a copy now</h3>
                 <p className="hint" style={{marginTop:0}}>Downloads the same encrypted file, whenever you want one — before a trip, or to keep a copy off this device. The file is fully encrypted, so storing it in iCloud, Google Drive or Dropbox is safe.</p>
-                <button onClick={handleEncryptedExport} className="save-btn">↓ Save a copy now</button>
+                <button onClick={handleEncryptedExport} className="save-btn" disabled={!rk}>↓ Save a copy now</button>
                 {(data.settings&&data.settings.lastBackupAt)&&<p className="hint" style={{marginTop:8}}>Last backup: {new Date(data.settings.lastBackupAt).toLocaleString()}</p>}
               </div>
 
@@ -4486,7 +4576,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
                 <ol className="sos-script-list">
                   <li>Open Care Guardian on the new device.</li>
                   <li>On the first screen, tap <strong>“Already have a backup file? Restore it”</strong>.</li>
-                  <li>Pick your <code>.care</code> file and enter your <strong>backup passcode</strong> — the one above.</li>
+                  <li>Pick your <code>.care</code> file and enter your <strong>Recovery Key</strong>{pcWrap?" — or your caregiver passcode, either works":""}.</li>
                   <li>Set new sign-in passcodes, and you're back.</li>
                 </ol>
                 <p className="hint">Without that file, erased records can't be recovered — no one, including us, can read or reset your data.</p>
@@ -4513,6 +4603,13 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
                   <span style={{fontSize:t.key==="standard"?15:t.key==="large"?18:22}}>{t.label}</span></button>)})}
               </div>
               <p className="hint" style={{marginTop:12}}>Currently: <strong>{(TEXT_SIZES.find(t=>t.key===((data.settings&&data.settings.textSize)||"standard"))||TEXT_SIZES[0]).label}</strong></p>
+            </div>
+            <div className="section">
+              <h3 className="sec-title">Medication reminders</h3>
+              <p className="hint" style={{marginTop:0}}>Let your browser notify you when a dose is due, even when Care Guardian isn't the window you're looking at. Nothing leaves the device — the reminder is generated here.</p>
+              {(typeof window!=="undefined"&&!("Notification" in window))
+                ? <p className="hint">This browser doesn't support notifications.</p>
+                : <button onClick={requestNotifications} className="save-btn">Turn on reminders</button>}
             </div>
             <div className="section">
               <h3 className="sec-title">Contrast &amp; theme</h3>
@@ -5195,14 +5292,26 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
               <div className="settings-row"><input value={importPw} onChange={e=>setImportPw(e.target.value)} className="cf-input" placeholder="Their passcode for the file" type="password" style={{maxWidth:"min(100%,13rem)"}}/><button onClick={()=>(importFileRef.current&&importFileRef.current.click)()} className="save-btn">↑ Choose file &amp; preview</button></div>
               <p className="hint" style={{marginTop:10}}>Recovering your own data after losing a device is a different job — that's on the Backups screen.</p>
             </div>}
-            {/* Sync passcode */}
-            {hasTeam()&&<div className="section">
-              <h3 className="sec-title">🔐 Sync Passcode</h3>
-              <div className="cf-grid" style={{maxWidth:"min(100%,22.22rem)"}}>
-                <label className="cf-label">Team sync passcode<input value={getSyncPasscode()} onChange={e=>saveSyncPasscode(e.target.value)} className="cf-input" type="password" placeholder="Shared with all team members"/></label>
-              </div>
-              <p className="hint">All team members must use the same passcode. Share it once verbally or via secure message — never in the invite code.</p>
-            </div>}
+            {/* The team key — shown, not invented. Nobody memorises it and nobody
+                re-types it; it is transferred once when a member joins. */}
+            {hasTeam()&&(()=>{const t=getTeam();return(<div className="section">
+              <h3 className="sec-title">🔑 Team key</h3>
+              {t.key?(<>
+                <p className="hint" style={{marginTop:0}}>Every member's device needs this key once, and then never again. It's what keeps your synced records unreadable to Google, Dropbox or anyone else holding the file.</p>
+                <div className="recovery-code-box">{t.key}</div>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:10}}>
+                  <button className="mini-btn" onClick={()=>{try{navigator.clipboard.writeText(t.key);flash("Team key copied.")}catch{flash("Couldn't copy — read it from the screen.")}}}>Copy key</button>
+                </div>
+                <p className="hint" style={{marginTop:10}}><strong>Send it separately from the invite code</strong> — read it down the phone, or use a different app. Two messages that each carry half are far safer than one that carries both.</p>
+              </>):(<>
+                <p className="hint" style={{marginTop:0}}>This team was set up before generated keys. Members still have to type a shared sync passcode every session. Switching to a generated key ends that.</p>
+                <div className="cf-grid" style={{maxWidth:"min(100%,22.22rem)"}}>
+                  <label className="cf-label">Current sync passcode<input value={getSyncPasscode()} onChange={e=>setSyncPasscode(e.target.value)} className="cf-input" type="password" placeholder="Shared with all team members"/></label>
+                </div>
+                <button className="save-btn" style={{marginTop:10}} onClick={adoptTeamKey}>Switch to a generated key</button>
+                <p className="hint" style={{marginTop:8}}>Everyone will need the new key once. Until they have it, they won't sync.</p>
+              </>)}
+            </div>)})()}
 
             {/* Cloud connection */}
             <div className="section">
