@@ -1951,6 +1951,38 @@ const CLOUD_PROVIDERS={
   },
 };
 
+// ── Which providers this build can actually offer ──
+// Dropbox and OneDrive keep their PKCE definitions above as the shape for later, but neither has a
+// redirect handler yet, so neither is offered: a chooser that lists a provider you cannot finish
+// connecting to is worse than one that lists fewer. Readiness is "has a connect() and has a client
+// ID", which today means Google Drive alone.
+const cloudProviderReady=(p)=>!!(p && typeof p.connect==="function" && typeof p.configured==="function" && p.configured());
+const cloudProvidersReady=()=>Object.values(CLOUD_PROVIDERS).filter(cloudProviderReady);
+
+// The backup object is named, not obfuscated. Elsewhere in this layer object names are HMAC-derived
+// so a provider learns nothing from a folder listing — but a backup has to be findable by the person
+// who owns it, from a device whose vault is gone and which therefore cannot derive any name at all.
+// The contents are encrypted; the filename tells Google only what the OAuth grant already told it.
+const CLOUD_BACKUP_PATH="/Care Guardian Backup.care";
+
+// Adapt a CLOUD_PROVIDERS entry plus a live access token into the {put,get} shape outboxDrain wants,
+// and normalise provider errors into the classification the rest of the layer speaks.
+function cloudStorageAdapter(provider, getToken){
+  const wrap=async(fn)=>{
+    try{ return await fn(await getToken()); }
+    catch(e){
+      const cls=classifyStorageError(e,{offline:typeof navigator!=="undefined"&&navigator.onLine===false});
+      throw Object.assign(e instanceof Error?e:new Error(String(e)),{cls,code:cls==="quota"?"QUOTA":cls.toUpperCase()});
+    }
+  };
+  return {
+    id:provider.id,
+    label:provider.label,
+    put:(key,body)=>wrap(tok=>provider.upload(tok,key,body)),
+    get:(key)=>wrap(tok=>provider.download(tok,key)),
+  };
+}
+
 async function storageNameKey(circleKeyB64){
   if(_objNameKey && _objNameKeyFor===circleKeyB64) return _objNameKey;
   const raw=await crypto.subtle.importKey("raw", b64dec(circleKeyB64||"0"), {name:"HKDF"}, false, ["deriveBits"]);
@@ -2403,6 +2435,20 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
   const [lastAutoBackupAt,setLastAutoBackupAt]=useState(null);
   const [backupBusy,setBackupBusy]=useState(false);
   const backupTimerRef=useRef(null);
+  // Cloud backup (OAuth). "off" until a provider is chosen; "active" once we hold a live token;
+  // "reconnect" when the provider is remembered but the token could not be renewed silently.
+  const [cloudBkStatus,setCloudBkStatus]=useState("off"); // off | active | reconnect
+  const [cloudBkBusy,setCloudBkBusy]=useState(false);
+  const [cloudBkFail,setCloudBkFail]=useState(null);      // STORAGE_FAIL class, or null
+  const [cloudBkLastAt,setCloudBkLastAt]=useState(null);
+  // The access token lives in memory for the session only. GIS issues no refresh token, so there is
+  // nothing here worth persisting — and a token in the vault would outlive the session that earned it.
+  const cloudTokenRef=useRef(null);                        // {accessToken,expiresAt}
+  const cloudBkTimerRef=useRef(null);
+  // The queue is deliberately NOT in the vault: the push is triggered by `data` changing, so
+  // persisting the queue into `data` would make every upload trigger the next one, forever.
+  // Cross-launch retry is covered instead by pushing once when a session connects.
+  const cloudOutboxRef=useRef([]);
   const [showAdvancedSync,setShowAdvancedSync]=useState(false);
   // Circle
   const [circleSetupMode,setCircleSetupMode]=useState(null); // null|"create"|"join"
@@ -2593,12 +2639,12 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
   // Option 4 — backup reminder: prompt if no backup in 7+ days (or never), once authed.
   // Aware of continuous backup: silent when active, prompts resume when paused.
   useEffect(()=>{if(!authed)return;try{
-    if(backupStatus==="active"){setShowBackupReminder(false);return}
+    if(backupStatus==="active"||cloudBkStatus==="active"){setShowBackupReminder(false);return}
     if(backupStatus==="paused"){setShowBackupReminder(true);return}
     const last=data.settings&&data.settings.lastBackupAt;
     const stale=!last||(Date.now()-new Date(last).getTime())>7*24*60*60*1000;
     if(stale&&can("export-data"))setShowBackupReminder(true);
-  }catch{}},[authed,backupStatus]);
+  }catch{}},[authed,backupStatus,cloudBkStatus]);
   // Restore cloud file handle on mount
   useEffect(()=>{(async()=>{try{const h=await loadSyncHandle();if(h){setCloudHandle(h);setCloudFileName(h.name);setCloudConnected(true)}}catch{}})()},[]);
   // Restore the continuous-backup handle once authed; silently check whether write permission survived this session.
@@ -2624,6 +2670,28 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
     },4000);
     return()=>{if(backupTimerRef.current)clearTimeout(backupTimerRef.current)};
   },[data,authed,backupStatus,backupHandle]);
+  // Cloud backup, on launch: if a provider was connected before, ask for a token silently. This is
+  // the half of "automatic" the file-handle path can't do — no picker, no permission prompt, no tap.
+  useEffect(()=>{
+    if(!authed)return;
+    const cb=data.settings&&data.settings.cloudBackup;
+    if(!cb||!cb.provider)return;
+    if(cloudBkStatus!=="off")return;
+    let cancelled=false;
+    (async()=>{
+      try{ await cloudBkToken(true); if(cancelled)return; setCloudBkStatus("active");setCloudBkFail(null);await cloudBkPush(); }
+      catch{ if(!cancelled)setCloudBkStatus("reconnect") }
+    })();
+    return()=>{cancelled=true};
+  },[authed]);
+  // Cloud backup, on change: same 4s debounce as the local path, so a burst of edits is one upload.
+  useEffect(()=>{
+    if(!authed||cloudBkStatus!=="active")return;
+    if(!(getRecoveryKey()||getBackupPasscode()))return;
+    if(cloudBkTimerRef.current)clearTimeout(cloudBkTimerRef.current);
+    cloudBkTimerRef.current=setTimeout(()=>{cloudBkPush()},4000);
+    return()=>{if(cloudBkTimerRef.current)clearTimeout(cloudBkTimerRef.current)};
+  },[data,authed,cloudBkStatus]);
 
   /* ── Cloud sync handlers ── */
   const cloudConnect=async()=>{
@@ -2720,6 +2788,104 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
     await clearBackupHandle();setBackupHandle(null);setBackupFileName(null);setBackupStatus("off");
     setData(p=>({...p,settings:{...p.settings,continuousBackup:false}}));
     flash("Continuous backup turned off. Your existing backup file is unchanged.");
+  };
+
+  /* ── Cloud backup (OAuth) ──────────────────────────────────────────────
+     The File System Access backup above is excellent where it works and absent where it
+     doesn't: Firefox and Safari have no picker at all, and even on Chrome the write
+     permission lapses every time the app is reopened, so "automatic" means "automatic
+     after you tap Resume". Backing up to the caregiver's own cloud account removes both
+     limits. The file that goes up is byte-for-byte the same encrypted .care file the
+     local path writes — the provider holds ciphertext and nothing else. */
+  const cloudBkSettings=()=>(data.settings&&data.settings.cloudBackup)||null;
+  const cloudBkProvider=()=>{const cb=cloudBkSettings();return cb&&CLOUD_PROVIDERS[cb.provider]||null};
+
+  // Hand back a live access token, renewing silently when it has aged out. Silent renewal is
+  // what makes this "automatic": GIS re-issues without UI as long as the Google session is alive.
+  const cloudBkToken=async(silent)=>{
+    const t=cloudTokenRef.current;
+    if(t&&t.accessToken&&Date.now()<t.expiresAt)return t.accessToken;
+    const prov=cloudBkProvider();
+    if(!prov||!cloudProviderReady(prov))throw Object.assign(new Error("Cloud backup isn't set up."),{code:"AUTH",cls:"auth"});
+    const got=await prov.connect({silent:silent!==false});
+    cloudTokenRef.current=got;
+    return got.accessToken;
+  };
+
+  // The same file buildBackupFile produces for every other backup path.
+  const cloudBkFileBody=async()=>{
+    const pw=getRecoveryKey()||getBackupPasscode();
+    if(!pw)throw Object.assign(new Error("No Recovery Key yet."),{code:"MISSING",cls:"missing"});
+    const exportMeta={exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId)||"",exportedByName:(data.settings&&data.settings.deviceName)||"",formatVersion:BACKUP_FORMAT,source:"cloud-backup"};
+    const payload={...data,_sync:{...(data._sync||{}),...exportMeta},_exportMeta:exportMeta};
+    const file=await buildBackupFile(
+      async(fileKey)=>await encryptData(await packageWithBlobs(payload,dekRef.current,rKeyRef.current),fileKey),
+      pw, caregiverPasscodeForWrap());
+    return JSON.stringify(file);
+  };
+
+  // Enqueue and drain. The outbox holds one key today, but it is the reason a failed upload is
+  // retried on the next launch rather than forgotten the moment the app closes.
+  const cloudBkPush=async()=>{
+    const prov=cloudBkProvider();
+    if(!prov)return {ok:false,cls:"auth"};
+    let body;
+    try{ body=await cloudBkFileBody(); }
+    catch(e){ const cls=(e&&e.cls)||"unknown"; setCloudBkFail(cls); return {ok:false,cls} }
+    const adapter=cloudStorageAdapter(prov,()=>cloudBkToken(true));
+    const queued=outboxEnqueue(cloudOutboxRef.current,{key:CLOUD_BACKUP_PATH,kind:"state"});
+    let res=await outboxDrain(adapter,queued,async()=>body,{maxTries:5,stopOnError:true});
+    // An expired token is the one failure worth retrying immediately: ask GIS for a fresh one and
+    // go again, so a caregiver who left the app open over lunch never sees an error for it.
+    if(!res.complete&&String(res.stopped)==="AUTH"){
+      cloudTokenRef.current=null;
+      try{ await cloudBkToken(true); res=await outboxDrain(adapter,queued,async()=>body,{maxTries:5,stopOnError:true}); }catch{}
+    }
+    cloudOutboxRef.current=res.outbox;
+    if(res.complete){
+      setCloudBkFail(null);setCloudBkStatus("active");setCloudBkLastAt(new Date().toISOString());
+      return {ok:true};
+    }
+    const cls=String(res.stopped||"unknown").toLowerCase();
+    setCloudBkFail(cls);
+    if(cls==="auth"){cloudTokenRef.current=null;setCloudBkStatus("reconnect")}
+    return {ok:false,cls};
+  };
+
+  const cloudBackupConnect=async(providerId)=>{
+    if(!can("export-data")){flash("You don't have permission to configure backups.");return}
+    if(!getRecoveryKey()){flash("Create your Recovery Key first — it's what locks the backup file.");return}
+    const prov=CLOUD_PROVIDERS[providerId];
+    if(!cloudProviderReady(prov)){flash("That storage provider isn't available in this build.");return}
+    setCloudBkBusy(true);setCloudBkFail(null);
+    try{
+      // Not silent: this is the one moment a consent screen belongs, and it has a user gesture behind it.
+      cloudTokenRef.current=await prov.connect({silent:false});
+      setData(p=>({...p,settings:{...p.settings,lastBackupAt:new Date().toISOString(),cloudBackup:{provider:providerId,connectedAt:new Date().toISOString()}}}));
+      setCloudBkStatus("active");
+      hipaaAudit("export","Cloud backup connected: "+prov.label,"all");
+      flash("Connected to "+prov.label+". Saving your first backup…");
+    }catch(e){
+      setCloudBkStatus("off");
+      const cls=classifyStorageError(e);
+      setCloudBkFail(cls==="auth"?null:cls);
+      flash(/popup|denied|closed|abort/i.test(String(e&&e.message||e))?"Connection cancelled.":"Couldn't connect: "+(e&&e.message||"unknown error"));
+    }finally{setCloudBkBusy(false)}
+  };
+
+  const cloudBackupReconnect=async()=>{
+    const prov=cloudBkProvider();if(!prov)return;
+    setCloudBkBusy(true);
+    try{ cloudTokenRef.current=await prov.connect({silent:false}); setCloudBkStatus("active"); setCloudBkFail(null); await cloudBkPush(); }
+    catch{ flash("Still not connected. Try again, or turn cloud backup off and on.") }
+    finally{setCloudBkBusy(false)}
+  };
+
+  const cloudBackupDisconnect=()=>{
+    cloudTokenRef.current=null;
+    setCloudBkStatus("off");setCloudBkFail(null);setCloudBkLastAt(null);
+    setData(p=>{const st={...p.settings};delete st.cloudBackup;return{...p,settings:st}});
+    flash("Cloud backup turned off. The backup already in your account is left where it is.");
   };
 
   const cloudSync=async()=>{if(clientScopedRef.current){flash("Sync and import aren't available in client sign-in.");return}
@@ -3038,25 +3204,50 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
   }catch{flash("Import failed. Check passcode.")}e.target.value=""};
   const applyMerge=()=>{if(!mergePreview)return;const r=mergePreview.report;const parts=[];if(r.added.length)parts.push(r.added.length+" added");if(r.updated.length)parts.push(r.updated.length+" updated");if(r.kept.length)parts.push(r.kept.length+" kept");if(r.conflicts&&r.conflicts.length)parts.push(r.conflicts.length+" flagged");setData(mergePreview.merged);flash("Merge complete: "+(parts.join(", ")||"no changes")+".");setMergePreview(null)};
   const recoveryFileRef=useRef(null);
-  const handleRecoveryFile=async(e)=>{
-    const file=(e.target.files&&e.target.files[0]);if(!file)return;
-    setRecoveryErr("");
-    if(!recoveryPw.trim()){setRecoveryErr("Enter your Recovery Key (or the passcode for this file).");e.target.value="";return}
+  // Shared by both restore routes — a file the caregiver picked, and a file pulled from their cloud
+  // account. Returns true when the backup was opened and staged for setup.
+  const ingestRecoveryText=async(text)=>{
+    if(rawTextTooLarge(text)){setRecoveryErr("This backup is too large to open safely on this device.");return false}
+    let json;try{json=JSON.parse(text)}catch{setRecoveryErr("That doesn't look like a Care Guardian backup file.");return false}
+    if(!json||!json.encrypted){setRecoveryErr("That doesn't look like a Care Guardian backup file.");return false}
     try{
-      const text=await file.text();if(rawTextTooLarge(text)){setRecoveryErr("This backup is too large to open safely on this device.");e.target.value="";return}const json=JSON.parse(text);
-      if(!json.encrypted){setRecoveryErr("That doesn't look like a Care Guardian backup file.");e.target.value="";return}
       const restored=await openBackupFile(json,recoveryPw.trim());
       const recoveredBlobs=(restored&&restored._blobs)||null; // hold blobs aside; they're written under the NEW key at setup
       if(restored)delete restored._blobs;
       const validation=validateImportSchema(restored);
-      if(!validation.valid){setRecoveryErr("Backup could not be read: "+validation.errors.join("; "));e.target.value="";return}
+      if(!validation.valid){setRecoveryErr("Backup could not be read: "+validation.errors.join("; "));return false}
       const sanitized=sanitizeImportData(restored);
       if(recoveredBlobs)sanitized.__recoveredBlobs=recoveredBlobs; // carried through to completeSetup, then stripped
       setRecoveryData(sanitized);
       // Clear the orphaned wrapped keys so the user sets fresh passcodes for the restored vault
       try{localStorage.removeItem(VAULT_KEYS_LS)}catch{}
-    }catch{setRecoveryErr("Couldn't decrypt the backup. Check the backup passcode and try again.")}
+      return true;
+    }catch{setRecoveryErr("Couldn't decrypt the backup. Check the backup passcode and try again.");return false}
+  };
+  const handleRecoveryFile=async(e)=>{
+    const file=(e.target.files&&e.target.files[0]);if(!file)return;
+    setRecoveryErr("");
+    if(!recoveryPw.trim()){setRecoveryErr("Enter your Recovery Key (or the passcode for this file).");e.target.value="";return}
+    await ingestRecoveryText(await file.text());
     e.target.value="";
+  };
+  // Restore straight from the caregiver's cloud account. This device has no vault yet, so there are
+  // no saved provider settings to read — we connect from scratch and fetch the one object by name.
+  const handleRecoveryFromCloud=async(providerId)=>{
+    setRecoveryErr("");
+    if(!recoveryPw.trim()){setRecoveryErr("Enter your Recovery Key first — it's what opens the file.");return}
+    const prov=CLOUD_PROVIDERS[providerId];
+    if(!cloudProviderReady(prov)){setRecoveryErr("That storage provider isn't available in this build.");return}
+    setCloudBkBusy(true);
+    try{
+      const tok=await prov.connect({silent:false});
+      const text=await prov.download(tok.accessToken,CLOUD_BACKUP_PATH);
+      if(!text){setRecoveryErr("No Care Guardian backup was found in that account. Check you signed in with the same one.");return}
+      if(await ingestRecoveryText(text))cloudTokenRef.current=tok; // keep the token so backup resumes after setup
+    }catch(e){
+      const cls=classifyStorageError(e);
+      setRecoveryErr(/popup|denied|closed|abort/i.test(String(e&&e.message||e))?"Sign-in was cancelled.":storageFailUI(cls).title+" — "+storageFailUI(cls).body);
+    }finally{setCloudBkBusy(false)}
   };
 
   /* ── Sync handlers ── */
@@ -4366,6 +4557,9 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
         <p className="auth-note" style={{textAlign:"left",marginBottom:8}}>Your <strong>Recovery Key</strong> — the one saved with your papers. A long caregiver passcode also works, and older files may want the backup passcode you typed at the time.</p>
         <input ref={recoveryFileRef} type="file" accept=".care,.json" style={{display:"none"}} onChange={handleRecoveryFile}/>
         <button onClick={()=>{if(!recoveryPw.trim()){setRecoveryErr("Enter the passcode you used when creating this backup.");return}recoveryFileRef.current&&recoveryFileRef.current.click()}} className="auth-btn">Choose backup file (.care)</button>
+        {cloudProvidersReady().map(pr=>(
+          <button key={pr.id} onClick={()=>handleRecoveryFromCloud(pr.id)} className="auth-btn" style={{marginTop:8}} disabled={cloudBkBusy}>{pr.icon} Restore from {pr.label}</button>
+        ))}
         {recoveryErr&&<p className="auth-error">{recoveryErr}</p>}
       </div>
       <p className="auth-footer" style={{marginTop:16}}>{recoveryReason==="newdevice"?"Haven't got the file to hand? You can set this device up now and restore later.":"No backup file? You can start fresh — but previously stored information cannot be recovered without a backup."}</p>
@@ -4918,7 +5112,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
               here rather than only on a screen people hope never to see. */}
           {view==="backups"&&(<>
             {!can("export-data")?<p className="page-sub">Backups are managed by the people who can export data.</p>:(<>
-            <p className="page-sub">One encrypted file holds everything. Keep it somewhere you can find it, and remember the backup passcode — together they are a full recovery.</p>
+            <p className="page-sub">One encrypted file holds everything. Keep your Recovery Key somewhere safe — the file and that key together are a full recovery.</p>
 
             {(()=>{const rk=getRecoveryKey();const pcWrap=!!caregiverPasscodeForWrap();return(<>
               <div className="section">
@@ -4939,8 +5133,41 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
                 </>)}
               </div>
 
+              {!rk&&<p className="hint" style={{marginTop:16}}>Automatic backup needs your Recovery Key first — it's what locks the file. Create it above, then pick where copies should go.</p>}
+
+              {cloudProvidersReady().length>0&&(<div className="section">
+                <h3 className="sec-title">☁️ Automatic backup to your cloud account</h3>
+                {cloudBkStatus==="active"?(<>
+                  <div className="backup-status backup-active">
+                    <span className="backup-dot"></span>
+                    <div className="backup-status-body"><strong>On</strong> — saving automatically to <code>{(cloudBkProvider()||{}).label||"your cloud account"}</code>{cloudBkLastAt&&<span className="backup-when">last saved {new Date(cloudBkLastAt).toLocaleTimeString()}</span>}</div>
+                    <button onClick={cloudBackupDisconnect} className="backup-link">Turn off</button>
+                  </div>
+                  {cloudBkFail&&cloudBkFail!=="auth"&&(<div className="backup-status backup-paused">
+                    <span className="backup-dot"></span>
+                    <div className="backup-status-body"><strong>{storageFailUI(cloudBkFail).title}</strong> — {storageFailUI(cloudBkFail).body}</div>
+                  </div>)}
+                  <p className="hint" style={{marginTop:8}}>Your provider only ever holds the encrypted file. It looks the same to them as it does to anyone else who doesn't have your Recovery Key: unreadable.</p>
+                </>):cloudBkStatus==="reconnect"?(<>
+                  <div className="backup-status backup-paused">
+                    <span className="backup-dot"></span>
+                    <div className="backup-status-body"><strong>{storageFailUI("auth").title}</strong> — {storageFailUI("auth").body}</div>
+                    <button onClick={cloudBackupReconnect} className="backup-btn" disabled={cloudBkBusy}>Reconnect</button>
+                  </div>
+                  <button onClick={cloudBackupDisconnect} className="backup-link" style={{marginTop:8}}>Turn off cloud backup</button>
+                </>):(<>
+                  <p className="hint" style={{marginTop:0}}>Saves an encrypted copy to your own cloud account every time something changes — on any browser, with nothing to plug in and nothing to remember. Care Guardian can only see the one file it puts there.</p>
+                  <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:12}}>
+                    {cloudProvidersReady().map(pr=>(
+                      <button key={pr.id} onClick={()=>cloudBackupConnect(pr.id)} className="save-btn" style={{marginTop:0}} disabled={cloudBkBusy||!rk}>{pr.icon} Connect {pr.label}</button>
+                    ))}
+                  </div>
+                  <p className="hint" style={{marginTop:8}}>Signing in stays open for as long as this session lasts. If it expires, Care Guardian keeps recording on this device and tells you to reconnect — nothing is lost in between.</p>
+                </>)}
+              </div>)}
+
               <div className="section">
-                <h3 className="sec-title">🛟 Automatic backup</h3>
+                <h3 className="sec-title">🛟 Automatic backup to a file on this device</h3>
                 {!hasFileSystemAccess?(
                   <p className="hint" style={{marginTop:0}}>This browser can't save automatically. Chrome, Edge and Brave can. On this browser, use <strong>Save a copy now</strong> below — it does the same job, you just press it yourself.</p>
                 ):(<>
@@ -4956,7 +5183,6 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
                     <button onClick={resumeBackup} className="backup-btn" disabled={backupBusy}>Resume</button>
                   </div>)}
                   {backupStatus==="off"&&(<button onClick={setupContinuousBackup} className="save-btn" disabled={backupBusy||!rk}>🛟 Turn on automatic backup</button>)}
-                  {!rk&&<p className="hint" style={{marginTop:8}}>Create your Recovery Key first — it's what locks the file.</p>}
                 </>)}
               </div>
 

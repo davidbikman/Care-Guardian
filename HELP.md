@@ -38,7 +38,11 @@ Everything backup-related is in one place: **Care Hub menu → Backups**.
 
 If your caregiver passcode is at least 6 characters, your backups will also open with that, so you have two ways in. If it's shorter, the Recovery Key is the only way — a short passcode isn't enough to protect a file that someone could copy.
 
-**Automatic backup (Chrome, Edge, Brave).** Tap **Turn on automatic backup** and pick where the file lives — your computer, or a synced folder like iCloud Drive, Google Drive or Dropbox. From then on every change is saved there automatically. The file is fully encrypted, so cloud storage is fine.
+**Automatic backup to your cloud account.** If your copy of Care Guardian offers it, tap **Connect Google Drive**, sign in once, and you're done — every change is saved to your own Drive a few seconds later, on any browser, with nothing to plug in and nothing to remember. Google only ever holds the encrypted file; without your Recovery Key it is unreadable to them and to anyone else.
+
+*If it asks you to reconnect:* sign-ins expire after a while. Care Guardian keeps recording everything on this device in the meantime and shows a **Reconnect** button — one tap and it catches up. Nothing is lost while it waits.
+
+**Automatic backup to a file on this device (Chrome, Edge, Brave).** Tap **Turn on automatic backup** and pick where the file lives — your computer, or a synced folder like iCloud Drive, Google Drive or Dropbox. From then on every change is saved there automatically. The file is fully encrypted, so cloud storage is fine.
 
 *About "Paused":* for your security the browser forgets its permission to write to the file each time you fully close and reopen the app. You'll see **Paused** and a **Resume** button — one tap restarts it. This is normal, not an error.
 
@@ -50,7 +54,7 @@ The app reminds you with a banner if it has been more than a week, and that bann
 
 1. Open Care Guardian on the new device.
 2. On the very first screen, tap **"Already have a backup file? Restore it"**.
-3. Choose your `.care` file and enter your **Recovery Key** (or your caregiver passcode, if it's long enough).
+3. Enter your **Recovery Key** (or your caregiver passcode, if it's long enough), then either choose your `.care` file or tap **Restore from Google Drive** and sign in with the same account you backed up to.
 4. Set new sign-in passcodes for this device, and everything comes back.
 
 If you're restoring a file made before this release, use whichever passcode you typed when you saved that particular file — older backups still open exactly as they did.

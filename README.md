@@ -160,9 +160,10 @@ Optional browser notifications (Notification API) check every 15 minutes for due
 
 ## Backup & Restore
 
-One encrypted `.care` file, one backup passcode, one place. Automatic saving
-(File System Access, Chromium browsers) and the manual **Save a copy now**
-button write the identical artifact with the identical passcode — previously
+One encrypted `.care` file, one Recovery Key, one place. Automatic saving (to
+the caregiver's cloud account, or to a local file via File System Access on
+Chromium browsers) and the manual **Save a copy now** button write the identical
+artifact locked with the identical key — previously
 these were separate features with separate passcode fields and different
 minimum-length rules, which meant a restore could be attempted with the wrong
 secret at the worst possible moment.
@@ -196,6 +197,43 @@ circle key are handled once at join time and never recalled.
   which reads as ciphertext and is not, and these are sent by text message.
   Secrets stay out of it, as an earlier review round decided; the name is now
   out for the same reason. v1 codes still parse.
+
+### Cloud backup (optional, off unless the build carries a client ID)
+
+The File System Access route is excellent where it works and absent where it
+isn't: Firefox and Safari have no picker, and even on Chromium the write
+permission lapses on every reopen, so "automatic" meant "automatic once you tap
+Resume". Backing up to the caregiver's own cloud account removes both limits.
+
+The file that goes up is byte-for-byte the file the manual export produces — the
+provider holds ciphertext and a filename. Google Drive is the wired provider,
+under scope `drive.file`, which grants sight of app-created files only.
+
+- **Auth is the GIS token model, not auth-code + PKCE.** Google has no public
+  web client type: its token endpoint requires a `client_secret` even under
+  PKCE, so a serverless app cannot complete the exchange and cannot hold a
+  refresh token. `initTokenClient` returns a short-lived access token instead,
+  renewed silently while the Google session is alive. The token lives in a ref
+  for the session and is never written to the vault.
+- **The GIS script is injected on first connect, not at load**, so a caregiver
+  who never uses cloud backup makes no external request at all.
+- **Uploads go through the outbox**, so a failure is retained and retried rather
+  than dropped, and an expired token is refreshed and retried once before the
+  caregiver is asked to do anything.
+- **The queue is held in a ref, not in the vault.** The push is triggered by
+  `data` changing, so persisting the queue into `data` would make each upload
+  schedule the next one indefinitely. Retry across launches is covered by
+  pushing once when a session connects.
+- **The object is named, not obfuscated.** Object names elsewhere in this layer
+  are HMAC-derived; a backup has to be findable by its owner from a device whose
+  vault is gone and which therefore cannot derive any name at all.
+- **Restore from the cloud** is offered on the same first-run recovery screen as
+  restore-from-file, and connects from scratch since a new device has no saved
+  provider settings to read.
+
+Failures are classified (`auth`, `quota`, `offline`, `outage`, `rate`,
+`missing`) and every class has copy that says where the records actually are,
+because that is the only question a caregiver reading an error has.
 
 ### Backup file format (v3.0)
 

@@ -54,7 +54,7 @@ This document maps Care Guardian's technical safeguards to the HIPAA Security Ru
 | Specification | Status | Implementation |
 |--------------|--------|----------------|
 | **Integrity Controls** (Addressable) | ✅ Implemented | All transmitted data is AES-256-GCM encrypted end-to-end before transmission. GCM mode provides both confidentiality and integrity verification. |
-| **Encryption** (Addressable) | ✅ Implemented | HTTPS enforced for sync server communication. Private IP addresses blocked. Sync data encrypted with AES-256-GCM before transmission — the sync server never sees plaintext. |
+| **Encryption** (Addressable) | ✅ Implemented | HTTPS enforced for sync server communication. Private IP addresses blocked. Sync data encrypted with AES-256-GCM before transmission — the sync server never sees plaintext. Optional cloud backup uploads the same AES-256-GCM `.care` file to the caregiver's own storage account over HTTPS; the provider receives ciphertext and a filename. OAuth access tokens are held in memory for the session only and are never persisted. |
 
 ---
 
@@ -68,7 +68,7 @@ The following HIPAA requirements are organizational policies that must be implem
 | **Workforce Training** §164.308(a)(5) | In-app Help system documents all features and security measures. | Organization must train workforce on HIPAA policies and Care Guardian usage. |
 | **Sanctions Policy** §164.308(a)(1) | Audit log provides evidence for policy enforcement. | Organization must establish and enforce sanctions for HIPAA violations. |
 | **Contingency Plan** §164.308(a)(7) | Encrypted export/import enables data backup and recovery. Sync provides redundancy across devices. | Organization must document backup procedures and test recovery. |
-| **Business Associate Agreement** | Not applicable — Care Guardian has no server component and never accesses ePHI. | If using the self-hosted sync server, the server operator may need a BAA depending on their relationship to the covered entity. |
+| **Business Associate Agreement** | Not applicable — Care Guardian has no server component and never accesses ePHI. | If using the self-hosted sync server, the server operator may need a BAA depending on their relationship to the covered entity. If using optional cloud backup in a covered-entity context, note that the storage provider holds only ciphertext it cannot decrypt; organisations should still confirm their own position on whether a BAA is required for encrypted-at-rest storage with a consumer cloud account, and may prefer to leave the feature unbuilt (omit `VITE_GOOGLE_CLIENT_ID`), which removes it from the app entirely. |
 
 ---
 
