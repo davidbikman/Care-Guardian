@@ -1810,6 +1810,416 @@ const JoinTeamForm=({data,joinCode,setJoinCode,parseInviteCode,flash,joinTeamFro
     <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!joinCode.trim()||!mn.trim()){flash("Please enter the invite code and your name.");return}joinTeamFromCode(joinCode,mn,mr,rk,tk)}} className="save-btn">Join Team</button><button onClick={()=>{setTeamSetupMode(null);setJoinCode("")}} className="cancel-btn">Cancel</button></div>
   </div>)};
 
+/* ═══════════════ CLOUD STORAGE ═══════════════
+   Ported from the storage prototype. Every provider is treated as intermittent —
+   offline, expired token, revoked consent and full quota are indistinguishable
+   from here — so a durable outbox absorbs the gaps rather than Google being
+   special-cased. Objects are per-device with an encrypted manifest as the index,
+   because a single shared file races between pull and push. */
+
+// Reference provider: Dropbox, because its PKCE flow needs only a public app key (no secret), issues real
+// refresh tokens to a pure browser client, and its "App Folder" scope sandboxes us to our own folder. The
+// CLOUD_PROVIDERS shape is deliberately generic so Google Drive / OneDrive can be added behind the same
+// interface. APP keys are public by design; fill DROPBOX_APP_KEY after registering the app (see DEPLOY.md).
+/* Provider app identifiers. Public by design — these are client IDs, not secrets —
+   but they are per-deployment, so they come from the build environment rather than
+   being baked in. See DEPLOY.md for registering each one. */
+const DROPBOX_APP_KEY=(import.meta.env&&import.meta.env.VITE_DROPBOX_APP_KEY)||"";
+const GOOGLE_CLIENT_ID=(import.meta.env&&import.meta.env.VITE_GOOGLE_CLIENT_ID)||"";
+const MS_CLIENT_ID=(import.meta.env&&import.meta.env.VITE_MS_CLIENT_ID)||"";
+
+/* ── Google Identity Services ──
+   Google has no public-client type for web apps: its token endpoint wants a
+   client_secret even under PKCE, and a secret in a browser bundle is not a secret.
+   GIS is the flow Google actually intends for browser apps. It returns a
+   short-lived access token and deliberately no refresh token, so Drive access is
+   session-scoped — real while the tab is open, gone when it closes. The outbox
+   below is what makes that survivable: edits queue and drain on reconnect.
+
+   The script is loaded lazily, only when someone actually connects Drive, so an
+   install that never touches Google keeps the app's zero-external-request property. */
+const GIS_SRC="https://accounts.google.com/gsi/client";
+let _gisLoad=null;
+function loadGis(){
+  if(_gisLoad)return _gisLoad;
+  _gisLoad=new Promise((resolve,reject)=>{
+    if(typeof window==="undefined")return reject(new Error("No browser context."));
+    if(window.google&&window.google.accounts&&window.google.accounts.oauth2)return resolve();
+    const s=document.createElement("script");
+    s.src=GIS_SRC;s.async=true;s.defer=true;
+    s.onload=()=>resolve();
+    s.onerror=()=>{_gisLoad=null;reject(new Error("Couldn't reach Google to sign in. Check your connection."))};
+    document.head.appendChild(s);
+  });
+  return _gisLoad;
+}
+/* silent:true asks Google to reuse an existing session without a prompt. It is a
+   best effort — browser privacy rules increasingly break silent third-party auth —
+   so callers must treat failure as "ask the user to tap reconnect", never as fatal. */
+async function gisRequestToken({clientId,scope,silent}){
+  if(!clientId)throw new Error("Google Drive isn't configured for this deployment.");
+  await loadGis();
+  return new Promise((resolve,reject)=>{
+    let settled=false;
+    const client=window.google.accounts.oauth2.initTokenClient({
+      client_id:clientId, scope,
+      callback:(resp)=>{
+        if(settled)return; settled=true;
+        if(resp&&resp.access_token)resolve({accessToken:resp.access_token,expiresAt:Date.now()+(((resp.expires_in||3600)-60)*1000)});
+        else reject(new Error("Google didn't return an access token."));
+      },
+      error_callback:(err)=>{ if(settled)return; settled=true; reject(new Error((err&&(err.type||err.message))||"Google sign-in was cancelled.")); },
+    });
+    try{ client.requestAccessToken(silent?{prompt:""}:{}); }
+    catch(e){ if(!settled){settled=true;reject(e)} }
+  });
+}
+
+const CLOUD_SYNC_PATH="/care-guardian-sync.json"; // inside the per-account app folder
+function b64url(bytes){ let s=btoa(String.fromCharCode(...new Uint8Array(bytes))); return s.replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,""); }
+async function pkceChallengeFor(verifier){ const d=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(verifier)); return b64url(d); }
+function newPkceVerifier(){ return b64url(crypto.getRandomValues(new Uint8Array(64))); } // 86 url-safe chars, within 43–128
+const CLOUD_PROVIDERS={
+  dropbox:{
+    id:"dropbox", label:"Dropbox", icon:"📦",
+    authUrl:({challenge,state,redirectUri})=>`https://www.dropbox.com/oauth2/authorize?client_id=${encodeURIComponent(DROPBOX_APP_KEY)}&response_type=code&code_challenge=${encodeURIComponent(challenge)}&code_challenge_method=S256&token_access_type=offline&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}`,
+    exchangeBody:({code,verifier,redirectUri})=>new URLSearchParams({code,grant_type:"authorization_code",code_verifier:verifier,client_id:DROPBOX_APP_KEY,redirect_uri:redirectUri}),
+    refreshBody:(refreshToken)=>new URLSearchParams({grant_type:"refresh_token",refresh_token:refreshToken,client_id:DROPBOX_APP_KEY}),
+    tokenUrl:"https://api.dropboxapi.com/oauth2/token",
+    // Returns the stored ciphertext string, or null if the file doesn't exist yet (first sync).
+    download:async(accessToken,path)=>{
+      const r=await fetch("https://content.dropboxapi.com/2/files/download",{method:"POST",headers:{Authorization:"Bearer "+accessToken,"Dropbox-API-Arg":JSON.stringify({path})}});
+      if(r.status===409)return null; // path/not_found → nothing uploaded yet
+      if(!r.ok)throw new Error("Dropbox download "+r.status);
+      return await r.text();
+    },
+    upload:async(accessToken,path,content)=>{
+      const r=await fetch("https://content.dropboxapi.com/2/files/upload",{method:"POST",headers:{Authorization:"Bearer "+accessToken,"Dropbox-API-Arg":JSON.stringify({path,mode:"overwrite",mute:true}),"Content-Type":"application/octet-stream"},body:content});
+      if(!r.ok)throw new Error("Dropbox upload "+r.status);
+      return true;
+    },
+  },
+  onedrive:{
+    // Microsoft Graph — nearly as clean as Dropbox: PKCE without a secret (SPA platform), refresh tokens via
+    // offline_access, and a path-addressable per-app folder (special/approot) so we only ever see our own files.
+    id:"onedrive", label:"OneDrive", icon:"🟦",
+    authUrl:({challenge,state,redirectUri})=>`https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=${encodeURIComponent(MS_CLIENT_ID)}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent("Files.ReadWrite.AppFolder offline_access")}&code_challenge=${encodeURIComponent(challenge)}&code_challenge_method=S256&state=${encodeURIComponent(state)}`,
+    exchangeBody:({code,verifier,redirectUri})=>new URLSearchParams({code,grant_type:"authorization_code",code_verifier:verifier,client_id:MS_CLIENT_ID,redirect_uri:redirectUri,scope:"Files.ReadWrite.AppFolder offline_access"}),
+    refreshBody:(refreshToken)=>new URLSearchParams({grant_type:"refresh_token",refresh_token:refreshToken,client_id:MS_CLIENT_ID,scope:"Files.ReadWrite.AppFolder offline_access"}),
+    tokenUrl:"https://login.microsoftonline.com/common/oauth2/v2.0/token",
+    download:async(accessToken,path)=>{
+      const p=path.replace(/^\//,"");
+      const r=await fetch(`https://graph.microsoft.com/v1.0/me/drive/special/approot:/${encodeURIComponent(p)}:/content`,{headers:{Authorization:"Bearer "+accessToken}});
+      if(r.status===404)return null;
+      if(!r.ok)throw new Error("OneDrive download "+r.status);
+      return await r.text();
+    },
+    upload:async(accessToken,path,content)=>{
+      const p=path.replace(/^\//,"");
+      const r=await fetch(`https://graph.microsoft.com/v1.0/me/drive/special/approot:/${encodeURIComponent(p)}:/content`,{method:"PUT",headers:{Authorization:"Bearer "+accessToken,"Content-Type":"application/json"},body:content});
+      if(!r.ok)throw new Error("OneDrive upload "+r.status);
+      return true;
+    },
+  },
+  googledrive:{
+    // Google Drive, scope drive.file — the app only ever sees files it created, so
+    // the user can find and copy their own backup, and the scope is non-sensitive.
+    // Drive is file-ID-addressed rather than path-addressed, so each call resolves
+    // our object by name first. Auth is GIS: session-scoped, no refresh token.
+    id:"googledrive", label:"Google Drive", icon:"🗂", auth:"gis",
+    scope:"https://www.googleapis.com/auth/drive.file",
+    connect:async({silent}={})=>await gisRequestToken({clientId:GOOGLE_CLIENT_ID,scope:"https://www.googleapis.com/auth/drive.file",silent}),
+    configured:()=>!!GOOGLE_CLIENT_ID,
+    _findFileId:async(accessToken,name)=>{
+      const q=encodeURIComponent(`name='${name.replace(/'/g,"\\'")}' and trashed=false`);
+      const r=await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id,name)`,{headers:{Authorization:"Bearer "+accessToken}});
+      if(!r.ok)throw new Error("Drive list "+r.status);
+      const j=await r.json(); return (j.files&&j.files[0]&&j.files[0].id)||null;
+    },
+    download:async function(accessToken,path){
+      const name=path.replace(/^\//,"");
+      const id=await this._findFileId(accessToken,name); if(!id)return null;
+      const r=await fetch(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`,{headers:{Authorization:"Bearer "+accessToken}});
+      if(r.status===404)return null;
+      if(!r.ok)throw new Error("Drive download "+r.status);
+      return await r.text();
+    },
+    upload:async function(accessToken,path,content){
+      const name=path.replace(/^\//,"");
+      const id=await this._findFileId(accessToken,name);
+      if(id){
+        const r=await fetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`,{method:"PATCH",headers:{Authorization:"Bearer "+accessToken,"Content-Type":"application/json"},body:content});
+        if(!r.ok)throw new Error("Drive update "+r.status);
+      }else{
+        const boundary="cg"+Math.random().toString(36).slice(2);
+        const body=`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({name})}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${boundary}--`;
+        const r=await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",{method:"POST",headers:{Authorization:"Bearer "+accessToken,"Content-Type":`multipart/related; boundary=${boundary}`},body});
+        if(!r.ok)throw new Error("Drive create "+r.status);
+      }
+      return true;
+    },
+  },
+};
+
+async function storageNameKey(circleKeyB64){
+  if(_objNameKey && _objNameKeyFor===circleKeyB64) return _objNameKey;
+  const raw=await crypto.subtle.importKey("raw", b64dec(circleKeyB64||"0"), {name:"HKDF"}, false, ["deriveBits"]);
+  const bits=await crypto.subtle.deriveBits({name:"HKDF",hash:"SHA-256",salt:new Uint8Array(0),info:new TextEncoder().encode(STORAGE_NAME_INFO)}, raw, 256);
+  _objNameKey=await crypto.subtle.importKey("raw", bits, {name:"HMAC",hash:"SHA-256"}, false, ["sign"]);
+  _objNameKeyFor=circleKeyB64;
+  return _objNameKey;
+}
+async function storageObjName(circleKeyB64, parts){
+  const key=await storageNameKey(circleKeyB64);
+  const sig=await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(parts.join("\u0000")));
+  return b64enc(new Uint8Array(sig).slice(0,15)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+}
+// Plain layout, kept for the local/relay case and as the fallback when no circle key is available (solo use
+// before a circle exists). The manifest records which scheme a device used, so both can coexist.
+const storageKeys = {
+  state:   (circleId,deviceId)=>"circle/"+circleId+"/"+deviceId+"/state.enc",
+  rotation:(circleId)=>"circle/"+circleId+"/rotation/latest.enc",
+  manifest:(circleId)=>"circle/"+circleId+"/manifest.enc",
+  audit:   (circleId,deviceId,month)=>"archive/"+month+"/audit-"+deviceId+"."+circleId+".enc",
+  blob:    (blobId)=>"blobs/"+blobId+".enc",
+};
+// Opaque equivalents. Everything lands in one flat folder: a directory tree is itself a disclosure (it shows how
+// the data is organised and how many of each kind exist), so there isn't one.
+const storageKeysOpaque = {
+  async state(circleKey,circleId,deviceId){ return "cg/"+await storageObjName(circleKey,["state",circleId,deviceId])+".bin"; },
+  async rotation(circleKey,circleId){ return "cg/"+await storageObjName(circleKey,["rotation",circleId])+".bin"; },
+  async audit(circleKey,circleId,deviceId,month){ return "cg/"+await storageObjName(circleKey,["audit",circleId,deviceId,month])+".bin"; },
+  async blob(circleKey,blobId){ return "cg/"+await storageObjName(circleKey,["blob",blobId])+".bin"; },
+};
+// The manifest keeps a FIXED name: a device arriving for the first time must be able to find the index, and it
+// can only derive names once it holds the circle key — which it does, but the fixed name also lets a device with
+// a rotated key still locate the index rather than losing the whole store.
+const STORAGE_MANIFEST_NAME="cg/index.bin";
+// ── Size padding ──
+// Ciphertext length leaks content volume: a 40 KB state object versus 400 KB says how much care is being
+// recorded, and a sudden jump says something happened. Padding to buckets blunts that. Buckets grow
+// proportionally so the overhead stays bounded (never more than ~25%) rather than padding everything to a
+// worst case nobody needs.
+function storagePadTo(len){
+  const steps=[4096,8192,16384,32768,65536,131072,262144,524288,1048576];
+  for(const s of steps) if(len<=s) return s;
+  return Math.ceil(len/1048576)*1048576;
+}
+function storagePad(text){
+  const len=new TextEncoder().encode(text).length;
+  const target=storagePadTo(len+16);
+  return text+"\n"+"#".repeat(Math.max(0,target-len-1));   // padding is outside the JSON, stripped on read
+}
+const storageUnpad=(text)=>String(text||"").replace(/\n#+$/,"");
+const storageIsStateKey=(k)=>/^circle\/[^/]+\/[^/]+\/state\.enc$/.test(String(k||""));
+const storageDeviceOfKey=(k)=>{ const m=/^circle\/[^/]+\/([^/]+)\/state\.enc$/.exec(String(k||"")); return m?m[1]:""; };
+// In-memory provider. Used by tests, and it is also the honest shape of "device only" — writes succeed, nothing
+// travels. Quota is modelled so quota-exhaustion handling can be tested without filling a real Drive.
+function createMemoryStorage(opts){
+  const o=opts||{}; const store=new Map(); let used=0;
+  const quota=o.quotaBytes||5*1024*1024;
+  const fail=()=>{ if(o.failWith) throw new Error(o.failWith); };
+  return {
+    kind:"memory", label:o.label||"This device",
+    async put(key,text){ fail();
+      const size=new TextEncoder().encode(String(text)).length;
+      const prev=store.has(key)?new TextEncoder().encode(store.get(key)).length:0;
+      if(used-prev+size>quota){ const e=new Error("STORAGE_QUOTA"); e.code="QUOTA"; throw e; }
+      used=used-prev+size; store.set(key,String(text)); return {key,size}; },
+    async get(key){ fail(); if(!store.has(key)){ const e=new Error("STORAGE_NOT_FOUND"); e.code="NOT_FOUND"; throw e; } return store.get(key); },
+    async list(prefix){ fail(); return [...store.keys()].filter(k=>k.startsWith(prefix||"")).sort(); },
+    async del(key){ fail(); if(store.has(key)){ used-=new TextEncoder().encode(store.get(key)).length; store.delete(key); } return true; },
+    async quota(){ return {used,total:quota,free:Math.max(0,quota-used)}; },
+  };
+}
+// ── Storage failure classification (Phase 4) ═══
+// Every provider reports trouble differently and most of it arrives as an HTTP status inside an Error message.
+// Without classification the app can only say "sync failed", which is the least useful thing it could say: the
+// user cannot tell whether to reconnect, free up space, wait, or worry about their records. Each class below maps
+// to ONE required behaviour, and the invariant across all of them is that recording never stops — a storage
+// problem must never become a reason someone can't write down that a dose was given.
+const STORAGE_FAIL = {
+  AUTH:"auth",        // token expired or consent revoked → degrade to local, offer one-tap reconnect
+  QUOTA:"quota",      // account full → stop uploading, keep recording, tell them early
+  OFFLINE:"offline",  // no network → retry silently, this is normal on a phone
+  OUTAGE:"outage",    // provider 5xx → retry with backoff, surface only if it persists
+  RATE:"rate",        // throttled → back off, never hammer
+  MISSING:"missing",  // folder or manifest deleted → offer to re-upload from the local vault
+  UNKNOWN:"unknown",
+};
+function classifyStorageError(err, opts){
+  const o=opts||{};
+  if(o.offline===true) return STORAGE_FAIL.OFFLINE;
+  const msg=String((err&&err.message)||err||"");
+  const status=(err&&err.status)||Number((msg.match(/\b(4\d\d|5\d\d)\b/)||[])[1])||0;
+  if(err&&err.code==="QUOTA") return STORAGE_FAIL.QUOTA;
+  if(/insufficient[_ ]?(storage|space)|quota|storage.?full|507/i.test(msg)) return STORAGE_FAIL.QUOTA;
+  if(status===401||status===403||/expired|revoked|reconnect|invalid[_ ]grant|unauthor/i.test(msg)) return STORAGE_FAIL.AUTH;
+  if(status===429||/rate.?limit|too many requests|throttl/i.test(msg)) return STORAGE_FAIL.RATE;
+  if(status===404||/not[_ ]?found|LOCAL_MISSING/i.test(msg)) return STORAGE_FAIL.MISSING;
+  if(status>=500||/服务|unavailable|bad gateway|timeout|network|failed to fetch/i.test(msg)) return STORAGE_FAIL.OUTAGE;
+  return STORAGE_FAIL.UNKNOWN;
+}
+// What the user is told, and what the app does. Every message says where the records actually are, because that
+// is the only question a caregiver seeing an error actually cares about.
+const STORAGE_FAIL_UI = {
+  auth:   {title:"Reconnect your storage", body:"Your storage sign-in has expired. Your records are safe on this device and will upload as soon as you reconnect.", action:"reconnect", retry:false, alarm:true},
+  quota:  {title:"Your cloud storage is full", body:"Care Guardian has stopped uploading, but it is still recording everything on this device. Free up space and it will catch up on its own.", action:"none", retry:false, alarm:true},
+  offline:{title:"No connection", body:"Your records are being saved on this device and will upload when you're back online.", action:"none", retry:true, alarm:false},
+  outage: {title:"Storage is not responding", body:"Your provider isn't answering right now. Your records are safe on this device and Care Guardian will keep trying.", action:"none", retry:true, alarm:false},
+  rate:   {title:"Slowing down", body:"Your provider asked us to slow down. Care Guardian will finish uploading shortly.", action:"none", retry:true, alarm:false},
+  missing:{title:"Storage folder is missing", body:"The folder Care Guardian was using can't be found — it may have been moved or deleted. Everything is still on this device and can be uploaded again.", action:"reupload", retry:false, alarm:true},
+  unknown:{title:"Couldn't reach your storage", body:"Your records are safe on this device. Care Guardian will try again on the next sync.", action:"none", retry:true, alarm:false},
+};
+const storageFailUI=(cls)=>STORAGE_FAIL_UI[cls]||STORAGE_FAIL_UI.unknown;
+// Exponential backoff with a ceiling, so a provider outage is retried politely rather than hammered.
+function storageBackoffMs(attempt, baseMs, capMs){
+  const base=baseMs||30000, cap=capMs||3600000;
+  const raw=base*Math.pow(2,Math.max(0,(attempt||1)-1));
+  return Math.min(raw,cap);
+}
+const storageShouldRetryNow=(state,now)=>{
+  if(!state||!state.nextAttemptAt) return true;
+  return (now?new Date(now).getTime():Date.now())>=new Date(state.nextAttemptAt).getTime();
+};
+// Quota warning at 80%, so someone learns their Drive is filling up BEFORE uploads stop.
+const STORAGE_QUOTA_WARN = 0.8;
+function storageQuotaState(used,total){
+  if(!total||!isFinite(total)||total<=0) return {level:"unknown",pct:null};
+  const pct=used/total;
+  return {pct:Math.round(pct*100), level: pct>=1?"full" : pct>=STORAGE_QUOTA_WARN?"warn" : "ok"};
+}
+// ── Manifest: the index that makes per-device objects discoverable ──
+// The cloud providers here implement upload and download but NOT list — Dropbox, Drive and OneDrive each expose
+// listing differently and none is wired. So discovery cannot rely on enumerating a folder: the manifest IS the
+// index. Each device publishes its own state object and records itself in the manifest; every other device reads
+// the manifest to learn which objects to fetch.
+// Why per-device objects at all: with one shared file, two devices syncing the same day overwrite each other and
+// the loser's work is gone with no trace. Per-device objects mean writes never collide, and merging happens in
+// the app where the HLC clock can resolve it.
+const MANIFEST_VERSION = 1;
+function manifestEmpty(circleId){ return {v:MANIFEST_VERSION, circleId:circleId||"", epoch:0, devices:{}, updatedAt:""}; }
+// Record this device's contribution. Never removes another device's entry — a device that hasn't synced lately is
+// not a device that has left.
+function manifestPut(manifest, deviceId, entry, now){
+  const m=manifest&&manifest.v===MANIFEST_VERSION?{...manifest,devices:{...manifest.devices}}:manifestEmpty(manifest&&manifest.circleId);
+  // NOTE: the true byte size is deliberately NOT recorded. Nothing reads it, and publishing it would defeat the
+  // size padding applied to the objects themselves — the manifest would hand back exactly what padding hides.
+  m.devices[deviceId]={key:entry.key, updatedAt:now||new Date().toISOString(),
+    label:entry.label||"", epoch:entry.epoch||0};
+  m.epoch=Math.max(m.epoch||0, entry.epoch||0);
+  m.updatedAt=now||new Date().toISOString();
+  return m;
+}
+// Which objects should this device pull? Everyone else's, newest first, skipping ones we've already seen.
+function manifestPullList(manifest, selfDeviceId, seen){
+  const devices=(manifest&&manifest.devices)||{};
+  return Object.keys(devices)
+    .filter(id=>id!==selfDeviceId)
+    .map(id=>({deviceId:id,...devices[id]}))
+    .filter(d=>d.key && !(seen&&seen[d.deviceId]===d.updatedAt))
+    .sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+// Two devices can write the manifest at nearly the same moment and the later write wins at file level, dropping
+// the other's entry. Merging on read repairs that: take the newest entry per device from both copies.
+function manifestMerge(a, b){
+  const out=manifestEmpty((a&&a.circleId)||(b&&b.circleId));
+  for(const src of [a,b]){
+    if(!src||!src.devices) continue;
+    for(const id of Object.keys(src.devices)){
+      const cand=src.devices[id], cur=out.devices[id];
+      if(!cur || String(cand.updatedAt||"")>String(cur.updatedAt||"")) out.devices[id]=cand;
+    }
+    out.epoch=Math.max(out.epoch||0, src.epoch||0);
+    if(String(src.updatedAt||"")>String(out.updatedAt||"")) out.updatedAt=src.updatedAt;
+  }
+  return out;
+}
+// A device whose objects belong to a superseded key epoch can't be read after rotation; report rather than fail.
+function manifestStaleDevices(manifest, currentEpoch){
+  const devices=(manifest&&manifest.devices)||{};
+  return Object.keys(devices).filter(id=>(devices[id].epoch||0)<(currentEpoch||0)).map(id=>({deviceId:id,...devices[id]}));
+}
+// ── Provider capability: the architectural consequence of supporting Google Drive ──
+// Dropbox and OneDrive are PKCE public clients that issue a REFRESH token, so authorisation survives the app
+// being closed. Google Drive in a browser cannot: its Web-application client type requires a client_secret at the
+// token endpoint (which a browser cannot keep), and the Google Identity Services token model — the flow Google
+// actually recommends for SPAs — issues a short-lived access token and NO refresh token. Google access is
+// therefore SESSION-SCOPED: real while the app is open, gone when it closes.
+// Rather than treat that as a defect, the sync engine now treats provider availability as intermittent by
+// default. That is honest for every provider — offline, expired token, revoked consent, exhausted quota all look
+// the same — so the design that makes Google first-class also makes Dropbox and OneDrive more robust.
+const STORAGE_CAPS = {
+  dropbox:  {auth:"persistent", background:true,  label:"Dropbox"},
+  onedrive: {auth:"persistent", background:true,  label:"OneDrive"},
+  googledrive:{auth:"session",  background:false, label:"Google Drive",
+    note:"Google doesn't allow a browser app to stay signed in between visits, so Care Guardian saves to Drive while you're using it and reconnects with one tap when you come back."},
+  memory:   {auth:"persistent", background:true,  label:"This device"},
+};
+const storageCaps=(id)=>STORAGE_CAPS[id]||{auth:"session",background:false,label:String(id||"")};
+// ── Outbox: what makes intermittent providers safe ──
+// Every change that needs uploading is queued locally and drained whenever storage happens to be available.
+// Entries are deduplicated BY KEY, because each object is a complete snapshot: queueing state.enc five times
+// means the fifth supersedes the rest. Without that the queue would grow without bound on a busy day.
+const STORAGE_OUTBOX_MAX = 500;
+function outboxEnqueue(outbox, entry, now){
+  const q=(outbox||[]).filter(e=>e && e.key!==entry.key);
+  q.push({key:entry.key, kind:entry.kind||"state", queuedAt:now||new Date().toISOString(), tries:0});
+  return q.length>STORAGE_OUTBOX_MAX ? q.slice(q.length-STORAGE_OUTBOX_MAX) : q;
+}
+// The manifest must be written last, so it is always drained after everything else it points at.
+function outboxOrder(outbox){
+  const q=[...(outbox||[])];
+  return q.sort((a,b)=>(a.kind==="manifest"?1:0)-(b.kind==="manifest"?1:0)||String(a.queuedAt).localeCompare(String(b.queuedAt)));
+}
+// Drain against any provider. A failure is retried, not dropped: a queue that discards on error is not a queue.
+// A quota failure stops the run — retrying the rest would just fail too, and hammering the provider is rude.
+async function outboxDrain(provider, outbox, readObject, opts){
+  const o=opts||{}; const maxTries=o.maxTries||5;
+  let remaining=[...outboxOrder(outbox)]; const done=[]; let stopped=null;
+  for(const entry of outboxOrder(outbox)){
+    let body;
+    try{ body=await readObject(entry); }catch(e){ remaining=remaining.filter(x=>x.key!==entry.key); continue; } // object gone: drop it
+    try{
+      await provider.put(entry.key, body);
+      remaining=remaining.filter(x=>x.key!==entry.key); done.push(entry.key);
+    }catch(e){
+      const code=e&&e.code;
+      if(code==="QUOTA"){ stopped="QUOTA"; break; }
+      remaining=remaining.map(x=>x.key===entry.key?{...x,tries:(x.tries||0)+1,lastError:String(e&&e.message||e)}:x)
+                         .filter(x=>x.key!==entry.key||(x.tries||0)<maxTries);
+      if(o.stopOnError){ stopped=code||"ERROR"; break; }
+    }
+  }
+  return {outbox:remaining, uploaded:done, stopped, complete:remaining.length===0};
+}
+// ── Staleness (locked: 7 days) ──
+function storageStaleness(lastOkAt, now){
+  if(!lastOkAt) return {days:null,level:"never",stale:true};
+  const t=new Date(lastOkAt).getTime(), n=(now?new Date(now):new Date()).getTime();
+  if(!isFinite(t)) return {days:null,level:"never",stale:true};
+  const days=Math.floor((n-t)/86400000);
+  return {days, stale:days>=STORAGE_STALE_DAYS, level:days>=STORAGE_STALE_DAYS?"stale":(days>=Math.floor(STORAGE_STALE_DAYS/2)?"ageing":"fresh")};
+}
+// ── One provider per circle ──
+// A second admin connecting different storage must be surfaced, never silently merged: two clouds means two
+// divergent copies of the record and no way to say which is authoritative.
+function storageProviderConflict(local, remote){
+  const a=local&&local.provider, b=remote&&remote.provider;
+  if(!a||!b||a===b) return null;
+  return {conflict:true, local:a, remote:b,
+    localAccount:(local&&local.account)||"", remoteAccount:(remote&&remote.account)||""};
+}
+// ── What a sync writes ──
+function storagePlanUploads(circleId, deviceId, opts){
+  const o=opts||{}; const out=[{key:storageKeys.state(circleId,deviceId),kind:"state"}];
+  if(o.rotation) out.push({key:storageKeys.rotation(circleId),kind:"rotation"});
+  if(o.auditMonth) out.push({key:storageKeys.audit(circleId,deviceId,o.auditMonth),kind:"audit"});
+  for(const b of (o.blobIds||[])) out.push({key:storageKeys.blob(b),kind:"blob"});
+  out.push({key:storageKeys.manifest(circleId),kind:"manifest",last:true}); // manifest written LAST
+  return out;
+}
+
 /* ═══════════════ COMPONENT ═══════════════ */
 export default function App() {
   const [authed,setAuthed]=useState(false);
