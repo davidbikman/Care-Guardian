@@ -56,14 +56,14 @@ Requires Node 18+. The build has no network dependencies at runtime.
 
 ## Optional: self-hosted sync relay
 
-Teams can sync through a shared cloud folder (no server) OR through this optional relay. The relay only ever stores end-to-end-encrypted blobs — it never sees plaintext.
+Circles can sync through a shared cloud folder (no server) OR through this optional relay. The relay only ever stores end-to-end-encrypted blobs — it never sees plaintext.
 
 ```bash
 cd sync-server
 docker compose up -d        # starts on port 3000
 ```
 
-Then in the app: Team → Sync → Self-hosted server → enter your relay URL (must be HTTPS).
+Then in the app: ☰ menu → Circle Sync → Self-hosted server → enter your relay URL (must be HTTPS).
 
 ## Storage & privacy notes
 

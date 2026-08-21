@@ -367,7 +367,7 @@ const hasFileSystemAccess=typeof window!=="undefined"&&"showSaveFilePicker"in wi
 const genDeviceId=()=>"dev-"+Math.random().toString(36).slice(2,10)+"-"+Date.now().toString(36);
 
 // Data-schema generation, independent of the IndexedDB store version. Stamped into the vault so a vault written
-// by a NEWER app build is detected and not silently clobbered by an older build on a mixed-version team.
+// by a NEWER app build is detected and not silently clobbered by an older build on a mixed-version circle.
 // Migration policy (documented in README): never migrate the primary vault in place — the A/B snapshot swap
 // already writes-then-flips-pointer atomically, so a future schema migration writes to the inactive slot,
 // verifies the AES-GCM tag, then flips, never leaving a half-migrated vault.
@@ -569,15 +569,15 @@ function mergeData(local, remote) {
 
   // Preserve local settings (passcodes, deviceId)
   merged.settings = { ...local.settings };
-  // Merge team roster if both are on the same team
-  if(local.settings&&local.settings.team&&local.settings.team.id && remote.settings&&remote.settings.team&&remote.settings.team.id && local.settings.team.id===remote.settings.team.id){
-    const mergedMembers=[...local.settings.team.members];
-    (remote.settings.team.members||[]).forEach(rm=>{
+  // Merge circle roster if both are on the same circle
+  if(local.settings&&local.settings.circle&&local.settings.circle.id && remote.settings&&remote.settings.circle&&remote.settings.circle.id && local.settings.circle.id===remote.settings.circle.id){
+    const mergedMembers=[...local.settings.circle.members];
+    (remote.settings.circle.members||[]).forEach(rm=>{
       const existing=mergedMembers.find(m=>m.deviceId===rm.deviceId);
       if(!existing&&mergedMembers.length<20)mergedMembers.push({...rm,name:sanitizeText(rm.name||"",100),role:sanitizeText(rm.role||"",100),lastSync:new Date().toISOString()});
       else if(existing){if(rm.name)existing.name=sanitizeText(rm.name,100);if(rm.role)existing.role=sanitizeText(rm.role,100);existing.lastSync=new Date().toISOString()}
     });
-    merged.settings.team={...local.settings.team,members:mergedMembers};
+    merged.settings.circle={...local.settings.circle,members:mergedMembers};
   }
 
   // Update sync metadata
@@ -1245,16 +1245,6 @@ async function verifyAuditChain(entries, vaultTip){
   return {status: brokenAtSeq?"broken":(truncated?"truncated":"ok"), brokenAtSeq, chained:chained.length, total, tip};
 }
 
-async function getAuditCount(){
-  try{
-    const db=await openAuditDB();
-    const tx=db.transaction(AUDIT_STORE,"readonly");
-    const count=await new Promise((res,rej)=>{const r=tx.objectStore(AUDIT_STORE).count();r.onsuccess=()=>res(r.result);r.onerror=rej});
-    db.close();
-    return count;
-  }catch{return 0}
-}
-
 function hasLegacyData() { try { return !!localStorage.getItem(SKEY); } catch { return false; } }
 function loadLegacyData() { try { return JSON.parse(localStorage.getItem(SKEY)); } catch { return null; } }
 function clearLegacyData() { try { localStorage.removeItem(SKEY); } catch {} }
@@ -1264,8 +1254,8 @@ const MAX_AUTH_ATTEMPTS = 8;
 
 /* ═══ Roles & Permissions ═══ */
 const ROLES = [
-  {key:"admin",label:"Admin",desc:"Full access. Manages team, settings, and all data.",icon:"👑"},
-  {key:"family",label:"Family",desc:"Full view. Can add, edit, and export. Cannot manage team or settings.",icon:"👨‍👩‍👧"},
+  {key:"admin",label:"Admin",desc:"Full access. Manages the circle, settings, and all data.",icon:"👑"},
+  {key:"family",label:"Family",desc:"Full view. Can add, edit, and export. Cannot manage the circle or settings.",icon:"👨‍👩‍👧"},
   {key:"carepro",label:"Care Professional",desc:"Care-focused access. No legal, financial, or export.",icon:"🩺"},
   {key:"client-full",label:"Client (Independent)",desc:"Full view including legal and financial. Can export and submit self-reports.",icon:"🟢"},
   {key:"client-restricted",label:"Client (Supported)",desc:"Limited view. Can submit self-reports and view messages.",icon:"🛡"},
@@ -1371,15 +1361,15 @@ function sanitizeImportData(obj) {
   obj = deepStripUnsafe(obj);
   // Drop any unexpected top-level keys
   Object.keys(obj).forEach(k=>{ if(!SAFE_TOP_KEYS.includes(k)) delete obj[k]; });
-  // Bound and sanitize the settings block (carries deviceName, team roster/roles, stateCode)
+  // Bound and sanitize the settings block (carries deviceName, circle roster/roles, stateCode)
   if (obj.settings && typeof obj.settings === "object") {
     const st = obj.settings;
     if (st.deviceName!=null) st.deviceName = sanitizeText(st.deviceName, 100);
     if (st.deviceId!=null) st.deviceId = sanitizeText(st.deviceId, 64);
     if (st.stateCode!=null) st.stateCode = sanitizeText(st.stateCode, 8);
     delete st.syncPasscode; // never accept a sync passcode from an imported file
-    if (st.team && typeof st.team === "object" && Array.isArray(st.team.members)) {
-      st.team.members = st.team.members.slice(0, 20).map(m => ({
+    if (st.circle && typeof st.circle === "object" && Array.isArray(st.circle.members)) {
+      st.circle.members = st.circle.members.slice(0, 20).map(m => ({
         ...m,
         deviceId: sanitizeText(m.deviceId, 64),
         name: sanitizeText(m.name, 100),
@@ -1787,27 +1777,27 @@ const MedFormUI=({medForm,setMedForm,addMedToSchedule,editMedInSchedule,removeMe
     </div>
   </div></div>)};
 
-const CreateTeamForm=({data,flash,createTeam,setTeamSetupMode})=>{const[tn,setTn]=useState("");const[cn,setCn]=useState("");const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[mr,setMr]=useState("Primary Caregiver");return(
-  <div className="team-form">
-    <h4 className="sync-sub-title">Create Your Care Team</h4>
-    <label className="cf-label">Team name<input value={tn} onChange={e=>setTn(e.target.value)} className="cf-input" placeholder="e.g., Mom's Care Team"/></label>
+const CreateCircleForm=({data,flash,createCircle,setCircleSetupMode})=>{const[tn,setTn]=useState("");const[cn,setCn]=useState("");const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[mr,setMr]=useState("Primary Caregiver");return(
+  <div className="circle-form">
+    <h4 className="sync-sub-title">Create Your Care Circle</h4>
+    <label className="cf-label">Circle name<input value={tn} onChange={e=>setTn(e.target.value)} className="cf-input" placeholder="e.g., Mom's Care Circle"/></label>
     <label className="cf-label">Who are you caring for?<input value={cn} onChange={e=>setCn(e.target.value)} className="cf-input" placeholder="e.g., Margaret Johnson"/></label>
     <label className="cf-label">Your name<input value={mn} onChange={e=>setMn(e.target.value)} className="cf-input" placeholder="e.g., David"/></label>
     <label className="cf-label">Your role<input value={mr} onChange={e=>setMr(e.target.value)} className="cf-input" placeholder="e.g., Primary Caregiver, Daughter, Aide"/></label>
-    <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!tn.trim()||!cn.trim()||!mn.trim()){flash("Please fill in all fields.");return}createTeam(tn,cn,mn,mr)}} className="save-btn">Create Team</button><button onClick={()=>setTeamSetupMode(null)} className="cancel-btn">Cancel</button></div>
+    <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!tn.trim()||!cn.trim()||!mn.trim()){flash("Please fill in all fields.");return}createCircle(tn,cn,mn,mr)}} className="save-btn">Create Circle</button><button onClick={()=>setCircleSetupMode(null)} className="cancel-btn">Cancel</button></div>
   </div>)};
 
-const JoinTeamForm=({data,joinCode,setJoinCode,parseInviteCode,flash,joinTeamFromCode,setTeamSetupMode})=>{const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[tk,setTk]=useState("");const[mr,setMr]=useState("");const[rk,setRk]=useState("family");return(
-  <div className="team-form">
-    <h4 className="sync-sub-title">Join an Existing Team</h4>
-    <label className="cf-label">Invite code<input value={joinCode} onChange={e=>setJoinCode(e.target.value)} className="cf-input" placeholder="Paste the code from your team member" style={{fontFamily:"monospace",fontSize:"0.8889rem"}}/></label>
-    {joinCode&&parseInviteCode(joinCode)&&<p className="hint" style={{color:"var(--color-text-success)"}}>✓ Team: <strong>{parseInviteCode(joinCode).teamName}</strong></p>}
-    <label className="cf-label">Team key<input value={tk} onChange={e=>setTk(e.target.value)} className="cf-input" placeholder="The key sent to you separately" style={{fontFamily:"var(--font-code)"}}/></label>
-    <p className="hint" style={{marginTop:-4}}>Your team sends this on its own, apart from the invite code. You'll only ever enter it here.</p>
+const JoinCircleForm=({data,joinCode,setJoinCode,parseInviteCode,flash,joinCircleFromCode,setCircleSetupMode})=>{const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[tk,setTk]=useState("");const[mr,setMr]=useState("");const[rk,setRk]=useState("family");return(
+  <div className="circle-form">
+    <h4 className="sync-sub-title">Join an Existing Circle</h4>
+    <label className="cf-label">Invite code<input value={joinCode} onChange={e=>setJoinCode(e.target.value)} className="cf-input" placeholder="Paste the code from your circle member" style={{fontFamily:"monospace",fontSize:"0.8889rem"}}/></label>
+    {joinCode&&parseInviteCode(joinCode)&&<p className="hint" style={{color:"var(--color-text-success)"}}>✓ Circle: <strong>{parseInviteCode(joinCode).circleName}</strong></p>}
+    <label className="cf-label">Circle key<input value={tk} onChange={e=>setTk(e.target.value)} className="cf-input" placeholder="The key sent to you separately" style={{fontFamily:"var(--font-code)"}}/></label>
+    <p className="hint" style={{marginTop:-4}}>Your circle sends this on its own, apart from the invite code. You'll only ever enter it here.</p>
     <label className="cf-label">Your name<input value={mn} onChange={e=>setMn(e.target.value)} className="cf-input" placeholder="e.g., Sarah"/></label>
     <label className="cf-label">Your role title<input value={mr} onChange={e=>setMr(e.target.value)} className="cf-input" placeholder="e.g., Weekend Caregiver, Son, Home Health Aide"/></label>
     <label className="cf-label">Access level<select value={rk} onChange={e=>setRk(e.target.value)} className="cf-select">{ROLES.filter(r=>r.key!=="admin"&&!r.key.startsWith("client")).map(r=>(<option key={r.key} value={r.key}>{r.icon} {r.label} — {r.desc}</option>))}</select></label>
-    <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!joinCode.trim()||!mn.trim()){flash("Please enter the invite code and your name.");return}joinTeamFromCode(joinCode,mn,mr,rk,tk)}} className="save-btn">Join Team</button><button onClick={()=>{setTeamSetupMode(null);setJoinCode("")}} className="cancel-btn">Cancel</button></div>
+    <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!joinCode.trim()||!mn.trim()){flash("Please enter the invite code and your name.");return}joinCircleFromCode(joinCode,mn,mr,rk,tk)}} className="save-btn">Join Circle</button><button onClick={()=>{setCircleSetupMode(null);setJoinCode("")}} className="cancel-btn">Cancel</button></div>
   </div>)};
 
 /* ═══════════════ CLOUD STORAGE ═══════════════
@@ -2284,9 +2274,9 @@ export default function App() {
   /* ── Role & permissions ── */
   const getRole=()=>{
     if(authMode==="client"){const ct=data.settings&&data.settings.clientTier;return ct||"client-restricted"}
-    const team=data.settings&&data.settings.team;
-    if(!team)return authMode==="caregiver"?"admin":"client-restricted";
-    const members=team.members||[];
+    const circle=data.settings&&data.settings.circle;
+    if(!circle)return authMode==="caregiver"?"admin":"client-restricted";
+    const members=circle.members||[];
     const did=data.settings&&data.settings.deviceId;
     const me=members.find(m=>m.deviceId===did);
     return(me&&me.role_key)||"family";
@@ -2344,7 +2334,7 @@ export default function App() {
       case "submit-selfreport": return isClient||isAdmin||isFamily;
       case "view-selfreport": return true;
       case "export-data": return isAdmin||isFamily||isClientFull;
-      case "manage-team": return isAdmin;
+      case "manage-circle": return isAdmin;
       case "manage-settings": return isAdmin;
       case "manage-sync": return isAdmin;
       case "change-passcodes": return isAdmin;
@@ -2389,7 +2379,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
   // Messages
   const [msgFrom,setMsgFrom]=useState(""); const [msgText,setMsgText]=useState("");
   // Settings
-  const [importPw,setImportPw]=useState(""); // passcode for a teammate's file, on Team Sync
+  const [importPw,setImportPw]=useState(""); // passcode for a circle member's file, on Circle Sync
   const [settingsMsg,setSettingsMsg]=useState(null);
   const [newCaregiverPw,setNewCaregiverPw]=useState(""); const [newClientPw,setNewClientPw]=useState("");
   // Merge
@@ -2414,8 +2404,8 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
   const [backupBusy,setBackupBusy]=useState(false);
   const backupTimerRef=useRef(null);
   const [showAdvancedSync,setShowAdvancedSync]=useState(false);
-  // Team
-  const [teamSetupMode,setTeamSetupMode]=useState(null); // null|"create"|"join"
+  // Circle
+  const [circleSetupMode,setCircleSetupMode]=useState(null); // null|"create"|"join"
   const [joinCode,setJoinCode]=useState("");
   const [searchOpen,setSearchOpen]=useState(false);
   const [searchQ,setSearchQ]=useState("");
@@ -2650,7 +2640,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
         await writable.write(JSON.stringify({encrypted:true,version:"2.0",sync:true,data:b64}));
         await writable.close();
       }
-      setSyncStatus({type:"success",msg:"Connected to "+handle.name+". Place this file in a shared Google Drive, Dropbox, iCloud, or OneDrive folder. All team members select the same file."});
+      setSyncStatus({type:"success",msg:"Connected to "+handle.name+". Place this file in a shared Google Drive, Dropbox, iCloud, or OneDrive folder. All circle members select the same file."});
     }catch(e){if(e.name!=="AbortError")setSyncStatus({type:"error",msg:"Connection failed: "+e.message})}
   };
 
@@ -2734,7 +2724,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
 
   const cloudSync=async()=>{if(clientScopedRef.current){flash("Sync and import aren't available in client sign-in.");return}
     const pw=getSyncPasscode();
-    if(!pw){setSyncStatus({type:"error",msg:"Set a team sync passcode first."});return}
+    if(!pw){setSyncStatus({type:"error",msg:"Set a circle sync passcode first."});return}
     if(!cloudHandle){setSyncStatus({type:"error",msg:"No cloud file connected. Tap 'Connect Cloud Folder' to set up."});return}
     setCloudSyncing(true);setSyncStatus(null);
     try{
@@ -2768,7 +2758,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
       // Report
       const added=((pullReport&&pullReport.added&&pullReport.added.length)||0);const updated=((pullReport&&pullReport.updated&&pullReport.updated.length)||0);
       hipaaAudit("sync","Sync completed: "+added+" new, "+updated+" updated","all");
-      const msg=added+updated>0?`Synced: ${added} new, ${updated} updated from team.`:"Synced — your data is up to date.";
+      const msg=added+updated>0?`Synced: ${added} new, ${updated} updated from circle.`:"Synced — your data is up to date.";
       setSyncStatus({type:"success",msg});
       setData(p=>({...p,_sync:{...p._sync,lastSync:new Date().toISOString()}}));
     }catch(e){
@@ -2794,7 +2784,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
 
   const serverSync=async()=>{
     const pw=getSyncPasscode();
-    if(!pw){setSyncStatus({type:"error",msg:"Enter a team sync passcode."});return}
+    if(!pw){setSyncStatus({type:"error",msg:"Enter a circle sync passcode."});return}
     const serverUrl=getServerUrl();
     if(!serverUrl){setSyncStatus({type:"error",msg:"Enter your sync server URL in the setup above."});return}
     setCloudSyncing(true);setSyncStatus(null);
@@ -2836,7 +2826,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
       if(!putResp.ok){const err=await putResp.json().catch(()=>({}));throw new Error(err.error||"Server returned "+putResp.status)}
 
       const added=((pullReport&&pullReport.added&&pullReport.added.length)||0);const updated=((pullReport&&pullReport.updated&&pullReport.updated.length)||0);
-      setSyncStatus({type:"success",msg:added+updated>0?`Synced: ${added} new, ${updated} updates from team.`:"Synced — your data is up to date."});
+      setSyncStatus({type:"success",msg:added+updated>0?`Synced: ${added} new, ${updated} updates from circle.`:"Synced — your data is up to date."});
       setData(p=>({...p,_sync:{...p._sync,lastSync:new Date().toISOString()}}));
     }catch(e){setSyncStatus({type:"error",msg:"Server sync failed: "+e.message})}
     setCloudSyncing(false);
@@ -2849,14 +2839,14 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
     else{setSyncStatus({type:"error",msg:"No sync method configured. Set up a cloud folder or server below."})}
   };
 
-  /* ── Team management ── */
-  const getTeam=()=>(data.settings&&data.settings.team)||null;
-  const hasTeam=()=>!!(data.settings&&data.settings.team&&data.settings.team.id);
+  /* ── Circle management ── */
+  const getCircle=()=>(data.settings&&data.settings.circle)||null;
+  const hasCircle=()=>!!(data.settings&&data.settings.circle&&data.settings.circle.id);
 
-  const createTeam=(teamName,clientName,myName,myRole)=>{
-    const team={
-      id:"team-"+Math.random().toString(36).slice(2,10)+Date.now().toString(36),
-      name:teamName.trim(),
+  const createCircle=(circleName,clientName,myName,myRole)=>{
+    const circle={
+      id:"circle-"+Math.random().toString(36).slice(2,10)+Date.now().toString(36),
+      name:circleName.trim(),
       clientName:clientName.trim(),
       createdAt:new Date().toISOString(),
       members:[{deviceId:(data.settings&&data.settings.deviceId),name:myName.trim(),role:myRole.trim(),role_key:"admin",joinedAt:new Date().toISOString(),lastSync:null}],
@@ -2866,17 +2856,17 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
       // re-entered every session on every device.
       key:genRecoveryCode(),
     };
-    setData(p=>({...p,settings:{...p.settings,team,deviceName:myName.trim(),clientTier:"client-full"}}));
-    setTeamSetupMode(null);
-    flash("Team created: "+teamName);
+    setData(p=>({...p,settings:{...p.settings,circle,deviceName:myName.trim(),clientTier:"client-full"}}));
+    setCircleSetupMode(null);
+    flash("Circle created: "+circleName);
   };
 
   const generateInviteCode=()=>{
-    const team=getTeam();if(!team)return"";
+    const circle=getCircle();if(!circle)return"";
     // Secrets stay out of this by an earlier decision (H7) — it travels by text.
     // The client's name is out for the same reason: base64 is not encryption,
     // and an invite forwarded to the wrong number should not name the patient.
-    const payload={v:2,t:team.name,i:team.id,u:getServerUrl()||"",s:(data.settings&&data.settings.stateCode)||""};
+    const payload={v:2,t:circle.name,i:circle.id,u:getServerUrl()||"",s:(data.settings&&data.settings.stateCode)||""};
     return"CG:"+btoa(JSON.stringify(payload));
   };
 
@@ -2885,28 +2875,28 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
       const b64=code.trim().replace(/^CG:/,"");
       const payload=JSON.parse(atob(b64));
       if(payload.v&&payload.v!==1&&payload.v!==2)return null;
-      return{teamName:payload.t,clientName:payload.c||"",teamId:payload.i,serverUrl:payload.u,stateCode:payload.s};
+      return{circleName:payload.t,clientName:payload.c||"",circleId:payload.i,serverUrl:payload.u,stateCode:payload.s};
     }catch{return null}
   };
 
-  const joinTeamFromCode=(code,myName,myRole,myRoleKey,teamKey)=>{
+  const joinCircleFromCode=(code,myName,myRole,myRoleKey,circleKey)=>{
     const parsed=parseInviteCode(code);
     if(!parsed){setSyncStatus({type:"error",msg:"Invalid invite code."});return}
-    const team={
-      id:parsed.teamId,
-      name:parsed.teamName,
+    const circle={
+      id:parsed.circleId,
+      name:parsed.circleName,
       clientName:parsed.clientName,
-      key:(teamKey||"").trim().toUpperCase()||undefined,
+      key:(circleKey||"").trim().toUpperCase()||undefined,
       createdAt:new Date().toISOString(),
       members:[{deviceId:(data.settings&&data.settings.deviceId),name:myName.trim(),role:myRole.trim(),role_key:myRoleKey||"family",joinedAt:new Date().toISOString(),lastSync:null}],
     };
-    const updates={team,deviceName:myName.trim()};
+    const updates={circle,deviceName:myName.trim()};
     if(parsed.serverUrl)updates.syncServerUrl=parsed.serverUrl;
     if(parsed.stateCode)updates.stateCode=parsed.stateCode;
     setData(p=>({...p,settings:{...p.settings,...updates}}));
     if(parsed.stateCode&&parsed.stateCode!==(data.settings&&data.settings.stateCode)){switchState(parsed.stateCode)}
-    setTeamSetupMode(null);setJoinCode("");
-    flash("Joined team: "+parsed.teamName+". Enter the team sync passcode, then tap Sync Now to pull existing data.");
+    setCircleSetupMode(null);setJoinCode("");
+    flash("Joined circle: "+parsed.circleName+". Enter the circle sync passcode, then tap Sync Now to pull existing data.");
   };
 
 
@@ -3011,7 +3001,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
   const getUpcoming=()=>{const today=fmtDate(new Date().getFullYear(),new Date().getMonth(),new Date().getDate());return(data.appointments||[]).filter(a=>a.date>=today).sort((a,b)=>a.date.localeCompare(b.date)||a.time.localeCompare(b.time)).slice(0,5)};
 
   /* ── messages ── */
-  const sendMessage=()=>{const from=(data.settings&&data.settings.team)?(data.settings&&data.settings.deviceName)||"Unknown":msgFrom.trim();if(!msgText.trim()||!from)return;setData(p=>({...p,messages:[...p.messages,{id:nextId(),from,text:msgText.trim(),timestamp:new Date().toLocaleString(),deviceId:(data.settings&&data.settings.deviceId)}]}));setMsgText("")};
+  const sendMessage=()=>{const from=(data.settings&&data.settings.circle)?(data.settings&&data.settings.deviceName)||"Unknown":msgFrom.trim();if(!msgText.trim()||!from)return;setData(p=>({...p,messages:[...p.messages,{id:nextId(),from,text:msgText.trim(),timestamp:new Date().toLocaleString(),deviceId:(data.settings&&data.settings.deviceId)}]}));setMsgText("")};
 
   /* ── settings / export ── */
   const flash=(msg)=>{setSettingsMsg(msg);setTimeout(()=>setSettingsMsg(null),4000)};
@@ -3071,21 +3061,21 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
 
   /* ── Sync handlers ── */
   const getSyncPasscode=()=>{
-    const t=getTeam();
-    if(t&&t.key)return t.key;                                   // generated at team creation
-    return (data.settings&&data.settings.syncPasscode)||syncPasscode; // pre-v3 teams
+    const t=getCircle();
+    if(t&&t.key)return t.key;                                   // generated at circle creation
+    return (data.settings&&data.settings.syncPasscode)||syncPasscode; // pre-v3 circles
   };
-  // A team created before the generated key existed can adopt one, which ends
+  // A circle created before the generated key existed can adopt one, which ends
   // the per-session re-typing for everyone who joins from then on.
-  const adoptTeamKey=()=>{
-    const t=getTeam();if(!t||t.key)return;
+  const adoptCircleKey=()=>{
+    const t=getCircle();if(!t||t.key)return;
     const key=genRecoveryCode();
-    setData(p=>({...p,settings:{...p.settings,team:{...p.settings.team,key}}}));
-    flash("This team now has a generated key. Share it with each member once — they won't have to type a sync passcode again.");
+    setData(p=>({...p,settings:{...p.settings,circle:{...p.settings.circle,key}}}));
+    flash("This circle now has a generated key. Share it with each member once — they won't have to type a sync passcode again.");
   };
 
   const syncPush=async(method)=>{
-    const pw=getSyncPasscode();if(!pw.trim()){setSyncStatus({type:"error",msg:"Set a team sync passcode first."});return}
+    const pw=getSyncPasscode();if(!pw.trim()){setSyncStatus({type:"error",msg:"Set a circle sync passcode first."});return}
     setSyncStatus(null);
     try{
       const exportData={...data,_sync:{...(data._sync||{}),exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId),exportedByName:(data.settings&&data.settings.deviceName)||""}};
@@ -3093,17 +3083,17 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
       const payload=JSON.stringify({encrypted:true,version:"2.0",sync:true,data:b64});
       if(method==="clipboard"){
         await navigator.clipboard.writeText(payload);
-        setSyncStatus({type:"success",msg:"Encrypted sync data copied to clipboard. Paste it in your team's group chat."});
+        setSyncStatus({type:"success",msg:"Encrypted sync data copied to clipboard. Paste it in your circle's group chat."});
       } else {
         downloadFile(payload,"care-sync-"+new Date().toISOString().slice(0,10)+".json","application/json");
-        setSyncStatus({type:"success",msg:"Sync file downloaded. Drop it in your team's shared folder."});
+        setSyncStatus({type:"success",msg:"Sync file downloaded. Drop it in your circle's shared folder."});
       }
     }catch(e){setSyncStatus({type:"error",msg:"Push failed: "+e.message})}
     
   };
 
   const syncPullFromText=async(text)=>{if(clientScopedRef.current){flash("Sync and import aren't available in client sign-in.");return}
-    const pw=getSyncPasscode();if(!pw.trim()){setSyncStatus({type:"error",msg:"Set a team sync passcode first."});return}
+    const pw=getSyncPasscode();if(!pw.trim()){setSyncStatus({type:"error",msg:"Set a circle sync passcode first."});return}
     setSyncPulling(true);setSyncStatus(null);
     try{
       if(rawTextTooLarge(text)){setSyncStatus({type:"error",msg:"This sync data is too large to open safely and was not parsed. Check the source device."});setSyncPulling(false);return}
@@ -3139,7 +3129,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
     const urlCheck=validateSyncUrl(syncPullUrl.trim());
     if(!urlCheck.valid){setSyncStatus({type:"error",msg:urlCheck.msg});return}
     if(!urlCheck.trusted){setSyncStatus({type:"error",msg:urlCheck.msg+" If you trust this source, download the file manually and use 'Open File' instead."});return}
-    const pw=getSyncPasscode();if(!pw.trim()){setSyncStatus({type:"error",msg:"Set a team sync passcode first."});return}
+    const pw=getSyncPasscode();if(!pw.trim()){setSyncStatus({type:"error",msg:"Set a circle sync passcode first."});return}
     setSyncPulling(true);setSyncStatus(null);
     try{
       const resp=await fetch(syncPullUrl.trim());if(!resp.ok)throw new Error("HTTP "+resp.status);
@@ -3375,8 +3365,8 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
     return result;
   };
   const myName=()=>(data.settings&&data.settings.deviceName)||"Me";
-  const teamMembers=()=>((data.settings&&data.settings.team&&data.settings.team.members)||[]);
-  const memberName=(devId)=>{const m=teamMembers().find(x=>x.deviceId===devId);return m?m.name:(devId===myDeviceId()?myName():"Unknown")};
+  const circleMembers=()=>((data.settings&&data.settings.circle&&data.settings.circle.members)||[]);
+  const memberName=(devId)=>{const m=circleMembers().find(x=>x.deviceId===devId);return m?m.name:(devId===myDeviceId()?myName():"Unknown")};
 
   const touchShift=(shift)=>{ hlcRef.current=hlcLocal(hlcRef.current,myDeviceId(),Date.now()); saveHlc(hlcRef.current); return {...shift,lastModified:new Date().toISOString(),lastModifiedBy:myName()+" ("+(role||"")+")",hlc:hlcRef.current}; };
   const createShift=(shiftData)=>{
@@ -3532,7 +3522,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
       setData(p=>addLog({...p,selfReports:[report,...(p.selfReports||[])]},"selfreport",`${(SELF_REPORT_TYPES.find(t=>t.key===srType)||{}).label||"Update"} from client`));
     }
     setSrText("");setSrMood("");setSrPain("");setSrAudioData(null);setSrPhotos([]);
-    flash("Update submitted. Your care team will see this.");
+    flash("Update submitted. Your care circle will see this.");
   };
   const deleteSelfReport=(id)=>{
     const target=(data.selfReports||[]).find(r=>r.id===id);
@@ -3626,10 +3616,10 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
 
   // Care plan binder generator
   const generateCarePlanBinder=()=>{
-    const team=data.settings&&data.settings.team;
+    const circle=data.settings&&data.settings.circle;
     const lines=[];
     lines.push("═══════════════════════════════════════════");
-    lines.push("CARE PLAN BINDER — "+(team&&team.clientName||"[Client Name]"));
+    lines.push("CARE PLAN BINDER — "+(circle&&circle.clientName||"[Client Name]"));
     lines.push("Generated: "+new Date().toLocaleString());
     lines.push("═══════════════════════════════════════════\n");
     // Diagnoses & medical
@@ -3685,10 +3675,10 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
         if(d.outcome)lines.push("  Outcome: "+d.outcome);
       });
     }
-    // Care team
-    lines.push("\nCARE TEAM");
+    // Care circle
+    lines.push("\nCARE CIRCLE");
     lines.push("─────────────────────────");
-    if(team&&team.members){team.members.forEach(m=>{lines.push("• "+m.name+" — "+m.role)})}
+    if(circle&&circle.members){circle.members.forEach(m=>{lines.push("• "+m.name+" — "+m.role)})}
     lines.push("\n═══════════════════════════════════════════");
     lines.push("End of Care Plan Binder");
     return lines.join("\n");
@@ -3937,10 +3927,10 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
     {label:"Contacts",hub:"sos",view:"contacts",icon:"☷",keywords:"contact phone email doctor nurse lawyer provider"},
     {label:"Calendar",hub:"today",view:"calendar",icon:"▦",keywords:"calendar appointment schedule date"},
     {label:"Care Schedule",hub:"care",view:"schedule",icon:"🗓",keywords:"schedule shift open swap claim visit clock availability roster assignment"},
-    {label:"Messages",hub:"today",view:"messages",icon:"✉",keywords:"message chat text communication team"},
+    {label:"Messages",hub:"today",view:"messages",icon:"✉",keywords:"message chat text communication circle team"},
     {label:"Self-Reports",hub:"log",view:"selfreport",icon:"🗣",keywords:"self report mood pain sleep voice concern"},
     {label:"Backups",hub:"care",view:"backups",icon:"🛟",keywords:"backup restore save copy export recover lost device passcode encrypted care file"},
-    {label:"Team Sync",hub:"care",view:"sync",icon:"📡",keywords:"sync cloud server team invite merge device name"},
+    {label:"Circle Sync",hub:"care",view:"sync",icon:"📡",keywords:"sync cloud server circle team invite merge device name"},
     {label:"Settings",hub:"care",view:"settings",icon:"⚙",keywords:"settings passcode password state region device"},
     {label:"Help",hub:"care",view:"help",icon:"?",keywords:"help guide how to feature"},
     {label:"Physical Health",hub:"care",view:"physical",icon:"♥",keywords:"physical health mobility fall nutrition dental vision sleep"},
@@ -4067,11 +4057,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
         try{
           const aKey=await deriveAuditKey(pc);
           auditKeyRef.current=aKey;
-          const entries=await readAuditLog(aKey,500);
-          setAuditEntries(entries);
-          const cnt=await getAuditCount();
           const si=await getStorageEstimate();setStorageInfo(si);
-          
         }catch(e){console.error("Audit key derivation failed:",e)}setData(cleanData);setAuthed(true);setAuthMode(mode);setPcErr(false);setAuthAttempts(0);
           flash("Data migrated to encrypted storage.");return;
         }
@@ -4123,7 +4109,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
     lastCkptSeqRef.current=loaded.baseSeq;
     ckptSlotRef.current=loaded.baseSlot==="snapB"?"snapA":"snapB";
     prevPersistedRef.current=loaded.state;
-    try{const aKey=await deriveAuditKey(pc);auditKeyRef.current=aKey;const aKeyLegacy=await deriveAuditKey(pc,KDF_ITER_LEGACY);const entries=await readAuditLog([aKey,aKeyLegacy],500);setAuditEntries(entries);const cnt=await getAuditCount();const si=await getStorageEstimate();setStorageInfo(si);const chained=entries.filter(e=>typeof e.seq==="number"&&e.hash);if(chained.length){const last=chained.sort((a,b)=>a.seq-b.seq)[chained.length-1];auditTipRef.current={seq:last.seq,hash:last.hash}}const cs=await verifyAuditChain(entries,(loaded.state.settings&&loaded.state.settings.auditTip)||null);setAuditChainStatus(cs);if(cs.status==="ok"&&cs.tip)saveAuditTip(cs.tip.seq,cs.tip.hash);}catch(e){console.error("Audit key derivation failed:",e)}
+    try{const aKey=await deriveAuditKey(pc);auditKeyRef.current=aKey;const aKeyLegacy=await deriveAuditKey(pc,KDF_ITER_LEGACY);const entries=await readAuditLog([aKey,aKeyLegacy],500);const si=await getStorageEstimate();setStorageInfo(si);const chained=entries.filter(e=>typeof e.seq==="number"&&e.hash);if(chained.length){const last=chained.sort((a,b)=>a.seq-b.seq)[chained.length-1];auditTipRef.current={seq:last.seq,hash:last.hash}}const cs=await verifyAuditChain(entries,(loaded.state.settings&&loaded.state.settings.auditTip)||null);setAuditChainStatus(cs);if(cs.status==="ok"&&cs.tip)saveAuditTip(cs.tip.seq,cs.tip.hash);}catch(e){console.error("Audit key derivation failed:",e)}
     if(loaded.state.settings){ const sv=loaded.state.settings.schemaVersion; if(sv==null){loaded.state.settings.schemaVersion=SCHEMA_VERSION} else if(sv>SCHEMA_VERSION){setNewerSchema(true)} } // newer build wrote this vault → warn, don't clobber
     // ── Cryptographic role scoping: derive (or create) the restricted-zone key, ingest any client-written
     //    self-reports from the encrypted outbox, and refresh the client projection. ──
@@ -4350,8 +4336,8 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
       setData(p=>{
         let next={...p};
         if(name){
-          const team=(p.settings&&p.settings.team)||null;
-          next={...next,settings:{...p.settings,clientName:name,team:team?{...team,clientName:team.clientName||name}:team}};
+          const circle=(p.settings&&p.settings.circle)||null;
+          next={...next,settings:{...p.settings,clientName:name,circle:circle?{...circle,clientName:circle.clientName||name}:circle}};
         }
         if(docName||docPhone){
           const contact={...EMPTY_CONTACT,name:docName||"Primary doctor",role:"Primary Care Physician",phone:docPhone,category:"medical",id:nextId(),notes:[],customFields:[]};
@@ -4362,7 +4348,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
     }
     setShowFirstWin(false);setFwName("");setFwDocName("");setFwDocPhone("");
   };
-  const clientDisplayName=()=>((data.settings&&data.settings.team&&data.settings.team.clientName))||((data.settings&&data.settings.clientName))||"";
+  const clientDisplayName=()=>((data.settings&&data.settings.circle&&data.settings.circle.clientName))||((data.settings&&data.settings.clientName))||"";
 
   // Recovery screen — browser evicted the local vault but wrapped keys survived
   if(dataLossDetected&&!recoveryData) return(<>
@@ -4469,7 +4455,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
     <div className="auth-wrap"><div className="auth-card" style={{maxWidth:"min(100%,22.22rem)"}}>
       <div style={{fontSize:"2.8148rem",marginBottom:10}}>📡</div>
       <h1 className="auth-title">Sync Required</h1>
-      <p className="auth-sub">{"Your data hasn\'t been synced in over "+getSyncAge().days+" days, or you have "+getSyncAge().actions+" unsynced changes. Please sync now to protect your data and keep your team up to date."}</p>
+      <p className="auth-sub">{"Your data hasn\'t been synced in over "+getSyncAge().days+" days, or you have "+getSyncAge().actions+" unsynced changes. Please sync now to protect your data and keep your circle up to date."}</p>
       <button onClick={()=>{setSyncLocked(false);navRoot("today");setTimeout(()=>{setCurrentHub("care");nav("sync")},100)}} className="auth-btn">Open Sync</button>
       <p className="auth-footer">Your data exists only on this device until synced.</p>
     </div></div>
@@ -4713,7 +4699,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
           {/* ═══ TODAY HUB ═══ */}
           {/* ═══ TODAY ═══ */}
           {view==="today"&&(<>
-            <div className="hub-welcome">🛡 Care Guardian{(data.settings&&data.settings.team)?" — "+(data.settings.team.name||""):""}</div>
+            <div className="hub-welcome">🛡 Care Guardian{(data.settings&&data.settings.circle)?" — "+(data.settings.circle.name||""):""}</div>
             {clientDisplayName()&&<p className="hub-client">Caring for <strong>{clientDisplayName()}</strong></p>}
             {getSyncWarning()==="warn"&&<div className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub("care");nav("sync")}}><div className="hub-card-icon" style={{background:"var(--color-background-warning)"}}><span style={{color:"var(--color-text-warning)"}}>📡</span></div><div className="hub-card-body"><div className="hub-card-title">Sync overdue <span className="pill pill-a">{getSyncAge().days}d ago</span></div><div className="hub-card-sub">Sync now to protect your data</div></div><span className="hub-card-arr">›</span></div>}
             {(()=>{const d=daysSinceRespite();if(d===null||d<14)return null;return(<div className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub("today");nav("caregiver-wellness")}}><div className="hub-card-icon" style={{background:"var(--color-background-danger)"}}><span style={{color:"var(--color-text-danger)"}}>💛</span></div><div className="hub-card-body"><div className="hub-card-title">No respite in {d} days</div><div className="hub-card-sub">Caregiver burnout risk — please take a break</div></div><span className="hub-card-arr">›</span></div>)})()}
@@ -4880,8 +4866,8 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
             <div className="sos-script">
               <div className="sos-script-title">Read this to the dispatcher</div>
               <ol className="sos-script-list">
-                <li>“My address is <strong>{(data.settings&&data.settings.team&&data.settings.team.address)||"[add your address in Settings]"}</strong>.”</li>
-                <li>“The person is <strong>{clientDisplayName()||"[name]"}</strong>, age {(data.settings&&data.settings.team&&data.settings.team.clientAge)||"[age]"}, and has dementia.”</li>
+                <li>“My address is <strong>{(data.settings&&data.settings.circle&&data.settings.circle.address)||"[add your address in Settings]"}</strong>.”</li>
+                <li>“The person is <strong>{clientDisplayName()||"[name]"}</strong>, age {(data.settings&&data.settings.circle&&data.settings.circle.clientAge)||"[age]"}, and has dementia.”</li>
                 <li>“What happened is …” — say only what you saw.</li>
                 {getEmergencyInfo().codeStatus&&<li>“Code status is <strong>{getEmergencyInfo().codeStatus}</strong>.”</li>}
                 {getEmergencyInfo().allergiesText&&<li>“Allergies: <strong>{getEmergencyInfo().allergiesText}</strong>.”</li>}
@@ -5063,7 +5049,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
               <div className="ecard-id-row">
                 {getEmergencyInfo().clientPhoto&&<MediaImg value={getEmergencyInfo().clientPhoto} dek={dekRef.current} altKey={rKeyRef.current} className="ecard-photo" alt="Photo of the person this card describes"/>}
                 <div style={{flex:1}}>
-                  <div className="ecard-row"><span className="ecard-label">Name:</span><span>{(data.settings&&data.settings.team&&data.settings.team.clientName)||"[Set in Sync > Team]"}</span></div>
+                  <div className="ecard-row"><span className="ecard-label">Name:</span><span>{(data.settings&&data.settings.circle&&data.settings.circle.clientName)||"[Set in Sync > Circle]"}</span></div>
                 </div>
               </div>
               <div className="ecard-section">DIAGNOSES</div>
@@ -5092,7 +5078,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
           {/* ═══ CAREGIVER WELLNESS ═══ */}
           {view==="caregiver-wellness"&&!isReadOnly&&(<>
             <h1 className="page-title">💛 Caregiver Check-in</h1>
-            <p className="page-sub">You matter too. Track your wellbeing so your team can support each other.</p>
+            <p className="page-sub">You matter too. Track your wellbeing so your circle can support each other.</p>
             <div className="section">
               <h3 className="sec-title">How are you doing?</h3>
               <label className="cf-label">Stress level</label>
@@ -5172,7 +5158,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
               <h3 className="sec-title">New Shift</h3>
               <div className="cf-grid">
                 <label className="cf-label">Date<input type="date" value={shiftForm.date} onChange={e=>setShiftForm(p=>({...p,date:e.target.value}))} className="cf-input"/></label>
-                <label className="cf-label">Assign to<select value={shiftForm.assignedTo} onChange={e=>setShiftForm(p=>({...p,assignedTo:e.target.value}))} className="cf-input"><option value="">— Leave open —</option>{teamMembers().map(m=>(<option key={m.deviceId} value={m.deviceId}>{m.name} ({m.role})</option>))}</select></label>
+                <label className="cf-label">Assign to<select value={shiftForm.assignedTo} onChange={e=>setShiftForm(p=>({...p,assignedTo:e.target.value}))} className="cf-input"><option value="">— Leave open —</option>{circleMembers().map(m=>(<option key={m.deviceId} value={m.deviceId}>{m.name} ({m.role})</option>))}</select></label>
               </div>
               <div className="cf-grid">
                 <label className="cf-label">Start<input type="time" value={shiftForm.startTime} onChange={e=>setShiftForm(p=>({...p,startTime:e.target.value}))} className="cf-input"/></label>
@@ -5204,7 +5190,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
                     <p className="hint">{s.swapRequest.fromName} wants to give up this shift{s.swapRequest.reason?": "+s.swapRequest.reason:"."}</p>
                     <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
                       <span className="hint">Reassign to:</span>
-                      <select className="cf-input" style={{width:"auto",padding:"4px 8px"}} onChange={e=>{if(e.target.value)approveSwap(s.id,e.target.value)}} defaultValue=""><option value="">Open for claiming</option>{teamMembers().filter(m=>m.deviceId!==s.swapRequest.fromDevice).map(m=>(<option key={m.deviceId} value={m.deviceId}>{m.name}</option>))}</select>
+                      <select className="cf-input" style={{width:"auto",padding:"4px 8px"}} onChange={e=>{if(e.target.value)approveSwap(s.id,e.target.value)}} defaultValue=""><option value="">Open for claiming</option>{circleMembers().filter(m=>m.deviceId!==s.swapRequest.fromDevice).map(m=>(<option key={m.deviceId} value={m.deviceId}>{m.name}</option>))}</select>
                       <button onClick={()=>approveSwap(s.id,null)} className="edit-btn" style={{marginTop:0,fontSize:"0.8148rem",background:"var(--color-text-success)",color:"var(--color-text-on-fill)",borderColor:"var(--color-text-success)"}}>Open it</button>
                       <button onClick={()=>denySwap(s.id)} className="edit-btn" style={{marginTop:0,fontSize:"0.8148rem"}}>Deny</button>
                     </div>
@@ -5242,7 +5228,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
               </div>);
               return(<>
                 <div className="section"><h3 className="sec-title">My shifts ({mine.length})</h3>{mine.length>0?mine.map(s=>renderShift(s,true)):<p className="hint">No upcoming shifts assigned to you.</p>}</div>
-                {others.length>0&&!isCarePro&&<div className="section"><h3 className="sec-title">Team shifts ({others.length})</h3>{others.map(s=>renderShift(s,false))}</div>}
+                {others.length>0&&!isCarePro&&<div className="section"><h3 className="sec-title">Circle shifts ({others.length})</h3>{others.map(s=>renderShift(s,false))}</div>}
               </>)})()}
 
             {/* Swap request modal */}
@@ -5260,7 +5246,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
           {/* ═══ AVAILABILITY ═══ */}
           {view==="availability"&&(<>
             <h1 className="page-title">📅 My Availability</h1>
-            <p className="page-sub">Set when you're available so the admin can schedule you appropriately. Visible to the care team.</p>
+            <p className="page-sub">Set when you're available so the admin can schedule you appropriately. Visible to the care circle.</p>
             {(()=>{
               const days=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
               const slots=["Morning","Afternoon","Evening","Overnight"];
@@ -5280,7 +5266,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
 
             {/* Admin view of everyone's availability */}
             {can("manage-schedule")&&(()=>{const all=data.availability||{};const devs=Object.keys(all);if(devs.length===0)return null;return(
-              <div className="section"><h3 className="sec-title">Team availability</h3>
+              <div className="section"><h3 className="sec-title">Circle availability</h3>
                 {devs.map(dev=>{const a=all[dev];return(<div key={dev} className="avail-summary"><strong>{a.name}</strong>: {Object.entries(a.days||{}).filter(([d,s])=>s.length>0).map(([d,s])=>d+" ("+s.join(", ")+")").join("; ")||"none set"}</div>)})}
               </div>)})()}
           </>)}
@@ -5541,7 +5527,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
           {view==="help"&&(<>
             <h1 className="page-title">? Help & User Guide</h1>
             <p className="page-sub">How to use each feature of the Care Guardian.</p>
-            <div className="help-toc"><strong>Contents:</strong> {["Getting Started","Overview","Care Domains","Incident Log","Medication Log","Expense Tracker","Calendar","Contacts","Document Scanner","Self Report","Emergency Plans","Shift Schedule","Escalation Triggers","Longitudinal Tracking","Visit Prep","After Death Checklist","Messages","Team Sync","Settings & Security","Privacy"].map((t,i)=><span key={i}>{i>0?" · ":""}<a href="#" onClick={e=>{e.preventDefault();(document.getElementById("help-"+i)||{scrollIntoView:()=>{}}).scrollIntoView({behavior:"smooth"})}} className="help-link">{t}</a></span>)}</div>
+            <div className="help-toc"><strong>Contents:</strong> {["Getting Started","Overview","Care Domains","Incident Log","Medication Log","Expense Tracker","Calendar","Contacts","Document Scanner","Self Report","Emergency Plans","Shift Schedule","Escalation Triggers","Longitudinal Tracking","Visit Prep","After Death Checklist","Messages","Circle Sync","Settings & Security","Privacy"].map((t,i)=><span key={i}>{i>0?" · ":""}<a href="#" onClick={e=>{e.preventDefault();(document.getElementById("help-"+i)||{scrollIntoView:()=>{}}).scrollIntoView({behavior:"smooth"})}} className="help-link">{t}</a></span>)}</div>
 
             {[
               {t:"Getting Started",b:"Enter the caregiver passcode (default: 1234) for full access, or the client passcode (default: 0000) for read-only view mode. Change both passcodes in Settings. The dashboard stores everything in your browser's local storage — nothing is ever sent over the internet."},
@@ -5560,16 +5546,16 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
               {t:"Longitudinal Tracking",b:"Record periodic snapshots of all domain statuses and progress percentages. The resulting table shows how things are changing over time. Take a snapshot monthly, before major appointments, and before any care level reassessment. This data supports APD priority reassessments, guardianship petitions, and provider conversations."},
               {t:"Visit Prep",b:"Auto-generates a comprehensive summary from your dashboard data: current medications, recent incidents, domain status, active escalation triggers, recent expenses, and physical health notes. Review and print before every provider visit. Includes blank lines for questions to ask the provider."},
               {t:"After Death Checklist",b:"Oregon-specific administrative steps organized by timeframe: immediate (24–48 hours), first week, first month, and months 2–6. Includes Social Security notification, Oregon Medicaid/OSIPM termination, estate recovery under ORS 416.350, probate filing (ORS 113.035), and more. This checklist exists so you don't have to figure this out while grieving."},
-              {t:"Team Sync",b:"One-button sync for your care team. Two connection methods: Cloud Folder (save sync file in shared Google Drive/Dropbox/iCloud/OneDrive — each team member selects same file) or Self-Hosted Server (deploy sync-server.js on your own hardware, enter the URL). Both use the same Sync Now button. Room IDs are derived from your sync passcode via SHA-256 so the server never sees it. Daily use: tap Sync Now at the start and end of each session. Manual options (clipboard, file, URL) are under Advanced."},
+              {t:"Circle Sync",b:"One-button sync for your care circle. Two connection methods: Cloud Folder (save sync file in shared Google Drive/Dropbox/iCloud/OneDrive — each circle member selects same file) or Self-Hosted Server (deploy sync-server.js on your own hardware, enter the URL). Both use the same Sync Now button. Room IDs are derived from your sync passcode via SHA-256 so the server never sees it. Daily use: tap Sync Now at the start and end of each session. Manual options (clipboard, file, URL) are under Advanced."},
               {t:"Messages",b:"A local message board for family care coordination. Enter your name and type a message. Messages sync across devices via the encrypted backup/import cycle in Settings. Read-only in client mode."},
-              {t:"Settings & Security",b:"Set your device name so team members know whose backup is whose. Change caregiver and client passcodes. Export an encrypted backup (AES-256-GCM) and share it with your care team via text, Signal, AirDrop, or a shared Drive folder. When a team member imports your backup, the merge engine adds new items and keeps the most recent version of each changed section. Passcodes and device ID are never overwritten during merge. Import FHIR R4 health record bundles. View data inventory and sync status."},
+              {t:"Settings & Security",b:"Set your device name so circle members know whose backup is whose. Change caregiver and client passcodes. Export an encrypted backup (AES-256-GCM) and share it with your care circle via text, Signal, AirDrop, or a shared Drive folder. When a circle member imports your backup, the merge engine adds new items and keeps the most recent version of each changed section. Passcodes and device ID are never overwritten during merge. Import FHIR R4 health record bundles. View data inventory and sync status."},
               {t:"Privacy",b:"All data is stored on this device and encrypted at rest with AES-256-GCM. Nothing is transmitted to any server, and there is no analytics, tracking, or telemetry. Keys are derived from your passcodes using PBKDF2-HMAC-SHA256 at 600,000 iterations (OWASP-recommended), with older vaults upgraded automatically. Fonts and the PDF text-extraction engine are bundled into the app, so even the document scanner runs entirely offline with no external requests. The encryption passcode for backups is chosen by you and never stored; if it is lost, the backup cannot be recovered."},
             ].map((h,i)=>(<div key={i} id={"help-"+i} className="help-section"><h3 className="sec-title">{h.t}</h3><p className="help-body">{h.b}</p></div>))}
           </>)}
 
           {/* ═══ SELF REPORT ═══ */}
           {view==="selfreport"&&(<>
-            <div className="contacts-header"><div><h1 className="page-title">🗣 Self Report</h1><p className="page-sub" style={{margin:"4px 0 0"}}>{isReadOnly?"Share how you're feeling. Your care team will see these updates.":"Client self-reported health and wellness updates."}</p>
+            <div className="contacts-header"><div><h1 className="page-title">🗣 Self Report</h1><p className="page-sub" style={{margin:"4px 0 0"}}>{isReadOnly?"Share how you're feeling. Your care circle will see these updates.":"Client self-reported health and wellness updates."}</p>
               {isClient&&srChainStatus&&srChainStatus.status==="ok"&&<p className="page-sub" style={{margin:"4px 0 0",color:"var(--color-text-success)"}}>🔏 Your updates are permanent — they can't be deleted or changed by anyone.</p>}
               {/* Deliberately NO client-facing tamper warning: integrity failures surface on the caregiver
                   Security & Integrity panel and in the audit log. A "your words may have been altered" alarm
@@ -5604,7 +5590,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
               </div>
               {srPhotos.length>0&&<div className="photo-preview-row">{srPhotos.map((p,i)=>(<div key={i} className="photo-thumb"><img src={p} alt={"Photo "+(i+1)}/><button onClick={()=>setSrPhotos(prev=>prev.filter((_,j)=>j!==i))} className="photo-remove">×</button></div>))}</div>}
               <textarea value={srText} onChange={e=>{setSrText(e.target.value);setSrErr("")}} className="notes-ta" rows={3}
-                placeholder={srType==="mood"?"Add any details about how you're feeling…":srType==="pain"?"Where does it hurt? When did it start?":srType==="sleep"?"How did you sleep? Any nighttime issues?":srType==="concern"?"What's on your mind? Any questions for your care team?":srType==="audio"?"Add a text note to go with your recording (optional)…":"How are you feeling today? Any changes, concerns, or things you want your care team to know?"} />
+                placeholder={srType==="mood"?"Add any details about how you're feeling…":srType==="pain"?"Where does it hurt? When did it start?":srType==="sleep"?"How did you sleep? Any nighttime issues?":srType==="concern"?"What's on your mind? Any questions for your care circle?":srType==="audio"?"Add a text note to go with your recording (optional)…":"How are you feeling today? Any changes, concerns, or things you want your care circle to know?"} />
               {srErr&&<p className="sr-err">{srErr}</p>}
               <button onClick={submitSelfReport} className="save-btn" style={{marginTop:10}}>Submit Update</button>
             </div>
@@ -5631,39 +5617,39 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
 
           {/* ═══ SYNC ═══ */}
           {view==="sync"&&(<>
-            <h1 className="page-title">📡 Team Sync</h1>
-            <p className="page-sub">Keep your care team in sync. Set up once, then just press Sync.</p>
+            <h1 className="page-title">📡 Circle Sync</h1>
+            <p className="page-sub">Keep your care circle in sync. Set up once, then just press Sync.</p>
 
             {syncStatus&&<div className={`sync-status sync-status-${syncStatus.type}`}>{syncStatus.type==="success"?"✓":"✗"} {syncStatus.msg}</div>}
 
-            {/* Team */}
+            {/* Circle */}
             <div className="section">
-              <h3 className="sec-title">👥 Care Team</h3>
-              {!hasTeam()?(<>
-                <p className="hint">A care team connects everyone caring for the same person. One person creates the team, then shares an invite code with others.</p>
-                {!teamSetupMode&&(<div className="sync-methods">
-                  <div className="sync-method-card" onClick={()=>setTeamSetupMode("create")}><div className="sync-method-icon">✦</div><div className="sync-method-info"><strong>Create a Team</strong><span>You're the first caregiver setting this up</span></div></div>
-                  <div className="sync-method-card" onClick={()=>setTeamSetupMode("join")}><div className="sync-method-icon">🔗</div><div className="sync-method-info"><strong>Join a Team</strong><span>Someone shared an invite code with you</span></div></div>
+              <h3 className="sec-title">👥 Care Circle</h3>
+              {!hasCircle()?(<>
+                <p className="hint">A care circle connects everyone caring for the same person. One person creates the circle, then shares an invite code with others.</p>
+                {!circleSetupMode&&(<div className="sync-methods">
+                  <div className="sync-method-card" onClick={()=>setCircleSetupMode("create")}><div className="sync-method-icon">✦</div><div className="sync-method-info"><strong>Create a Circle</strong><span>You're the first caregiver setting this up</span></div></div>
+                  <div className="sync-method-card" onClick={()=>setCircleSetupMode("join")}><div className="sync-method-icon">🔗</div><div className="sync-method-info"><strong>Join a Circle</strong><span>Someone shared an invite code with you</span></div></div>
                 </div>)}
-                {teamSetupMode==="create"&&<CreateTeamForm data={data} flash={flash} createTeam={createTeam} setTeamSetupMode={setTeamSetupMode}/>}
-                {teamSetupMode==="join"&&<JoinTeamForm data={data} joinCode={joinCode} setJoinCode={setJoinCode} parseInviteCode={parseInviteCode} flash={flash} joinTeamFromCode={joinTeamFromCode} setTeamSetupMode={setTeamSetupMode}/>}
+                {circleSetupMode==="create"&&<CreateCircleForm data={data} flash={flash} createCircle={createCircle} setCircleSetupMode={setCircleSetupMode}/>}
+                {circleSetupMode==="join"&&<JoinCircleForm data={data} joinCode={joinCode} setJoinCode={setJoinCode} parseInviteCode={parseInviteCode} flash={flash} joinCircleFromCode={joinCircleFromCode} setCircleSetupMode={setCircleSetupMode}/>}
               </>):(<>
-                {/* Team is set up — show roster */}
-                <div className="team-header">
-                  <div className="team-header-info">
-                    <div className="team-name">{getTeam().name}</div>
-                    <div className="team-client">Caring for: <strong>{getTeam().clientName}</strong></div>
+                {/* Circle is set up — show roster */}
+                <div className="circle-header">
+                  <div className="circle-header-info">
+                    <div className="circle-name">{getCircle().name}</div>
+                    <div className="circle-client">Caring for: <strong>{getCircle().clientName}</strong></div>
                   </div>
                 </div>
-                <div className="team-roster">
-                  {(getTeam().members||[]).map((m,i)=>{const rl=ROLES.find(r=>r.key===m.role_key);return(<div key={m.deviceId||i} className={`team-member ${m.deviceId===(data.settings&&data.settings.deviceId)?"team-member-self":""}`}>
-                    <div className="team-member-avatar">{m.name?m.name[0].toUpperCase():"?"}</div>
-                    <div className="team-member-info">
-                      <div className="team-member-name">{m.name}{m.deviceId===(data.settings&&data.settings.deviceId)&&<span className="team-member-you"> (you)</span>}</div>
-                      <div className="team-member-role">{(rl&&rl.icon)||"👤"} {m.role||(rl&&rl.label)||"Member"}</div>
+                <div className="circle-roster">
+                  {(getCircle().members||[]).map((m,i)=>{const rl=ROLES.find(r=>r.key===m.role_key);return(<div key={m.deviceId||i} className={`circle-member ${m.deviceId===(data.settings&&data.settings.deviceId)?"circle-member-self":""}`}>
+                    <div className="circle-member-avatar">{m.name?m.name[0].toUpperCase():"?"}</div>
+                    <div className="circle-member-info">
+                      <div className="circle-member-name">{m.name}{m.deviceId===(data.settings&&data.settings.deviceId)&&<span className="circle-member-you"> (you)</span>}</div>
+                      <div className="circle-member-role">{(rl&&rl.icon)||"👤"} {m.role||(rl&&rl.label)||"Member"}</div>
                     </div>
-                    {isAdmin&&m.deviceId!==(data.settings&&data.settings.deviceId)&&<select value={m.role_key||"family"} onChange={e=>{const newKey=e.target.value;setData(p=>{const team={...p.settings.team,members:p.settings.team.members.map(x=>x.deviceId===m.deviceId?{...x,role_key:newKey}:x)};return{...p,settings:{...p.settings,team}}});flash(`${m.name} is now ${(ROLES.find(r=>r.key===newKey)||{}).label}`)}} className="cf-select" style={{width:"auto",fontSize:"0.8889rem",padding:"4px 8px"}}>{ROLES.filter(r=>!r.key.startsWith("client")).map(r=>(<option key={r.key} value={r.key}>{r.icon} {r.label}</option>))}</select>}
-                    <div className="team-member-sync">{m.lastSync?new Date(m.lastSync).toLocaleDateString():"Not synced"}</div>
+                    {isAdmin&&m.deviceId!==(data.settings&&data.settings.deviceId)&&<select value={m.role_key||"family"} onChange={e=>{const newKey=e.target.value;setData(p=>{const circle={...p.settings.circle,members:p.settings.circle.members.map(x=>x.deviceId===m.deviceId?{...x,role_key:newKey}:x)};return{...p,settings:{...p.settings,circle}}});flash(`${m.name} is now ${(ROLES.find(r=>r.key===newKey)||{}).label}`)}} className="cf-select" style={{width:"auto",fontSize:"0.8889rem",padding:"4px 8px"}}>{ROLES.filter(r=>!r.key.startsWith("client")).map(r=>(<option key={r.key} value={r.key}>{r.icon} {r.label}</option>))}</select>}
+                    <div className="circle-member-sync">{m.lastSync?new Date(m.lastSync).toLocaleDateString():"Not synced"}</div>
                   </div>)})}
                 </div>
 
@@ -5677,11 +5663,11 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
                   </div>
                 </div>}
                 {/* Invite code */}
-                <details className="team-invite-details">
-                  <summary className="sync-paste-summary">📨 Invite another team member</summary>
-                  <p className="hint">Share this invite code with new team members. They'll enter it under "Join a Team." Share the sync passcode separately (verbally or via secure message).</p>
-                  <div className="team-invite-code" onClick={()=>{try{navigator.clipboard.writeText(generateInviteCode());flash("Invite code copied to clipboard.")}catch{}}}>{generateInviteCode()}</div>
-                  <p className="hint" style={{marginTop:4}}>Tap to copy. Paste in a text message, email, or Signal chat to your new team member.</p>
+                <details className="circle-invite-details">
+                  <summary className="sync-paste-summary">📨 Invite another circle member</summary>
+                  <p className="hint">Share this invite code with new circle members. They'll enter it under "Join a Circle." Share the sync passcode separately (verbally or via secure message).</p>
+                  <div className="circle-invite-code" onClick={()=>{try{navigator.clipboard.writeText(generateInviteCode());flash("Invite code copied to clipboard.")}catch{}}}>{generateInviteCode()}</div>
+                  <p className="hint" style={{marginTop:4}}>Tap to copy. Paste in a text message, email, or Signal chat to your new circle member.</p>
                 </details>
               </>)}
             </div>
@@ -5690,35 +5676,35 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
                 page the people reading the roster can't open. */}
             <div className="section">
               <h3 className="sec-title">📱 This device</h3>
-              <p className="hint" style={{marginTop:0}}>Name this device so your team can tell whose updates are whose.</p>
+              <p className="hint" style={{marginTop:0}}>Name this device so your circle can tell whose updates are whose.</p>
               <label className="cf-label" style={{maxWidth:"min(100%,22.22rem)"}}>Device name<input value={(data.settings&&data.settings.deviceName)||""} onChange={e=>setData(p=>({...p,settings:{...p.settings,deviceName:e.target.value}}))} className="cf-input" placeholder="e.g., David's phone, Sarah's laptop"/></label>
               {(data._sync&&data._sync.lastMerge)&&<p className="hint" style={{marginTop:8}}>Last merge: {new Date(data._sync.lastMerge).toLocaleString()} from {data._sync.mergedFromName||data._sync.mergedFrom||"unknown"}</p>}
             </div>
-            {/* Merging a teammate's file is a sync job. It used to sit under a
+            {/* Merging a circle member's file is a sync job. It used to sit under a
                 heading that said "Backup", which implied it was how you recover. */}
             {!isReadOnly&&<div className="section">
-              <h3 className="sec-title">📥 Bring in a teammate's updates</h3>
+              <h3 className="sec-title">📥 Bring in a circle member's updates</h3>
               <p className="hint" style={{marginTop:0}}>If someone sends you their file instead of syncing, open it here. New items are added and more recent changes win — you'll see exactly what changes before anything is applied.</p>
               <div className="settings-row"><input value={importPw} onChange={e=>setImportPw(e.target.value)} className="cf-input" placeholder="Their passcode for the file" type="password" style={{maxWidth:"min(100%,13rem)"}}/><button onClick={()=>(importFileRef.current&&importFileRef.current.click)()} className="save-btn">↑ Choose file &amp; preview</button></div>
               <p className="hint" style={{marginTop:10}}>Recovering your own data after losing a device is a different job — that's on the Backups screen.</p>
             </div>}
-            {/* The team key — shown, not invented. Nobody memorises it and nobody
+            {/* The circle key — shown, not invented. Nobody memorises it and nobody
                 re-types it; it is transferred once when a member joins. */}
-            {hasTeam()&&(()=>{const t=getTeam();return(<div className="section">
-              <h3 className="sec-title">🔑 Team key</h3>
+            {hasCircle()&&(()=>{const t=getCircle();return(<div className="section">
+              <h3 className="sec-title">🔑 Circle key</h3>
               {t.key?(<>
                 <p className="hint" style={{marginTop:0}}>Every member's device needs this key once, and then never again. It's what keeps your synced records unreadable to Google, Dropbox or anyone else holding the file.</p>
                 <div className="recovery-code-box">{t.key}</div>
                 <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:10}}>
-                  <button className="mini-btn" onClick={()=>{try{navigator.clipboard.writeText(t.key);flash("Team key copied.")}catch{flash("Couldn't copy — read it from the screen.")}}}>Copy key</button>
+                  <button className="mini-btn" onClick={()=>{try{navigator.clipboard.writeText(t.key);flash("Circle key copied.")}catch{flash("Couldn't copy — read it from the screen.")}}}>Copy key</button>
                 </div>
                 <p className="hint" style={{marginTop:10}}><strong>Send it separately from the invite code</strong> — read it down the phone, or use a different app. Two messages that each carry half are far safer than one that carries both.</p>
               </>):(<>
-                <p className="hint" style={{marginTop:0}}>This team was set up before generated keys. Members still have to type a shared sync passcode every session. Switching to a generated key ends that.</p>
+                <p className="hint" style={{marginTop:0}}>This circle was set up before generated keys. Members still have to type a shared sync passcode every session. Switching to a generated key ends that.</p>
                 <div className="cf-grid" style={{maxWidth:"min(100%,22.22rem)"}}>
-                  <label className="cf-label">Current sync passcode<input value={getSyncPasscode()} onChange={e=>setSyncPasscode(e.target.value)} className="cf-input" type="password" placeholder="Shared with all team members"/></label>
+                  <label className="cf-label">Current sync passcode<input value={getSyncPasscode()} onChange={e=>setSyncPasscode(e.target.value)} className="cf-input" type="password" placeholder="Shared with all circle members"/></label>
                 </div>
-                <button className="save-btn" style={{marginTop:10}} onClick={adoptTeamKey}>Switch to a generated key</button>
+                <button className="save-btn" style={{marginTop:10}} onClick={adoptCircleKey}>Switch to a generated key</button>
                 <p className="hint" style={{marginTop:8}}>Everyone will need the new key once. Until they have it, they won't sync.</p>
               </>)}
             </div>)})()}
@@ -5740,7 +5726,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
                   <div className="cloud-setup-steps">
                     <div className="cloud-step"><span className="cloud-step-num">1</span><span>Create a shared folder in Google Drive, Dropbox, iCloud, or OneDrive</span></div>
                     <div className="cloud-step"><span className="cloud-step-num">2</span><span>Tap below — save the sync file into that shared folder</span></div>
-                    <div className="cloud-step"><span className="cloud-step-num">3</span><span>Each team member selects the same file on their device</span></div>
+                    <div className="cloud-step"><span className="cloud-step-num">3</span><span>Each circle member selects the same file on their device</span></div>
                   </div>
                   <button onClick={cloudConnect} className="save-btn" style={{marginTop:12}}>{hasFileSystemAccess?"📁 Connect Cloud Folder":"⚠ Browser Not Supported (use Chrome/Edge)"}</button>
                 </>):(<div className="cloud-connected-info">
@@ -5756,7 +5742,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
                 <div className="cloud-setup-steps">
                   <div className="cloud-step"><span className="cloud-step-num">1</span><span>Deploy the sync server on your own hardware (see sync-server.js)</span></div>
                   <div className="cloud-step"><span className="cloud-step-num">2</span><span>Enter the server URL and API key below</span></div>
-                  <div className="cloud-step"><span className="cloud-step-num">3</span><span>All team members use the same URL, API key, and sync passcode</span></div>
+                  <div className="cloud-step"><span className="cloud-step-num">3</span><span>All circle members use the same URL, API key, and sync passcode</span></div>
                 </div>
                 <div className="cf-grid" style={{maxWidth:"min(100%,27.78rem)",marginTop:12}}>
                   <label className="cf-label">Server URL<input value={getServerUrl()} onChange={e=>setServerConfig(e.target.value,getServerApiKey())} className="cf-input" placeholder="https://your-server.example.com"/></label>
@@ -5778,7 +5764,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
               <button onClick={syncNow} disabled={cloudSyncing||!getSyncPasscode()} className="cloud-sync-btn">
                 {cloudSyncing?<><span className="doc-spinner" style={{borderTopColor:"var(--color-text-warning)",borderColor:"rgba(255,255,255,.3)",width:18,height:18}}/>Syncing...</>:"📡 Sync Now"}
               </button>
-              <p className="hint" style={{textAlign:"center",marginTop:8}}>Pulls team changes, merges, and pushes your updates — all in one tap.</p>
+              <p className="hint" style={{textAlign:"center",marginTop:8}}>Pulls circle changes, merges, and pushes your updates — all in one tap.</p>
             </div>)}
 
             {/* Advanced / Manual Options */}
@@ -5823,28 +5809,28 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
 
           {/* ═══ MESSAGES ═══ */}
           {view==="messages"&&(()=>{
-            const team=data.settings&&data.settings.team;
-            const members=(team&&team.members)||[];
+            const circle=data.settings&&data.settings.circle;
+            const members=(circle&&circle.members)||[];
             const did=data.settings&&data.settings.deviceId;
             const myMember=members.find(m=>m.deviceId===did);
             const myName=(data.settings&&data.settings.deviceName)||(myMember&&myMember.name)||"";
             const myRole=(myMember&&myMember.role)||"";
-            const teamMembers=members;
-            const getMemberInfo=(name)=>teamMembers.find(m=>m.name===name)||null;
+            const circleMembers=members;
+            const getMemberInfo=(name)=>circleMembers.find(m=>m.name===name)||null;
             return(<>
-            <h1 className="page-title">✉ Care Team Messages</h1>
-            <p className="page-sub">{hasTeam()?`${getTeam().name} — caring for ${getTeam().clientName}`:"A shared message board for care team coordination. Syncs via encrypted backup or team sync."}</p>
+            <h1 className="page-title">✉ Care Circle Messages</h1>
+            <p className="page-sub">{hasCircle()?`${getCircle().name} — caring for ${getCircle().clientName}`:"A shared message board for care circle coordination. Syncs via encrypted backup or circle sync."}</p>
             {!isReadOnly&&<div className="msg-compose">
-              {hasTeam()?(<div className="msg-sender"><div className="team-member-avatar" style={{width:28,height:28,fontSize:"0.963rem"}}>{myName?myName[0].toUpperCase():"?"}</div><span className="msg-sender-name">{myName}{myRole&&<span className="msg-sender-role"> · {myRole}</span>}</span></div>
+              {hasCircle()?(<div className="msg-sender"><div className="circle-member-avatar" style={{width:28,height:28,fontSize:"0.963rem"}}>{myName?myName[0].toUpperCase():"?"}</div><span className="msg-sender-name">{myName}{myRole&&<span className="msg-sender-role"> · {myRole}</span>}</span></div>
               ):(<input value={msgFrom} onChange={e=>setMsgFrom(e.target.value)} placeholder="Your name" className="cf-input" style={{width:160}}/>)}
-              <input value={msgText} onChange={e=>setMsgText(e.target.value)} onKeyDown={e=>e.key==="Enter"&&(hasTeam()?myName:msgFrom.trim())&&msgText.trim()&&sendMessage()} placeholder="Type a message…" className="cf-input" style={{flex:1}}/>
-              <button onClick={()=>{if(hasTeam()&&myName){setMsgFrom(myName)}sendMessage()}} disabled={!msgText.trim()||!(hasTeam()?myName:msgFrom.trim())} className="save-btn" style={{opacity:msgText.trim()&&(hasTeam()?myName:msgFrom.trim())?1:.4}}>Send</button>
+              <input value={msgText} onChange={e=>setMsgText(e.target.value)} onKeyDown={e=>e.key==="Enter"&&(hasCircle()?myName:msgFrom.trim())&&msgText.trim()&&sendMessage()} placeholder="Type a message…" className="cf-input" style={{flex:1}}/>
+              <button onClick={()=>{if(hasCircle()&&myName){setMsgFrom(myName)}sendMessage()}} disabled={!msgText.trim()||!(hasCircle()?myName:msgFrom.trim())} className="save-btn" style={{opacity:msgText.trim()&&(hasCircle()?myName:msgFrom.trim())?1:.4}}>Send</button>
             </div>}
             <div className="msg-list">
-              {(data.messages||[]).length===0?<p className="contacts-empty">No messages yet.{!hasTeam()?" Set up a care team in the Sync tab to get started.":""}</p>:
+              {(data.messages||[]).length===0?<p className="contacts-empty">No messages yet.{!hasCircle()?" Set up a care circle in the Sync tab to get started.":""}</p>:
                 [...(data.messages||[])].reverse().map(m=>{const member=getMemberInfo(m.from);const isMe=m.from===myName;return(<div key={m.id} className={`msg-bubble ${isMe?"msg-self":""}`}>
                   <div className="msg-meta">
-                    {member&&<div className="team-member-avatar" style={{width:24,height:24,fontSize:"0.8148rem",background:isMe?"var(--color-action-primary)":"var(--color-text-muted)"}}>{m.from[0].toUpperCase()}</div>}
+                    {member&&<div className="circle-member-avatar" style={{width:24,height:24,fontSize:"0.8148rem",background:isMe?"var(--color-action-primary)":"var(--color-text-muted)"}}>{m.from[0].toUpperCase()}</div>}
                     <strong>{m.from}</strong>{member&&<span className="msg-role">{member.role}</span>}
                     <span className="msg-time">{m.timestamp}</span>
                   </div>
@@ -5856,7 +5842,7 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
           {/* ═══ SETTINGS ═══ */}
           {view==="settings"&&(<>
             <h1 className="page-title">⚙ Settings</h1>
-            {!can("manage-settings")?<p className="page-sub">Settings are managed by your team's admin. Backups are on the Backups screen, in the Care Hub menu.</p>:(<>
+            {!can("manage-settings")?<p className="page-sub">Settings are managed by your circle's admin. Backups are on the Backups screen, in the Care Hub menu.</p>:(<>
               <p className="page-sub">Passcodes, region, and the security record for this install.</p>
               <div className="section"><h3 className="sec-title">🗺 State / Region</h3>
                 <p className="hint">Choose your state for localized Medicaid thresholds, legal citations, program names, and resources. Generic mode provides universal guidance with no state-specific details.</p>
@@ -6208,10 +6194,10 @@ const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{cons
                   ...(can("view-financial")?[{icon:"◈",label:getDomLabel("financial"),view:"financial"}]:[]),
                 ]},
                 {label:"Administration", items:[
-                  ...(can("manage-team")?[{icon:"👥",label:"Team members & roles",view:"settings",sub:"Invite, assign roles, remove"}]:[]),
+                  ...(can("manage-circle")?[{icon:"👥",label:"Circle members & roles",view:"settings",sub:"Invite, assign roles, remove"}]:[]),
                   ...(can("view-expenses")?[{icon:"$",label:"Daily expenses",view:"expenses"}]:[]),
                   ...(can("export-data")?[{icon:"🛟",label:"Backups",view:"backups",sub:"Save and restore your records"}]:[]),
-                  ...(can("manage-sync")?[{icon:"📡",label:"Team sync",view:"sync"}]:[]),
+                  ...(can("manage-sync")?[{icon:"📡",label:"Circle sync",view:"sync"}]:[]),
                   {icon:"🅰",label:"Display settings",view:"display",sub:"Text size, contrast"},
                   ...(can("manage-settings")?[{icon:"⚙",label:"All settings",view:"settings",sub:"Passcodes, state, export & import"}]:[]),
                 ]},
@@ -6881,23 +6867,23 @@ select.cf-input{background:var(--color-surface)}.cf-actions{display:flex;gap:8px
 .sync-sub-title{font-size:0.963rem;font-weight:700;color:var(--color-text-secondary);margin:16px 0 8px}
 .sync-method-tabs{display:flex;gap:8px;margin-bottom:16px}
 
-/* team */
-.team-form{margin-top:12px;display:flex;flex-direction:column;gap:8px;max-width:min(100%,22.22rem)}
-.team-header{margin-bottom:16px}
-.team-name{font-size:1.3333rem;font-weight:700;color:var(--color-text-primary);font-family:var(--font-ui)}
-.team-client{font-size:1.037rem;color:var(--color-text-secondary);margin-top:2px}
-.team-roster{display:flex;flex-direction:column;gap:8px;margin-bottom:16px}
-.team-member{display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:10px}
-.team-member-self{background:var(--color-background-info);border-color:var(--color-border-info)}
-.team-member-avatar{width:36px;height:36px;border-radius:50%;background:var(--color-action-primary);color:var(--color-text-on-fill);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.1852rem;flex-shrink:0}
-.team-member-info{flex:1;min-width:0}
-.team-member-name{font-size:1.037rem;font-weight:600;color:var(--color-text-primary)}
-.team-member-you{font-size:0.8148rem;color:var(--color-action-primary);font-weight:400}
-.team-member-role{font-size:0.8889rem;color:var(--color-text-muted)}
-.team-member-sync{font-size:0.8148rem;color:var(--color-text-muted);text-align:right;flex-shrink:0}
-.team-invite-details{margin-top:8px;padding-top:8px;border-top:1px solid var(--color-border-subtle)}
-.team-invite-code{font-family:monospace;font-size:0.8148rem;padding:10px 14px;background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:8px;word-break:break-all;cursor:pointer;color:var(--color-action-primary);transition:background .12s;line-height:1.5}
-.team-invite-code:hover{background:var(--color-background-info)}
+/* circle */
+.circle-form{margin-top:12px;display:flex;flex-direction:column;gap:8px;max-width:min(100%,22.22rem)}
+.circle-header{margin-bottom:16px}
+.circle-name{font-size:1.3333rem;font-weight:700;color:var(--color-text-primary);font-family:var(--font-ui)}
+.circle-client{font-size:1.037rem;color:var(--color-text-secondary);margin-top:2px}
+.circle-roster{display:flex;flex-direction:column;gap:8px;margin-bottom:16px}
+.circle-member{display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:10px}
+.circle-member-self{background:var(--color-background-info);border-color:var(--color-border-info)}
+.circle-member-avatar{width:36px;height:36px;border-radius:50%;background:var(--color-action-primary);color:var(--color-text-on-fill);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.1852rem;flex-shrink:0}
+.circle-member-info{flex:1;min-width:0}
+.circle-member-name{font-size:1.037rem;font-weight:600;color:var(--color-text-primary)}
+.circle-member-you{font-size:0.8148rem;color:var(--color-action-primary);font-weight:400}
+.circle-member-role{font-size:0.8889rem;color:var(--color-text-muted)}
+.circle-member-sync{font-size:0.8148rem;color:var(--color-text-muted);text-align:right;flex-shrink:0}
+.circle-invite-details{margin-top:8px;padding-top:8px;border-top:1px solid var(--color-border-subtle)}
+.circle-invite-code{font-family:monospace;font-size:0.8148rem;padding:10px 14px;background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:8px;word-break:break-all;cursor:pointer;color:var(--color-action-primary);transition:background .12s;line-height:1.5}
+.circle-invite-code:hover{background:var(--color-background-info)}
 .client-tier-section{margin-top:16px;padding-top:16px;border-top:1px solid var(--color-border-subtle)}
 .client-tier-toggle{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
 .client-tier-toggle .state-btn{flex:1;min-width:180px;text-align:left;display:flex;flex-direction:column;gap:2px;padding:12px 16px}

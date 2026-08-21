@@ -14,7 +14,7 @@ This document maps Care Guardian's technical safeguards to the HIPAA Security Ru
 
 | Specification | Status | Implementation |
 |--------------|--------|----------------|
-| **Unique User Identification** (Required) | ✅ Compliant | Each device has a unique `deviceId` generated on first use. Team roster tracks each member by device ID, name, and role. All audit log entries include user identification. |
+| **Unique User Identification** (Required) | ✅ Compliant | Each device has a unique `deviceId` generated on first use. Circle roster tracks each member by device ID, name, and role. All audit log entries include user identification. |
 | **Emergency Access Procedures** (Required) | ✅ Compliant | Encrypted backup export allows data recovery on a new device. The setup wizard generates passcodes that should be documented in a secure location (e.g., sealed envelope with attorney). If both passcodes are lost, data is unrecoverable by design — no backdoor exists. |
 | **Automatic Logoff** (Addressable) | ✅ Implemented | 15-minute inactivity timeout. DEK cleared from memory on logoff. Session requires re-authentication. |
 | **Encryption and Decryption** (Addressable) | ✅ Implemented | AES-256-GCM encryption at rest. PBKDF2 key derivation (100,000 iterations, SHA-256). Random 256-bit Data Encryption Key (DEK) wrapped separately with caregiver and client passcodes. No plaintext ePHI stored at any time. |
@@ -110,7 +110,7 @@ Per HHS guidance, encrypted data that meets NIST standards is excluded from brea
 
 1. **Multi-factor authentication (MFA):** Now **supported** for professional roles (Admin, Care Professional) via opt-in PRF-bound WebAuthn passkeys with a one-time recovery code (see §164.312(d)). It is opt-in rather than forced because the family-caregiver use case must not require a passkey. Regarding the regulation: the 2025 NPRM proposed making MFA mandatory and removing the "addressable" loophole, but **as of mid-2026 it remains a proposed rule — OCR has not issued a final rule**, and the spring-2026 finalization window passed without one. Auditors already treat MFA as a baseline expectation, so professional/covered-entity deployments should enable it.
 
-2. **No centralized user management:** User accounts are device-based, not centrally managed. Adding or revoking access requires the Admin to modify the team roster and change the caregiver passcode.
+2. **No centralized user management:** User accounts are device-based, not centrally managed. Adding or revoking access requires the Admin to modify the circle roster and change the caregiver passcode.
 
 3. **Audit log is stored locally:** The audit log is part of the encrypted vault. If the vault is deleted, the audit log is lost. Organizations should export the audit log regularly.
 

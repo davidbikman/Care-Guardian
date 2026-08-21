@@ -6,7 +6,7 @@ A privacy-first PWA for family caregivers managing a client with dementia. Encry
 
 ## What It Does
 
-Care Guardian gives a dementia care team — family members, hired aides, the care recipient — a single private place to track progress across five care domains, coordinate shifts, log incidents, manage medications, store documents, and communicate. Every byte of data is AES-256-GCM encrypted on the device. Nothing is transmitted without explicit user action and end-to-end encryption.
+Care Guardian gives a dementia care circle — family members, hired aides, the care recipient — a single private place to track progress across five care domains, coordinate shifts, log incidents, manage medications, store documents, and communicate. Every byte of data is AES-256-GCM encrypted on the device. Nothing is transmitted without explicit user action and end-to-end encryption.
 
 ## Architecture
 
@@ -31,7 +31,7 @@ Care Guardian uses a split storage architecture designed for the full lifecycle 
 
 ## Binary Media Partitioning
 
-Photos (incident and self-report attachments) and voice notes are stored **outside** the main JSON vault, in a separate encrypted IndexedDB object store, with only a small `blobref:<id>` placeholder kept inline. Each blob is encrypted with the same vault DEK (AES-256-GCM, fresh IV). This keeps the main vault JSON small, which directly addresses the write-amplification / out-of-memory risk on low-end devices: a new photo no longer bloats the snapshot, the write-ahead-log diff, or the per-save encryption — the diff contains only the reference. Blobs travel with every encrypted export, team sync, and continuous backup (inlined under a transient `_blobs` map) and are restored — re-encrypted under the importing device's key — on import and on post-eviction recovery. Deleting a record runs a mark-and-sweep that securely purges its now-unreferenced blobs (a grace window protects just-attached media; a referenced blob is never deleted — proven in tests/gc-test.mjs), so deleted media is removed from disk. Legacy inline images from older vaults continue to render and remain supported; only newly attached media is partitioned. Proven in tests/blob-test.mjs and tests/blob-roundtrip-test.mjs (ref collection, package/ingest round-trip, and a real-AES-GCM end-to-end that confirms a photo survives export→import under a different key, byte-identical, with no base64 left in the vault JSON).
+Photos (incident and self-report attachments) and voice notes are stored **outside** the main JSON vault, in a separate encrypted IndexedDB object store, with only a small `blobref:<id>` placeholder kept inline. Each blob is encrypted with the same vault DEK (AES-256-GCM, fresh IV). This keeps the main vault JSON small, which directly addresses the write-amplification / out-of-memory risk on low-end devices: a new photo no longer bloats the snapshot, the write-ahead-log diff, or the per-save encryption — the diff contains only the reference. Blobs travel with every encrypted export, circle sync, and continuous backup (inlined under a transient `_blobs` map) and are restored — re-encrypted under the importing device's key — on import and on post-eviction recovery. Deleting a record runs a mark-and-sweep that securely purges its now-unreferenced blobs (a grace window protects just-attached media; a referenced blob is never deleted — proven in tests/gc-test.mjs), so deleted media is removed from disk. Legacy inline images from older vaults continue to render and remain supported; only newly attached media is partitioned. Proven in tests/blob-test.mjs and tests/blob-roundtrip-test.mjs (ref collection, package/ingest round-trip, and a real-AES-GCM end-to-end that confirms a photo survives export→import under a different key, byte-identical, with no base64 left in the vault JSON).
 
 ## Data Durability & Recovery
 
@@ -81,7 +81,7 @@ Because the merge is a serverless append-only union, a compromised or runaway de
 
 ## Schema Versioning & Migration Policy
 
-The vault carries a `schemaVersion` stamp. On load, a vault written by a newer app build than the one running is detected and the user is warned not to make changes (so an out-of-date device on a mixed-version team cannot silently clobber newer data). The forward-looking migration policy is **never migrate the primary vault in place**: the existing A/B snapshot mechanism already writes a new snapshot to the inactive slot, verifies the AES-GCM authentication tag on read-back, and only then flips the active-slot pointer — so a future schema migration writes the transformed data to the inactive slot, validates it, and atomically swaps, never leaving a half-migrated or corrupted vault.
+The vault carries a `schemaVersion` stamp. On load, a vault written by a newer app build than the one running is detected and the user is warned not to make changes (so an out-of-date device on a mixed-version circle cannot silently clobber newer data). The forward-looking migration policy is **never migrate the primary vault in place**: the existing A/B snapshot mechanism already writes a new snapshot to the inactive slot, verifies the AES-GCM authentication tag on read-back, and only then flips the active-slot pointer — so a future schema migration writes the transformed data to the inactive slot, validates it, and atomically swaps, never leaving a half-migrated or corrupted vault.
 
 ## HIPAA Compliance
 
@@ -121,7 +121,7 @@ from anywhere.
 messages (with unread badge) on the right.
 
 **Care Hub menu** holds everything administrative or infrequent, grouped into
-Care domains, Administration (team, expenses, sync, display settings, full
+Care domains, Administration (circle, expenses, sync, display settings, full
 settings), Monitoring (escalation triggers, tracking, visit prep),
 Documentation (POA decisions, capacity observations, care plan binder,
 end-of-life planning, medical records and documents, care schedule), and Help.
@@ -151,8 +151,8 @@ Optional browser notifications (Notification API) check every 15 minutes for due
 
 | Role | Access | Passcode |
 |------|--------|----------|
-| **Admin** 👑 | Full access. Manages team, settings, passcodes. | Caregiver |
-| **Family** 👨‍👩‍👧 | Full view. Add, edit, export. No team/settings management. | Caregiver |
+| **Admin** 👑 | Full access. Manages circle, settings, passcodes. | Caregiver |
+| **Family** 👨‍👩‍👧 | Full view. Add, edit, export. No circle/settings management. | Caregiver |
 | **Care Professional** 🩺 | Health domains only. Log incidents, med admin, shifts, messages. No legal, financial, export, or delete. | Caregiver |
 | **Client (Independent)** 🟢 | Full view including legal/financial. Export. Self-reports. | Client |
 | **Client (Supported)** 🛡 | Self-reports, messages, schedule, medications, care domains — via a cryptographically scoped key that cannot decrypt anything else (see Cryptographic Role Scoping). | Client |
@@ -175,22 +175,22 @@ secret at the worst possible moment.
   ("Already have a backup file? Restore it"). Before, the recovery screen only
   appeared when wrapped keys survived locally, which is never true on a new
   device — so a backup file could not actually be restored onto one.
-- **Merging a teammate's file** lives on Team Sync, not under a "Backup"
+- **Merging a circle member's file** lives on Circle Sync, not under a "Backup"
   heading. It is a sync operation and was implying it was how you recover.
 
 ## Keys and Codes
 
 Seven distinct secrets became three. Two are memorised (caregiver and client
 passcodes); one is generated and saved (the Recovery Key). The invite code and
-team key are handled once at join time and never recalled.
+circle key are handled once at join time and never recalled.
 
 - **Recovery Key** — 125 bits, generated at setup, never invented. It opens
   backup files and, when MFA is enabled, is the same string as the passkey
   backstop, so a caregiver files away one key rather than two.
-- **Team key** — generated at team creation and stored in the vault, replacing
+- **Circle key** — generated at circle creation and stored in the vault, replacing
   a shared passcode that every member had to agree on and re-type *every
   session on every device* (`saveSyncPasscode` kept it in memory only, so the
-  screen's "set up once, then just press Sync" was not true). Teams created
+  screen's "set up once, then just press Sync" was not true). Circles created
   before this can adopt a generated key from the Sync screen.
 - **Invite codes** no longer carry the client's name. The payload is base64,
   which reads as ciphertext and is not, and these are sent by text message.
@@ -273,8 +273,8 @@ UI icons are sized ~30% larger than typical defaults for legibility. Saving an i
 - **Care Plan Binder** — comprehensive printable document compiled from all data including POA decisions and capacity assessments
 
 ### Coordination
-- **Team Management** — create/join teams, invite codes (no API key), role assignment, roster sync (cap 20, names sanitized)
-- **Messages** — team-integrated chat with avatar/role display
+- **Circle Management** — create/join circles, invite codes (no API key), role assignment, roster sync (cap 20, names sanitized)
+- **Messages** — circle-integrated chat with avatar/role display
 - **Shift Handoff Summary** — incidents since last sync, pending meds, messages, domain alerts
 - **Shift Schedule** — 7×7 weekly grid
 - **Contacts** — custom fields, categories, vCard import
@@ -301,7 +301,7 @@ UI icons are sized ~30% larger than typical defaults for legibility. Saving an i
 
 Oregon is the first state package (~346 sub-tasks with ORS citations, OSIPM thresholds, APD/ICP programs). Generic mode provides ~300 universal sub-tasks. Architecture supports additional state packages.
 
-## Team & Sync
+## Circle & Sync
 
 - **Cloud folder sync** — File System Access API, shared cloud folder
 - **Self-hosted server** — `sync-server.js` (169 lines, zero dependencies)
@@ -336,6 +336,6 @@ Upload `dist/` to any static host (Netlify, GitHub Pages, Vercel, Cloudflare Pag
 | Version | Storage | Key Changes |
 |---------|---------|-------------|
 | v1 | `demcare-v9` (localStorage, plaintext) | Initial build, ~1,811 lines |
-| v2 | `demcare-vault-v2` (localStorage, encrypted) | Encryption at rest, tiered access, team management, hub navigation, ~3,400 lines |
+| v2 | `demcare-vault-v2` (localStorage, encrypted) | Encryption at rest, tiered access, circle management, hub navigation, ~3,400 lines |
 | v3 | `demcare-keys-v3` (localStorage) + IndexedDB | **Current.** IndexedDB vault (1–12GB), HIPAA audit log, proactive reminders, universal search, POA decisions, capacity documentation, care plan binder, photo attachments, caregiver wellness, storage monitoring, 4 security audits. ~4,371 lines. |
 | v3.x hardening campaign | (same stores) + `blobs`, `proj-r`, `outbox-r` keys | Write-ahead-log durability; PBKDF2 600k; zero-egress bundling; hash-chained audit log with vault anchor; HLC merge ordering; PRF-bound multi-passkey MFA with recovery codes; binary media partitioning + secure-deletion GC; sync-flood circuit breaker; schema-version guard; cryptographic role scoping (client-restricted tier); append-only, hash-chained client self-reports; outbox hardening; scoped-session write lock. Seven external review rounds, all findings addressed. ~6,120 lines. |
