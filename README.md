@@ -6,7 +6,7 @@ A privacy-first PWA for family caregivers managing a client with dementia. Encry
 
 ## What It Does
 
-Care Guardian gives a dementia care team — family members, hired aides, the care recipient — a single private place to track progress across five care domains, coordinate shifts, log incidents, manage medications, store documents, and communicate. Every byte of data is AES-256-GCM encrypted on the device. Nothing is transmitted without explicit user action and end-to-end encryption.
+Care Guardian gives a dementia care circle — family members, hired aides, the care recipient — a single private place to track progress across five care domains, coordinate shifts, log incidents, manage medications, store documents, and communicate. Every byte of data is AES-256-GCM encrypted on the device. Nothing is transmitted without explicit user action and end-to-end encryption.
 
 ## Architecture
 
@@ -31,7 +31,7 @@ Care Guardian uses a split storage architecture designed for the full lifecycle 
 
 ## Binary Media Partitioning
 
-Photos (incident and self-report attachments) and voice notes are stored **outside** the main JSON vault, in a separate encrypted IndexedDB object store, with only a small `blobref:<id>` placeholder kept inline. Each blob is encrypted with the same vault DEK (AES-256-GCM, fresh IV). This keeps the main vault JSON small, which directly addresses the write-amplification / out-of-memory risk on low-end devices: a new photo no longer bloats the snapshot, the write-ahead-log diff, or the per-save encryption — the diff contains only the reference. Blobs travel with every encrypted export, team sync, and continuous backup (inlined under a transient `_blobs` map) and are restored — re-encrypted under the importing device's key — on import and on post-eviction recovery. Deleting a record runs a mark-and-sweep that securely purges its now-unreferenced blobs (a grace window protects just-attached media; a referenced blob is never deleted — proven in tests/gc-test.mjs), so deleted media is removed from disk. Legacy inline images from older vaults continue to render and remain supported; only newly attached media is partitioned. Proven in tests/blob-test.mjs and tests/blob-roundtrip-test.mjs (ref collection, package/ingest round-trip, and a real-AES-GCM end-to-end that confirms a photo survives export→import under a different key, byte-identical, with no base64 left in the vault JSON).
+Photos (incident and self-report attachments) and voice notes are stored **outside** the main JSON vault, in a separate encrypted IndexedDB object store, with only a small `blobref:<id>` placeholder kept inline. Each blob is encrypted with the same vault DEK (AES-256-GCM, fresh IV). This keeps the main vault JSON small, which directly addresses the write-amplification / out-of-memory risk on low-end devices: a new photo no longer bloats the snapshot, the write-ahead-log diff, or the per-save encryption — the diff contains only the reference. Blobs travel with every encrypted export, circle sync, and continuous backup (inlined under a transient `_blobs` map) and are restored — re-encrypted under the importing device's key — on import and on post-eviction recovery. Deleting a record runs a mark-and-sweep that securely purges its now-unreferenced blobs (a grace window protects just-attached media; a referenced blob is never deleted — proven in tests/gc-test.mjs), so deleted media is removed from disk. Legacy inline images from older vaults continue to render and remain supported; only newly attached media is partitioned. Proven in tests/blob-test.mjs and tests/blob-roundtrip-test.mjs (ref collection, package/ingest round-trip, and a real-AES-GCM end-to-end that confirms a photo survives export→import under a different key, byte-identical, with no base64 left in the vault JSON).
 
 ## Data Durability & Recovery
 
@@ -81,7 +81,7 @@ Because the merge is a serverless append-only union, a compromised or runaway de
 
 ## Schema Versioning & Migration Policy
 
-The vault carries a `schemaVersion` stamp. On load, a vault written by a newer app build than the one running is detected and the user is warned not to make changes (so an out-of-date device on a mixed-version team cannot silently clobber newer data). The forward-looking migration policy is **never migrate the primary vault in place**: the existing A/B snapshot mechanism already writes a new snapshot to the inactive slot, verifies the AES-GCM authentication tag on read-back, and only then flips the active-slot pointer — so a future schema migration writes the transformed data to the inactive slot, validates it, and atomically swaps, never leaving a half-migrated or corrupted vault.
+The vault carries a `schemaVersion` stamp. On load, a vault written by a newer app build than the one running is detected and the user is warned not to make changes (so an out-of-date device on a mixed-version circle cannot silently clobber newer data). The forward-looking migration policy is **never migrate the primary vault in place**: the existing A/B snapshot mechanism already writes a new snapshot to the inactive slot, verifies the AES-GCM authentication tag on read-back, and only then flips the active-slot pointer — so a future schema migration writes the transformed data to the inactive slot, validates it, and atomically swaps, never leaving a half-migrated or corrupted vault.
 
 ## HIPAA Compliance
 
@@ -103,16 +103,30 @@ Serve over HTTPS with HSTS. Set a restrictive Content-Security-Policy at the hos
 
 Safety-critical logic is proven in isolated, runnable suites (in `tests/`, run with `node tests/<file>`; all pass together): `wal-test`/`wal-core` (200k+ diff/apply round-trips, 20k replay chains) and `wal-sim` (crash and corrupt-snapshot pipeline simulation); `audit-chain-test` (tamper, deletion, truncation, recompute-limit); `hlc-test` (causal ordering, future-stamp DoS rejection); `mfa-core-test` (both factors required, multi-passkey, recovery is two-factor); `blob-test` and `blob-roundtrip-test` (real-AES-GCM media round-trip across different keys); `gc-test` (referenced blobs never deleted, orphans purged); `sync-flood-test` (hard and soft breaker thresholds); `zone-core-test` (scoped key cannot decrypt the private zone, one-way hierarchy, projection/outbox round-trip); and `srchain-test` (client-voice chain integrity plus outbox sanitizer hardening). What the harness cannot exercise is documented where relevant: the WebAuthn ceremony requires a real authenticator and is validated on devices, not headlessly.
 
-## Hub-and-Spoke Navigation
+## Task-Based Navigation
 
-Four bottom-bar hubs replace the previous 21-tab layout. Maximum depth: 3 taps to any feature.
+Four bottom-bar destinations, plus a persistent top bar. Each destination is a
+place where work happens rather than a menu of links, so the common actions —
+give a medication, log an incident, reach emergency information — are one tap
+from anywhere.
 
-| Hub | Contents |
+| Destination | Contents |
 |-----|----------|
-| **☀ Today** | Smart dashboard with proactive reminders, medication alerts, appointment previews, overdue task warnings, caregiver burnout alerts, quick actions (log incident, shift handoff, emergency card, self-report, caregiver check-in) |
-| **♥ Care plan** | Strategic overview grid, 5 care domains, legal/financial, escalation triggers, tracking, visit prep, emergency plans, POA decision log, capacity observations, care plan binder, end-of-life planning |
-| **📁 Records** | Incidents, incident patterns, medication admin, expenses, documents, contacts, calendar, shifts |
-| **👥 Team** | Messages, sync, self-reports, settings (HIPAA audit log, data integrity, storage monitoring, notifications), help |
+| **☀ Today** | Proactive reminders, medication alerts, overdue task warnings, caregiver burnout alerts, a weekly appointment strip with a month view, shift handoff, caregiver check-in, and a link into the five care domains |
+| **💊 Meds** | *Today's schedule* — the day's doses as tappable time slots, with the refusal protocol. *Cabinet* — the master medication list with purpose, prescriber, pharmacy and refill countdown |
+| **✎ Log** | Incident logging as the default view, with trigger and optional description. Patterns and the client's self-report as tabs |
+| **🚨 SOS** | Ordered by urgency: 911 dispatcher script → Emergency Info Card → six emergency scenario plans → categorised, photo-backed contact directory with tap-to-call |
+
+**Top bar (all screens):** hamburger opens the Care Hub menu; search and
+messages (with unread badge) on the right.
+
+**Care Hub menu** holds everything administrative or infrequent, grouped into
+Care domains, Administration (circle, expenses, sync, display settings, full
+settings), Monitoring (escalation triggers, tracking, visit prep),
+Documentation (POA decisions, capacity observations, care plan binder,
+end-of-life planning, medical records and documents, care schedule), and Help.
+Relocating a feature never widens who can see it: every item keeps the
+permission gate it had before.
 
 ## Proactive Reminder Engine
 
@@ -137,15 +151,137 @@ Optional browser notifications (Notification API) check every 15 minutes for due
 
 | Role | Access | Passcode |
 |------|--------|----------|
-| **Admin** 👑 | Full access. Manages team, settings, passcodes. | Caregiver |
-| **Family** 👨‍👩‍👧 | Full view. Add, edit, export. No team/settings management. | Caregiver |
+| **Admin** 👑 | Full access. Manages circle, settings, passcodes. | Caregiver |
+| **Family** 👨‍👩‍👧 | Full view. Add, edit, export. No circle/settings management. | Caregiver |
 | **Care Professional** 🩺 | Health domains only. Log incidents, med admin, shifts, messages. No legal, financial, export, or delete. | Caregiver |
 | **Client (Independent)** 🟢 | Full view including legal/financial. Export. Self-reports. | Client |
 | **Client (Supported)** 🛡 | Self-reports, messages, schedule, medications, care domains — via a cryptographically scoped key that cannot decrypt anything else (see Cryptographic Role Scoping). | Client |
+| **Observer** 👁 | Read-only. Views care domains, contacts, documents, schedules and messages. Cannot edit, add, delete, administer medications, or export. | Caregiver |
+
+## Backup & Restore
+
+One encrypted `.care` file, one Recovery Key, one place. Automatic saving (to
+the caregiver's cloud account, or to a local file via File System Access on
+Chromium browsers) and the manual **Save a copy now** button write the identical
+artifact locked with the identical key — previously
+these were separate features with separate passcode fields and different
+minimum-length rules, which meant a restore could be attempted with the wrong
+secret at the worst possible moment.
+
+- **Backups** is its own destination, gated on `export-data`, so Family and
+  Independent Client roles can reach it. It previously lived inside Settings,
+  which is admin-only — the backup reminder pointed there and Independent
+  Clients hit a "caregivers only" dead end.
+- **Restore** is reachable from the first screen of a fresh install
+  ("Already have a backup file? Restore it"). Before, the recovery screen only
+  appeared when wrapped keys survived locally, which is never true on a new
+  device — so a backup file could not actually be restored onto one.
+- **Merging a circle member's file** lives on Circle Sync, not under a "Backup"
+  heading. It is a sync operation and was implying it was how you recover.
+
+## Keys and Codes
+
+Seven distinct secrets became three. Two are memorised (caregiver and client
+passcodes); one is generated and saved (the Recovery Key). The invite code and
+circle key are handled once at join time and never recalled.
+
+- **Recovery Key** — 125 bits, generated at setup, never invented. It opens
+  backup files and, when MFA is enabled, is the same string as the passkey
+  backstop, so a caregiver files away one key rather than two.
+- **Circle key** — generated at circle creation and stored in the vault, replacing
+  a shared passcode that every member had to agree on and re-type *every
+  session on every device* (`saveSyncPasscode` kept it in memory only, so the
+  screen's "set up once, then just press Sync" was not true). Circles created
+  before this can adopt a generated key from the Sync screen.
+- **Invite codes** no longer carry the client's name. The payload is base64,
+  which reads as ciphertext and is not, and these are sent by text message.
+  Secrets stay out of it, as an earlier review round decided; the name is now
+  out for the same reason. v1 codes still parse.
+
+### Cloud backup (optional, off unless the build carries a client ID)
+
+The File System Access route is excellent where it works and absent where it
+isn't: Firefox and Safari have no picker, and even on Chromium the write
+permission lapses on every reopen, so "automatic" meant "automatic once you tap
+Resume". Backing up to the caregiver's own cloud account removes both limits.
+
+The file that goes up is byte-for-byte the file the manual export produces — the
+provider holds ciphertext and a filename. Google Drive is the wired provider,
+under scope `drive.file`, which grants sight of app-created files only.
+
+- **Auth is the GIS token model, not auth-code + PKCE.** Google has no public
+  web client type: its token endpoint requires a `client_secret` even under
+  PKCE, so a serverless app cannot complete the exchange and cannot hold a
+  refresh token. `initTokenClient` returns a short-lived access token instead,
+  renewed silently while the Google session is alive. The token lives in a ref
+  for the session and is never written to the vault.
+- **The GIS script is injected on first connect, not at load**, so a caregiver
+  who never uses cloud backup makes no external request at all.
+- **Uploads go through the outbox**, so a failure is retained and retried rather
+  than dropped, and an expired token is refreshed and retried once before the
+  caregiver is asked to do anything.
+- **The queue is held in a ref, not in the vault.** The push is triggered by
+  `data` changing, so persisting the queue into `data` would make each upload
+  schedule the next one indefinitely. Retry across launches is covered by
+  pushing once when a session connects.
+- **The object is named, not obfuscated.** Object names elsewhere in this layer
+  are HMAC-derived; a backup has to be findable by its owner from a device whose
+  vault is gone and which therefore cannot derive any name at all.
+- **Restore from the cloud** is offered on the same first-run recovery screen as
+  restore-from-file, and connects from scratch since a new device has no saved
+  provider settings to read.
+
+Failures are classified (`auth`, `quota`, `offline`, `outage`, `rate`,
+`missing`) and every class has copy that says where the records actually are,
+because that is the only question a caregiver reading an error has.
+
+### Backup file format (v3.0)
+
+The payload is encrypted under a random per-file key, and that file key is
+stored wrapped under each factor the caregiver actually holds:
+
+| Wrap | Factor | Present when |
+|---|---|---|
+| `recovery` | Recovery Key | always |
+| `passcode` | Caregiver passcode | passcode length ≥ `BACKUP_PW_MIN` (6) |
+
+Restore tries each wrap with whatever secret it is given, so either factor
+opens the file. The passcode wrap is gated because a backup can be copied and
+attacked offline: the gate holds the floor exactly where the old dedicated
+backup passcode put it, while adding a far stronger factor above it. The
+passcode is held in a session ref captured at unlock and cleared on lock — it
+is never persisted, and `settings.caregiverPasscode` is not maintained by the
+current key architecture. Built from the existing `encryptData`/`decryptData`
+primitives; no new cryptography. Files written as v2.0 still open unchanged.
 
 ## Usability & Accessibility
 
-UI icons (navigation, hub tiles, tab bar, controls) are sized ~30% larger than typical defaults for legibility. Saving an incident, expense, contact, or document resets that list's filter to "All" so the new record is visible. The app uses emotionally honest language ("Care Escalation" rather than euphemism), keeps After-Death planning accessible but low-profile, and reports "Saved" only after the write commits.
+The interface is built on a semantic design-token layer: components reference
+roles (`--color-text-danger`, `--color-background-warning`) rather than raw
+values, so dark mode re-points the tokens once instead of restating every
+component. Both palettes are authored against the same cool base rather than
+one being an inversion of the other.
+
+- **Type** — Atkinson Hyperlegible, designed for low vision, bundled locally
+  (no CDN request). Libre Baskerville is retained for printable documents —
+  the Care Plan Binder and Emergency Info Card — where a serif reads as a
+  record rather than a screen.
+- **Size** — every font size is expressed in `rem` against an 18px root, so the
+  Standard tier puts primary content text at 18px and the Large/Larger tiers
+  scale the whole interface via `--ui-scale-pct`. (Sizes were previously
+  hardcoded in px, which meant the tier setting changed a root nothing read.)
+- **Width** — the content column and dialogs are capped in `rem`, not px, so a
+  line holds about the same number of characters at every tier and a large text
+  setting widens the page to use the available screen rather than stranding a
+  narrow column in empty space.
+- **Tap targets** — a single `--tap-target-min` token at 56px, which scales up
+  with the text setting and never shrinks below it.
+- **Focus** — never removed, only restyled: a 3px ring on every interactive
+  control, for keyboard and switch access.
+- **Escape** — closes whichever overlay is topmost, so every dialog has a
+  keyboard exit and not only a Cancel button to point at.
+
+UI icons are sized ~30% larger than typical defaults for legibility. Saving an incident, expense, contact, or document resets that list's filter to "All" so the new record is visible. The app uses emotionally honest language ("Care Escalation" rather than euphemism), keeps After-Death planning accessible but low-profile, and reports "Saved" only after the write commits.
 
 ## Complete Feature List
 
@@ -156,16 +292,18 @@ UI icons (navigation, hub tiles, tab bar, controls) are sized ~30% larger than t
 - Sub-task edit, remove with restore, type override, custom sub-tasks
 
 ### Clinical Tools
-- **Incident Log** — 9 types, 4 severity levels, photo attachments (3 max, 2MB each, MIME validated), structured fields
-- **Incident Pattern Visualization** — type/severity distribution, time-of-day histogram, weekly trend
-- **Medication Admin Log** — daily grid, 6 time slots, tap-to-cycle, start dates, discontinued meds archived with restore
+- **Incident Log** — 9 types, 4 severity levels, 4 trigger options, photo attachments (3 max, 2MB each, MIME validated), structured fields. Type, severity and trigger are tap-select; only type is required to save, so an incident can be logged in seconds and detail added later
+- **Incident Pattern Visualization** — type/severity/trigger distribution, time-of-day histogram, weekly trend. The trigger chart counts only incidents that recorded one, so older records don't skew it
+- **Medication Schedule** — the day's doses as tappable time slots, 6 windows, tap-to-cycle, start dates, discontinued meds archived with restore
+- **Medicine Cabinet** — master list with plain-English purpose, pill appearance, prescriber, pharmacy and phone, and a refill countdown that flags overdue and due-within-a-week
+- **Refusal protocol** — a refusal opens Pause & Pivot: de-escalation guidance, a tap-select reason, then a branch on whether the medication is marked critical. Critical refusals surface missed-dose guidance and the prescriber's and pharmacy's numbers instead of being filed away silently
 - **Document Scanner** — client-side PDF extraction (pdf.js, bundled locally, lazy-loaded), ~200 drug + lab result parsers
 - **Document Library** — 10 categories, stored content, full viewer
 - **Self-Reports** — 6 types (text, voice, mood, pain, sleep, concern), photo attachments, individual deletion with permission guard, storage warning, CSV/text export, print
 - **Visit Prep Summary** — auto-generated from all data
 - **Emergency Action Plans** — 6 editable scenario cards
 - **Care Escalation Triggers** — 12 monitored conditions
-- **Emergency Info Card** — printable wallet card with diagnoses, meds, contacts, directive status
+- **Emergency Info Card** — printable wallet card with photo (for identification during a wandering episode), diagnoses, medications, allergies, code status (DNR/DNI/POLST), a baseline "what's normal for this person" note, flagged alert medications, contacts and directive status
 
 ### Legal & Documentation
 - **POA Decision Log** — 7 decision types, 3 urgency levels, 6 structured fields (decision, reasoning, known wishes, consulted, outcome, agent), exportable, included in binder
@@ -173,8 +311,8 @@ UI icons (navigation, hub tiles, tab bar, controls) are sized ~30% larger than t
 - **Care Plan Binder** — comprehensive printable document compiled from all data including POA decisions and capacity assessments
 
 ### Coordination
-- **Team Management** — create/join teams, invite codes (no API key), role assignment, roster sync (cap 20, names sanitized)
-- **Messages** — team-integrated chat with avatar/role display
+- **Circle Management** — create/join circles, invite codes (no API key), role assignment, roster sync (cap 20, names sanitized)
+- **Messages** — circle-integrated chat with avatar/role display
 - **Shift Handoff Summary** — incidents since last sync, pending meds, messages, domain alerts
 - **Shift Schedule** — 7×7 weekly grid
 - **Contacts** — custom fields, categories, vCard import
@@ -201,7 +339,7 @@ UI icons (navigation, hub tiles, tab bar, controls) are sized ~30% larger than t
 
 Oregon is the first state package (~346 sub-tasks with ORS citations, OSIPM thresholds, APD/ICP programs). Generic mode provides ~300 universal sub-tasks. Architecture supports additional state packages.
 
-## Team & Sync
+## Circle & Sync
 
 - **Cloud folder sync** — File System Access API, shared cloud folder
 - **Self-hosted server** — `sync-server.js` (169 lines, zero dependencies)
@@ -236,6 +374,6 @@ Upload `dist/` to any static host (Netlify, GitHub Pages, Vercel, Cloudflare Pag
 | Version | Storage | Key Changes |
 |---------|---------|-------------|
 | v1 | `demcare-v9` (localStorage, plaintext) | Initial build, ~1,811 lines |
-| v2 | `demcare-vault-v2` (localStorage, encrypted) | Encryption at rest, tiered access, team management, hub navigation, ~3,400 lines |
+| v2 | `demcare-vault-v2` (localStorage, encrypted) | Encryption at rest, tiered access, circle management, hub navigation, ~3,400 lines |
 | v3 | `demcare-keys-v3` (localStorage) + IndexedDB | **Current.** IndexedDB vault (1–12GB), HIPAA audit log, proactive reminders, universal search, POA decisions, capacity documentation, care plan binder, photo attachments, caregiver wellness, storage monitoring, 4 security audits. ~4,371 lines. |
 | v3.x hardening campaign | (same stores) + `blobs`, `proj-r`, `outbox-r` keys | Write-ahead-log durability; PBKDF2 600k; zero-egress bundling; hash-chained audit log with vault anchor; HLC merge ordering; PRF-bound multi-passkey MFA with recovery codes; binary media partitioning + secure-deletion GC; sync-flood circuit breaker; schema-version guard; cryptographic role scoping (client-restricted tier); append-only, hash-chained client self-reports; outbox hardening; scoped-session write lock. Seven external review rounds, all findings addressed. ~6,120 lines. |

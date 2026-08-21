@@ -22,7 +22,7 @@ These principles describe a different standard. They are not aspirational. Each 
 
 ### 1. Local-first by default
 
-A person's care data lives on their own device, under their own control, not on a company's servers. The software functions fully without transmitting data anywhere. Where data must move — to sync across a care team — it moves directly between the people who need it, or through infrastructure the family controls, never through a vendor who retains a copy.
+A person's care data lives on their own device, under their own control, not on a company's servers. The software functions fully without transmitting data anywhere. Where data must move — to sync across a care circle — it moves directly between the people who need it, or through infrastructure the family controls, never through a vendor who retains a copy.
 
 **Why it matters:** Data that never leaves the device cannot be breached at the vendor, subpoenaed from the vendor, sold by the vendor, or exposed when the vendor is acquired or fails. The vendor cannot lose what it never held.
 
@@ -48,7 +48,7 @@ The software contains no tracking, no analytics, no telemetry, no behavioral mea
 
 Each person involved in care sees only what their role requires. A hired aide sees the care information needed to do their job — not the family's finances, estate plans, or legal disputes. The person being cared for sees what is appropriate to their capacity and their wishes. Access is structured, not merely promised.
 
-**Why it matters:** A care team is not a single trust boundary. The overnight aide, the estranged sibling, the geriatric care manager, and the patient themselves have different legitimate needs. Software that shows everyone everything forces families to choose between coordination and privacy. The minimum-necessary principle — the foundation of health privacy law — should be built into the structure of the software, not left to social convention.
+**Why it matters:** A care circle is not a single trust boundary. The overnight aide, the estranged sibling, the geriatric care manager, and the patient themselves have different legitimate needs. Software that shows everyone everything forces families to choose between coordination and privacy. The minimum-necessary principle — the foundation of health privacy law — should be built into the structure of the software, not left to social convention.
 
 **How to verify:** Confirm that access tiers exist, that they are enforced in the application's logic (not merely hidden in the interface), and that sensitive categories are genuinely inaccessible to roles that should not see them.
 

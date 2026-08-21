@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fontsource/atkinson-hyperlegible": "^5.3.0",
     "@fontsource/libre-baskerville": "^5.2.10",
     "@fontsource/source-sans-3": "^5.2.9",
     "@vitejs/plugin-react": "^6.0.2",

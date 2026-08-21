@@ -1,6 +1,8 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 // Self-hosted fonts — bundled into the build, zero external requests (privacy: no CDN egress).
+import '@fontsource/atkinson-hyperlegible/400.css';
+import '@fontsource/atkinson-hyperlegible/700.css';
 import '@fontsource/source-sans-3/400.css';
 import '@fontsource/source-sans-3/500.css';
 import '@fontsource/source-sans-3/600.css';

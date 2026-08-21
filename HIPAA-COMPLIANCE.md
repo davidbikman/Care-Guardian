@@ -14,7 +14,7 @@ This document maps Care Guardian's technical safeguards to the HIPAA Security Ru
 
 | Specification | Status | Implementation |
 |--------------|--------|----------------|
-| **Unique User Identification** (Required) | ✅ Compliant | Each device has a unique `deviceId` generated on first use. Team roster tracks each member by device ID, name, and role. All audit log entries include user identification. |
+| **Unique User Identification** (Required) | ✅ Compliant | Each device has a unique `deviceId` generated on first use. Circle roster tracks each member by device ID, name, and role. All audit log entries include user identification. |
 | **Emergency Access Procedures** (Required) | ✅ Compliant | Encrypted backup export allows data recovery on a new device. The setup wizard generates passcodes that should be documented in a secure location (e.g., sealed envelope with attorney). If both passcodes are lost, data is unrecoverable by design — no backdoor exists. |
 | **Automatic Logoff** (Addressable) | ✅ Implemented | 15-minute inactivity timeout. DEK cleared from memory on logoff. Session requires re-authentication. |
 | **Encryption and Decryption** (Addressable) | ✅ Implemented | AES-256-GCM encryption at rest. PBKDF2 key derivation (100,000 iterations, SHA-256). Random 256-bit Data Encryption Key (DEK) wrapped separately with caregiver and client passcodes. No plaintext ePHI stored at any time. |
@@ -54,7 +54,7 @@ This document maps Care Guardian's technical safeguards to the HIPAA Security Ru
 | Specification | Status | Implementation |
 |--------------|--------|----------------|
 | **Integrity Controls** (Addressable) | ✅ Implemented | All transmitted data is AES-256-GCM encrypted end-to-end before transmission. GCM mode provides both confidentiality and integrity verification. |
-| **Encryption** (Addressable) | ✅ Implemented | HTTPS enforced for sync server communication. Private IP addresses blocked. Sync data encrypted with AES-256-GCM before transmission — the sync server never sees plaintext. |
+| **Encryption** (Addressable) | ✅ Implemented | HTTPS enforced for sync server communication. Private IP addresses blocked. Sync data encrypted with AES-256-GCM before transmission — the sync server never sees plaintext. Optional cloud backup uploads the same AES-256-GCM `.care` file to the caregiver's own storage account over HTTPS; the provider receives ciphertext and a filename. OAuth access tokens are held in memory for the session only and are never persisted. |
 
 ---
 
@@ -68,18 +68,19 @@ The following HIPAA requirements are organizational policies that must be implem
 | **Workforce Training** §164.308(a)(5) | In-app Help system documents all features and security measures. | Organization must train workforce on HIPAA policies and Care Guardian usage. |
 | **Sanctions Policy** §164.308(a)(1) | Audit log provides evidence for policy enforcement. | Organization must establish and enforce sanctions for HIPAA violations. |
 | **Contingency Plan** §164.308(a)(7) | Encrypted export/import enables data backup and recovery. Sync provides redundancy across devices. | Organization must document backup procedures and test recovery. |
-| **Business Associate Agreement** | Not applicable — Care Guardian has no server component and never accesses ePHI. | If using the self-hosted sync server, the server operator may need a BAA depending on their relationship to the covered entity. |
+| **Business Associate Agreement** | Not applicable — Care Guardian has no server component and never accesses ePHI. | If using the self-hosted sync server, the server operator may need a BAA depending on their relationship to the covered entity. If using optional cloud backup in a covered-entity context, note that the storage provider holds only ciphertext it cannot decrypt; organisations should still confirm their own position on whether a BAA is required for encrypted-at-rest storage with a consumer cloud account, and may prefer to leave the feature unbuilt (omit `VITE_GOOGLE_CLIENT_ID`), which removes it from the app entirely. |
 
 ---
 
 ## Minimum Necessary Standard
 
-Care Guardian implements the Minimum Necessary standard through its five-tier access control system:
+Care Guardian implements the Minimum Necessary standard through its six-tier access control system:
 
 - **Care Professionals** see only Physical Health, Cognitive Health, and Wellness domains. Legal, Financial, documents, expenses, and export functions are invisible.
 - **Client (Supported)** sees only self-reports and messages.
+- **Observers** hold read-only access to care domains, contacts, documents, schedules and messages. The role is enforced as an allow-list evaluated before the main permission table, so every write, delete, medication-administration, export and management action is denied — including any permission added in future, which is denied to observers by default rather than requiring a new exclusion.
 - **All delete operations** are permission-guarded at the function level.
-- **The audit log** records which user accessed which PHI type, enabling retrospective review of access appropriateness.
+- **The audit log** records which user accessed which PHI type, enabling retrospective review of access appropriateness. Every route into a PHI view is audited through a single choke point, including the bottom navigation, which reaches the Meds, Log and SOS views without passing through the general navigation handler.
 
 ---
 
@@ -109,7 +110,7 @@ Per HHS guidance, encrypted data that meets NIST standards is excluded from brea
 
 1. **Multi-factor authentication (MFA):** Now **supported** for professional roles (Admin, Care Professional) via opt-in PRF-bound WebAuthn passkeys with a one-time recovery code (see §164.312(d)). It is opt-in rather than forced because the family-caregiver use case must not require a passkey. Regarding the regulation: the 2025 NPRM proposed making MFA mandatory and removing the "addressable" loophole, but **as of mid-2026 it remains a proposed rule — OCR has not issued a final rule**, and the spring-2026 finalization window passed without one. Auditors already treat MFA as a baseline expectation, so professional/covered-entity deployments should enable it.
 
-2. **No centralized user management:** User accounts are device-based, not centrally managed. Adding or revoking access requires the Admin to modify the team roster and change the caregiver passcode.
+2. **No centralized user management:** User accounts are device-based, not centrally managed. Adding or revoking access requires the Admin to modify the circle roster and change the caregiver passcode.
 
 3. **Audit log is stored locally:** The audit log is part of the encrypted vault. If the vault is deleted, the audit log is lost. Organizations should export the audit log regularly.
 

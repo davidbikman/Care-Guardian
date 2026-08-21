@@ -26,7 +26,7 @@ Care Guardian distinguishes between tasks you do once (execute the power of atto
 
 The person with dementia is not a passive subject of your care plan. They are a person with preferences, fears, joys, and — especially in the early and middle stages — opinions about their own care.
 
-Care Guardian gives the care recipient their own access to the app. In Independent mode, they can see everything — their legal documents, their financial situation, their care team's notes. They can export their own data. They can submit self-reports describing how they feel in their own words or their own voice.
+Care Guardian gives the care recipient their own access to the app. In Independent mode, they can see everything — their legal documents, their financial situation, their care circle's notes. They can export their own data. They can submit self-reports describing how they feel in their own words or their own voice.
 
 When the time comes — and the family will know when — the administrator can switch to Supported mode with one tap. The view simplifies. The financial details disappear. The self-report stays. The transition is gentle, reversible, and controlled by the family, not by an algorithm.
 
@@ -42,7 +42,7 @@ When we expand to other states, each state package will be built to the same sta
 
 Generic mode exists for families in states we haven't covered yet. It provides honest, universal guidance without pretending to know your state's specific rules.
 
-### Your care team is not our user base
+### Your care circle is not our user base
 
 Care Guardian supports the full spectrum of people involved in dementia care: the family member who holds power of attorney, the sibling who helps on weekends, the home health aide who works the overnight shift, and the care recipient themselves.
 
@@ -52,7 +52,7 @@ When a care worker logs an incident, they can't delete it. When they record a me
 
 ### Sync without surveillance
 
-Care teams need to share data across devices. Most apps solve this by routing everything through a central server that the company controls. We solved it differently.
+Care circles need to share data across devices. Most apps solve this by routing everything through a central server that the company controls. We solved it differently.
 
 Care Guardian syncs through a file in your family's own cloud folder — Google Drive, Dropbox, iCloud, whatever you already use. The file is encrypted end-to-end. The cloud provider sees an encrypted blob. We see nothing, because we're not in the loop.
 

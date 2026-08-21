@@ -1,0 +1,17 @@
+# Build settings live here rather than only in the Netlify dashboard, so the
+# repo states how it is meant to be published.
+#
+# This matters because the repo root also contains a full set of older build
+# artifacts (index.html's siblings in assets/, sw.js, manifest.webmanifest).
+# Publishing the root would serve those instead of a fresh build — which is how
+# index.html came to be overwritten with built output, pointing Vite's entry at
+# a stale bundle so source changes stopped reaching the site. index.html is the
+# Vite *source* entry again, so the root is no longer directly servable and the
+# build must run.
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"

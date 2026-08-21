@@ -1,13 +1,13 @@
-import { useState, useEffect, useRef, Fragment } from "react";
+import { useState, useEffect, useRef, Fragment, Component } from "react";
 
 /* ═══════════════ CONSTANTS ═══════════════ */
 const CONTACT_CATS = [
-  { key: "medical", label: "Medical", icon: "♥", color: "#b56576" },
-  { key: "care", label: "Care & Support", icon: "✿", color: "#718355" },
-  { key: "legal", label: "Legal", icon: "⚖", color: "#457b9d" },
-  { key: "financial", label: "Financial", icon: "◈", color: "#bc6c25" },
-  { key: "family", label: "Family", icon: "⌂", color: "#6d6875" },
-  { key: "other", label: "Other", icon: "◉", color: "#8d99ae" },
+  { key: "medical", label: "Medical", icon: "♥", color: "var(--color-text-danger)" },
+  { key: "care", label: "Care & Support", icon: "✿", color: "var(--color-text-success)" },
+  { key: "legal", label: "Legal", icon: "⚖", color: "var(--color-action-primary)" },
+  { key: "financial", label: "Financial", icon: "◈", color: "var(--color-text-warning)" },
+  { key: "family", label: "Family", icon: "⌂", color: "var(--color-action-primary)" },
+  { key: "other", label: "Other", icon: "◉", color: "var(--color-text-muted)" },
 ];
 
 const INCIDENT_TYPES = [
@@ -18,10 +18,19 @@ const INCIDENT_TYPES = [
   { key:"other",label:"Other",icon:"📝" },
 ];
 const SEVERITY_LEVELS = [
-  { key:"low",label:"Low",color:"#718355",bg:"#e8f0df" },
-  { key:"moderate",label:"Moderate",color:"#bc6c25",bg:"#fdf0d5" },
-  { key:"high",label:"High",color:"#b56576",bg:"#fde2e8" },
-  { key:"critical",label:"Critical",color:"#8b0000",bg:"#fdd" },
+  { key:"low",label:"Low",color:"var(--color-text-success)",bg:"var(--color-background-success)" },
+  { key:"moderate",label:"Moderate",color:"var(--color-text-warning)",bg:"var(--color-background-warning)" },
+  { key:"high",label:"High",color:"var(--color-text-danger)",bg:"var(--color-background-danger)" },
+  { key:"critical",label:"Critical",color:"var(--color-text-on-fill-danger)",bg:"var(--color-fill-danger)" },
+];
+
+/* What was going on around the incident. Separate from type ("what happened")
+   because the pattern that prevents the next one usually lives here. */
+const TRIGGER_OPTIONS = [
+  {key:"fatigue",label:"Fatigue / End of Day",icon:"🌙"},
+  {key:"overstim",label:"Overstimulation",icon:"🔊"},
+  {key:"physical",label:"Physical Need",icon:"🩹"},
+  {key:"routine",label:"Change in Routine",icon:"🔄"},
 ];
 
 const EXPENSE_CATS = [
@@ -35,6 +44,41 @@ const EXPENSE_CATS = [
 ];
 
 const MED_TIME_SLOTS = ["Morning","Midday","Afternoon","Evening","Bedtime","As Needed"];
+
+/* A medication record. Everything past timeSlots was added in v3 — all of it
+   optional, so medications saved before this release load unchanged and simply
+   read as empty. Never assume these keys are present on a stored record. */
+const EMPTY_MED = {
+  name:"", dosage:"", timeSlots:["Morning"], notes:"",
+  purpose:"",        // plain-English "why": "For memory"
+  isCritical:false,  // drives the refusal protocol branch
+  visualId:"",       // pill shape/colour, so the right one is picked up
+  isRedFlag:false,   // blood thinners, antipsychotics — flagged by hand, not
+                     // by matching drug names, which misses generics and
+                     // misfires on lookalikes
+  prescriber:"", pharmacy:"", pharmacyPhone:"", refillDate:"",
+};
+/* Pill appearances offered as taps rather than free text, so the field is
+   actually filled in. Free text stays available underneath. */
+/* A blank incident. trigger is v3 and optional — records logged before this
+   release simply have no trigger, which reads as "not recorded". */
+const newIncident = () => {
+  const d=new Date();
+  return {type:"",severity:"moderate",trigger:"",
+    date:`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`,
+    time:d.toTimeString().slice(0,5),
+    description:"",response:"",injuries:"",providerNotified:""};
+};
+/* Fields a paramedic asks for in the first ninety seconds. Added in v3; a
+   payload without this key reads as all-empty, which is what it was before. */
+const EMPTY_EMERGENCY_INFO = {
+  codeStatus:"",     // DNR / DNI / POLST / Full code
+  allergiesText:"",  // the card used to print a placeholder string here
+  baselineNote:"",   // "what normal looks like", so responders can judge a change
+  clientPhoto:"",    // for a wandering episode — stored via externalizeMedia
+};
+const CODE_STATUS_OPTIONS = ["Full code","DNR","DNI","DNR + DNI","POLST on file"];
+const MED_VISUAL_IDS = ["White round","White oval","Blue round","Blue oval","Pink round","Yellow round","Orange capsule","Red capsule","Green capsule","Clear capsule","Liquid","Patch","Inhaler","Injection"];
 
 const DOC_CATEGORIES = [
   {key:"all",label:"All Documents",icon:"📄"},
@@ -59,11 +103,11 @@ const SELF_REPORT_TYPES = [
 ];
 const MOOD_OPTIONS = ["😊 Good","🙂 Okay","😐 Fair","😟 Not great","😢 Bad"];
 const PAIN_LEVELS = ["0 — None","1–2 — Mild","3–4 — Moderate","5–6 — Moderate-Severe","7–8 — Severe","9–10 — Worst possible"];
-const EMPTY_CONTACT = { name:"",role:"",org:"",phone:"",email:"",category:"medical",notes:[],customFields:[] };
+const EMPTY_CONTACT = { name:"",role:"",org:"",phone:"",email:"",category:"medical",photo:"",notes:[],customFields:[] };
 const DAYS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
-const TASK_TYPES={O:{key:"O",label:"One-time",icon:"☐",color:"#457b9d",desc:"Do once and it's done"},R:{key:"R",label:"Recurring",icon:"↻",color:"#bc6c25",desc:"Repeat on a schedule"},M:{key:"M",label:"Monitoring",icon:"◉",color:"#718355",desc:"Ongoing observation"}};
+const TASK_TYPES={O:{key:"O",label:"One-time",icon:"☐",color:"var(--color-action-primary)",desc:"Do once and it's done"},R:{key:"R",label:"Recurring",icon:"↻",color:"var(--color-text-warning)",desc:"Repeat on a schedule"},M:{key:"M",label:"Monitoring",icon:"◉",color:"var(--color-text-success)",desc:"Ongoing observation"}};
 
 
 const DOMAIN_META = [
@@ -323,16 +367,62 @@ const hasFileSystemAccess=typeof window!=="undefined"&&"showSaveFilePicker"in wi
 const genDeviceId=()=>"dev-"+Math.random().toString(36).slice(2,10)+"-"+Date.now().toString(36);
 
 // Data-schema generation, independent of the IndexedDB store version. Stamped into the vault so a vault written
-// by a NEWER app build is detected and not silently clobbered by an older build on a mixed-version team.
+// by a NEWER app build is detected and not silently clobbered by an older build on a mixed-version circle.
 // Migration policy (documented in README): never migrate the primary vault in place — the A/B snapshot swap
 // already writes-then-flips-pointer atomically, so a future schema migration writes to the inactive slot,
 // verifies the AES-GCM tag, then flips, never leaving a half-migrated vault.
 const SCHEMA_VERSION = 3;
+/* Minimum length for the backup passcode. One rule, applied wherever it is set —
+   the automatic and manual paths write the same file and carry the same risk. */
+const BACKUP_PW_MIN = 6;
+
+/* A backup file used to be encrypted directly under a passphrase the caregiver
+   invented for the purpose — one more secret, remembered only at the moment of
+   crisis. Instead the payload is encrypted under a random file key, and that
+   file key is stored wrapped under each factor the person already holds:
+
+     recovery — their Recovery Key (125 bits, generated, saved once)
+     passcode — their caregiver passcode, only when it clears BACKUP_PW_MIN
+
+   Restore tries each wrap with whatever secret it is given, so either factor
+   opens the file. The passcode wrap is gated because the file is offline-
+   attackable wherever it is stored; the gate keeps the floor exactly where the
+   old dedicated backup passcode already put it, while adding a far stronger
+   factor above it. Built from encryptData/decryptData only — no new crypto.  */
+const BACKUP_FORMAT = "3.0";
+
+async function buildBackupFile(payloadCipherFn, recoveryKey, passcode){
+  const fileKey = genRecoveryCode();
+  const data = await payloadCipherFn(fileKey);
+  const wraps = {};
+  if(recoveryKey) wraps.recovery = await encryptData(fileKey, recoveryKey);
+  if(passcode && passcode.length >= BACKUP_PW_MIN) wraps.passcode = await encryptData(fileKey, passcode);
+  if(!Object.keys(wraps).length) throw new Error("No way to lock this backup — set a Recovery Key first.");
+  return { encrypted:true, version:BACKUP_FORMAT, wraps, data };
+}
+
+/* Open a backup with one secret, whichever factor it happens to be. Files
+   written before this release have no wraps and were encrypted directly, so
+   they are tried that way too — the live install is full of them. */
+async function openBackupFile(file, secret){
+  if(file && file.wraps){
+    for(const w of [file.wraps.recovery, file.wraps.passcode]){
+      if(!w) continue;
+      try{
+        const fileKey = await decryptData(w, secret);
+        if(typeof fileKey === "string") return await decryptData(file.data, fileKey);
+      }catch{ /* wrong factor for this wrap — try the next */ }
+    }
+    throw new Error("That key or passcode didn't open this backup.");
+  }
+  return await decryptData(file.data, secret); // v2.0 and earlier
+}
+
 function initState(stateCode) {
   const doms = buildDomains(stateCode||"");
   const domains = {};
   doms.forEach(d => { domains[d.key] = { status:"not-started",notes:"",lastUpdated:null, goals:d.goals.map(g=>({done:false,subs:g.subs.map(()=>({done:false,lastDone:null,typeOverride:null})),customSubs:[],titleOverride:null,subOverrides:{}})) }; });
-  return { domains, contacts:[], appointments:[], messages:[], incidents:[], expenses:[], medSchedule:{medications:[],log:[]}, emergencyPlans:EMERGENCY_SCENARIOS.map(s=>({key:s.key,steps:[...s.steps]})), careShifts:[], availability:{}, transitionTriggers:{}, statusHistory:[], postDeathChecklist:POST_DEATH_SECTIONS.map(s=>s.items.map(()=>false)), selfReports:[], savedDocs:[], caregiverWellness:[], capacityLog:[], poaDecisions:[], log:[], domainOverrides:{}, settings:{caregiverPasscode:"1234",clientPasscode:"0000",deviceId:genDeviceId(),deviceName:"",stateCode:stateCode||"",schemaVersion:SCHEMA_VERSION}, _sync:{} };
+  return { domains, contacts:[], appointments:[], messages:[], incidents:[], expenses:[], medSchedule:{medications:[],log:[]}, emergencyPlans:EMERGENCY_SCENARIOS.map(s=>({key:s.key,steps:[...s.steps]})), careShifts:[], availability:{}, transitionTriggers:{}, statusHistory:[], postDeathChecklist:POST_DEATH_SECTIONS.map(s=>s.items.map(()=>false)), selfReports:[], savedDocs:[], caregiverWellness:[], capacityLog:[], poaDecisions:[], log:[], domainOverrides:{}, emergencyInfo:{...EMPTY_EMERGENCY_INFO}, settings:{caregiverPasscode:"1234",clientPasscode:"0000",deviceId:genDeviceId(),deviceName:"",stateCode:stateCode||"",schemaVersion:SCHEMA_VERSION}, _sync:{} };
 }
 
 /* ═══ Merge engine ═══ */
@@ -479,15 +569,15 @@ function mergeData(local, remote) {
 
   // Preserve local settings (passcodes, deviceId)
   merged.settings = { ...local.settings };
-  // Merge team roster if both are on the same team
-  if(local.settings&&local.settings.team&&local.settings.team.id && remote.settings&&remote.settings.team&&remote.settings.team.id && local.settings.team.id===remote.settings.team.id){
-    const mergedMembers=[...local.settings.team.members];
-    (remote.settings.team.members||[]).forEach(rm=>{
+  // Merge circle roster if both are on the same circle
+  if(local.settings&&local.settings.circle&&local.settings.circle.id && remote.settings&&remote.settings.circle&&remote.settings.circle.id && local.settings.circle.id===remote.settings.circle.id){
+    const mergedMembers=[...local.settings.circle.members];
+    (remote.settings.circle.members||[]).forEach(rm=>{
       const existing=mergedMembers.find(m=>m.deviceId===rm.deviceId);
       if(!existing&&mergedMembers.length<20)mergedMembers.push({...rm,name:sanitizeText(rm.name||"",100),role:sanitizeText(rm.role||"",100),lastSync:new Date().toISOString()});
       else if(existing){if(rm.name)existing.name=sanitizeText(rm.name,100);if(rm.role)existing.role=sanitizeText(rm.role,100);existing.lastSync=new Date().toISOString()}
     });
-    merged.settings.team={...local.settings.team,members:mergedMembers};
+    merged.settings.circle={...local.settings.circle,members:mergedMembers};
   }
 
   // Update sync metadata
@@ -760,7 +850,7 @@ function mergeIsOversized(b64, report){ const newRecords=(report&&report.added&&
 // Resolves a media value to a usable src: legacy inline data: URLs render directly; blobref: ids are
 // fetched from the blob store and decrypted (cached by id). Renders the photo thumb or audio player.
 const _mediaCache=new Map();
-function MediaThumb({value, dek, altKey, kind}){
+function useMediaSrc(value, dek, altKey){
   const initial=(typeof value==="string"&&value.startsWith("data:"))?value:((typeof value==="string"&&value.match(BLOBREF_RE)&&_mediaCache.get(value.match(BLOBREF_RE)[1]))||null);
   const [src,setSrc]=useState(initial);
   useEffect(()=>{ let alive=true;
@@ -776,8 +866,17 @@ function MediaThumb({value, dek, altKey, kind}){
     })();
     return()=>{alive=false};
   },[value,dek,altKey]);
+  return src;
+}
+function MediaThumb({value, dek, altKey, kind}){
+  const src=useMediaSrc(value, dek, altKey);
   if(kind==="audio"){ return src ? (<audio src={src} controls style={{height:32,marginTop:6}}/>) : (<span className="hint">Loading audio…</span>); }
   return (<div className="photo-thumb">{src?<img src={src} alt="attachment"/>:<div className="photo-loading"/>}</div>);
+}
+// A bare <img> for the same media values — used where the thumb chrome would be wrong.
+function MediaImg({value, dek, altKey, className, alt}){
+  const src=useMediaSrc(value, dek, altKey);
+  return src ? <img src={src} alt={alt||""} className={className}/> : <div className={className+" photo-loading"}/>;
 }
 
 // Legacy single-blob writers (still used by v2→v3 migration and as the pre-WAL base snapshot)
@@ -1146,16 +1245,6 @@ async function verifyAuditChain(entries, vaultTip){
   return {status: brokenAtSeq?"broken":(truncated?"truncated":"ok"), brokenAtSeq, chained:chained.length, total, tip};
 }
 
-async function getAuditCount(){
-  try{
-    const db=await openAuditDB();
-    const tx=db.transaction(AUDIT_STORE,"readonly");
-    const count=await new Promise((res,rej)=>{const r=tx.objectStore(AUDIT_STORE).count();r.onsuccess=()=>res(r.result);r.onerror=rej});
-    db.close();
-    return count;
-  }catch{return 0}
-}
-
 function hasLegacyData() { try { return !!localStorage.getItem(SKEY); } catch { return false; } }
 function loadLegacyData() { try { return JSON.parse(localStorage.getItem(SKEY)); } catch { return null; } }
 function clearLegacyData() { try { localStorage.removeItem(SKEY); } catch {} }
@@ -1165,13 +1254,24 @@ const MAX_AUTH_ATTEMPTS = 8;
 
 /* ═══ Roles & Permissions ═══ */
 const ROLES = [
-  {key:"admin",label:"Admin",desc:"Full access. Manages team, settings, and all data.",icon:"👑"},
-  {key:"family",label:"Family",desc:"Full view. Can add, edit, and export. Cannot manage team or settings.",icon:"👨‍👩‍👧"},
+  {key:"admin",label:"Admin",desc:"Full access. Manages the circle, settings, and all data.",icon:"👑"},
+  {key:"family",label:"Family",desc:"Full view. Can add, edit, and export. Cannot manage the circle or settings.",icon:"👨‍👩‍👧"},
   {key:"carepro",label:"Care Professional",desc:"Care-focused access. No legal, financial, or export.",icon:"🩺"},
   {key:"client-full",label:"Client (Independent)",desc:"Full view including legal and financial. Can export and submit self-reports.",icon:"🟢"},
   {key:"client-restricted",label:"Client (Supported)",desc:"Limited view. Can submit self-reports and view messages.",icon:"🛡"},
+  {key:"observer",label:"Observer",desc:"Read-only. Can view schedules, logs, messages, and documents. Cannot edit, delete, or export.",icon:"👁"},
 ];
 const CAREPRO_DOMAINS = ["physical","cognitive","wellness"];
+/* Observers see the care-facing domains; legal and financial stay closed to them. */
+const OBSERVER_DOMAINS = ["physical","cognitive","wellness"];
+
+/* Text size tiers. Standard = the 18px root from the design tokens. */
+const UI_SCALE_PCT = {standard:100, large:125, larger:150};
+const TEXT_SIZES = [
+  {key:"standard",label:"Standard",sample:"18px"},
+  {key:"large",label:"Large",sample:"22px"},
+  {key:"larger",label:"Larger",sample:"27px"},
+];
 
 function downloadFile(content,filename,type="application/json") {
   // Try standard download first
@@ -1208,6 +1308,7 @@ function sanitizeContact(c) {
     phone: sanitizeText(c.phone || "", 50).replace(/[^\d+\-() .ext]/gi, ""),
     email: sanitizeText(c.email || "", 200),
     category: ["medical","care","legal","financial","family","other"].includes(c.category) ? c.category : "other",
+    photo: (typeof c.photo==="string" && (c.photo.startsWith("blobref:") || (c.photo.startsWith("data:image/") && c.photo.length<3000000))) ? c.photo : "",
     customFields: Array.isArray(c.customFields) ? c.customFields.slice(0, 20).map(f => ({
       label: sanitizeText(f.label || "", 100),
       value: sanitizeText(f.value || "", 500)
@@ -1260,15 +1361,15 @@ function sanitizeImportData(obj) {
   obj = deepStripUnsafe(obj);
   // Drop any unexpected top-level keys
   Object.keys(obj).forEach(k=>{ if(!SAFE_TOP_KEYS.includes(k)) delete obj[k]; });
-  // Bound and sanitize the settings block (carries deviceName, team roster/roles, stateCode)
+  // Bound and sanitize the settings block (carries deviceName, circle roster/roles, stateCode)
   if (obj.settings && typeof obj.settings === "object") {
     const st = obj.settings;
     if (st.deviceName!=null) st.deviceName = sanitizeText(st.deviceName, 100);
     if (st.deviceId!=null) st.deviceId = sanitizeText(st.deviceId, 64);
     if (st.stateCode!=null) st.stateCode = sanitizeText(st.stateCode, 8);
     delete st.syncPasscode; // never accept a sync passcode from an imported file
-    if (st.team && typeof st.team === "object" && Array.isArray(st.team.members)) {
-      st.team.members = st.team.members.slice(0, 20).map(m => ({
+    if (st.circle && typeof st.circle === "object" && Array.isArray(st.circle.members)) {
+      st.circle.members = st.circle.members.slice(0, 20).map(m => ({
         ...m,
         deviceId: sanitizeText(m.deviceId, 64),
         name: sanitizeText(m.name, 100),
@@ -1482,7 +1583,7 @@ function fmtDate(y,m,d) { return `${y}-${String(m+1).padStart(2,"0")}-${String(d
    makes React unmount and remount it — wiping the local useState that holds
    whatever the user has typed or attached. Keep them out here. */
 
-const ContactFormUI=({contactForm,setContactForm,saveContact})=>{const[f,setF]=useState({...contactForm.contact,customFields:[...(contactForm.contact.customFields||[])]});const[nfl,setNfl]=useState("");const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
+const ContactFormUI=({contactForm,setContactForm,saveContact,contactPhotoRef,handlePhotoCapture})=>{const[f,setF]=useState({...contactForm.contact,customFields:[...(contactForm.contact.customFields||[])]});const[nfl,setNfl]=useState("");const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
   <div className="cf-overlay" onClick={()=>setContactForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()}>
     <h2 className="cf-title">{contactForm.mode==="edit"?"Edit Contact":"Add Contact"}</h2>
     <div className="cf-grid">
@@ -1493,6 +1594,13 @@ const ContactFormUI=({contactForm,setContactForm,saveContact})=>{const[f,setF]=u
       <label className="cf-label">Phone<input value={f.phone} onChange={e=>upd("phone",e.target.value)} className="cf-input" type="tel"/></label>
       <label className="cf-label">Email<input value={f.email} onChange={e=>upd("email",e.target.value)} className="cf-input" type="email"/></label>
     </div>
+    <label className="cf-label" style={{marginTop:10}}>Photo <span className="cf-optional">helps everyone recognise who to call</span></label>
+    <div className="photo-attach-row">
+      <button onClick={()=>contactPhotoRef.current&&contactPhotoRef.current.click()} type="button" className="edit-btn" style={{marginTop:0,fontSize:"0.8889rem"}}>📷 {f.photo?"Replace photo":"Add photo"}</button>
+      <input ref={contactPhotoRef} type="file" accept="image/*" style={{display:"none"}} onChange={e=>handlePhotoCapture(e,(updater)=>{const arr=typeof updater==="function"?updater(f.photo?[f.photo]:[]):updater;upd("photo",(arr&&arr[arr.length-1])||"")})}/>
+      {f.photo&&<button onClick={()=>upd("photo","")} type="button" className="cancel-btn" style={{fontSize:"0.8148rem",padding:"4px 10px"}}>Remove</button>}
+    </div>
+    {f.photo&&<div className="photo-preview-row" style={{marginBottom:8}}><div className="photo-thumb"><img src={f.photo} alt=""/></div></div>}
     {f.customFields.length>0&&<div className="cf-custom-section"><h4 className="cf-custom-title">Custom Fields</h4>
       {f.customFields.map((cf,i)=>(<div key={i} className="cf-custom-row"><input value={cf.label} onChange={e=>{const c=[...f.customFields];c[i]={...c[i],label:e.target.value};setF(p=>({...p,customFields:c}))}} className="cf-input cf-custom-label" placeholder="Field name"/><input value={cf.value} onChange={e=>{const c=[...f.customFields];c[i]={...c[i],value:e.target.value};setF(p=>({...p,customFields:c}))}} className="cf-input cf-custom-value" placeholder="Value"/><button onClick={()=>setF(p=>({...p,customFields:p.customFields.filter((_,j)=>j!==i)}))} className="remove-sub">×</button></div>))}
     </div>}
@@ -1501,7 +1609,7 @@ const ContactFormUI=({contactForm,setContactForm,saveContact})=>{const[f,setF]=u
   </div></div>)};
 
 const ApptFormUI=({apptForm,setApptForm,saveAppt,deleteAppt})=>{const[f,setF]=useState(apptForm.appt);const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
-  <div className="cf-overlay" onClick={()=>setApptForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
+  <div className="cf-overlay" onClick={()=>setApptForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:"min(100%,23.33rem)"}}>
     <h2 className="cf-title">{apptForm.mode==="edit"?"Edit Appointment":"Add Appointment"}</h2>
     <label className="cf-label" style={{marginBottom:12}}>Title *<input value={f.title} onChange={e=>upd("title",e.target.value)} className="cf-input" placeholder="Dr. visit, Lab work, etc."/></label>
     <div className="cf-grid">
@@ -1518,7 +1626,7 @@ const ApptFormUI=({apptForm,setApptForm,saveAppt,deleteAppt})=>{const[f,setF]=us
 
 const DomainEditModal=({editingDomain,setEditingDomain,setData,addLog})=>{const[l,setL]=useState(editingDomain.label);const[d,setD]=useState(editingDomain.desc);
   const doSave=()=>{if(!l.trim())return;setData(p=>addLog({...p,domainOverrides:{...(p.domainOverrides||{}),[editingDomain.key]:{label:l.trim(),desc:d.trim()}}},editingDomain.key,`Renamed to "${l.trim()}"`));setEditingDomain(null)};
-  return(<div className="cf-overlay" onClick={()=>setEditingDomain(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
+  return(<div className="cf-overlay" onClick={()=>setEditingDomain(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:"min(100%,23.33rem)"}}>
     <h2 className="cf-title">Edit Category</h2>
     <label className="cf-label" style={{marginBottom:14}}>Name<input value={l} onChange={e=>setL(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doSave()} className="cf-input"/></label>
     <label className="cf-label" style={{marginBottom:20}}>Description<textarea value={d} onChange={e=>setD(e.target.value)} className="notes-ta" rows={2}/></label>
@@ -1528,34 +1636,98 @@ const DomainEditModal=({editingDomain,setEditingDomain,setData,addLog})=>{const[
 const IncidentFormUI=({incidentForm,setIncidentForm,saveIncident,deleteIncident,incidentPhotoRef,handlePhotoCapture})=>{const[f,setF]=useState(incidentForm.incident);const[incPhotos,setIncPhotos]=useState(incidentForm.incident.photos||[]);const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
   <div className="cf-overlay" onClick={()=>setIncidentForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()}>
     <h2 className="cf-title">{incidentForm.mode==="edit"?"Edit Incident":"Log Incident"}</h2>
-    <div className="cf-grid">
-      <label className="cf-label">Type<select value={f.type} onChange={e=>upd("type",e.target.value)} className="cf-input">{INCIDENT_TYPES.map(t=><option key={t.key} value={t.key}>{t.icon} {t.label}</option>)}</select></label>
-      <label className="cf-label">Severity<select value={f.severity} onChange={e=>upd("severity",e.target.value)} className="cf-input">{SEVERITY_LEVELS.map(s=><option key={s.key} value={s.key}>{s.label}</option>)}</select></label>
+    <label className="cf-label">What happened</label>
+    <div className="tap-select">{INCIDENT_TYPES.map(t=>(
+      <button key={t.key} type="button" onClick={()=>upd("type",t.key)} aria-pressed={f.type===t.key} className={`tap-opt ${f.type===t.key?"tap-opt-on":""}`}>
+        <span className="tap-opt-icon">{t.icon}</span><span>{t.label}</span></button>))}
+    </div>
+    <label className="cf-label" style={{marginTop:12}}>How serious</label>
+    <div className="tap-select">{SEVERITY_LEVELS.map(sv=>(
+      <button key={sv.key} type="button" onClick={()=>upd("severity",sv.key)} aria-pressed={f.severity===sv.key} className={`tap-opt ${f.severity===sv.key?"tap-opt-on":""}`}
+        style={f.severity===sv.key?{background:sv.bg,color:sv.color,borderColor:sv.color}:undefined}>{sv.label}</button>))}
+    </div>
+    <label className="cf-label" style={{marginTop:12}}>What might have set it off <span className="cf-optional">optional</span></label>
+    <div className="tap-select">{TRIGGER_OPTIONS.map(t=>(
+      <button key={t.key} type="button" onClick={()=>upd("trigger",f.trigger===t.key?"":t.key)} aria-pressed={f.trigger===t.key} className={`tap-opt ${f.trigger===t.key?"tap-opt-on":""}`}>
+        <span className="tap-opt-icon">{t.icon}</span><span>{t.label}</span></button>))}
+    </div>
+    <div className="cf-grid" style={{marginTop:12}}>
       <label className="cf-label">Date<input type="date" value={f.date} onChange={e=>upd("date",e.target.value)} className="cf-input"/></label>
       <label className="cf-label">Time<input type="time" value={f.time} onChange={e=>upd("time",e.target.value)} className="cf-input"/></label>
     </div>
-    <label className="cf-label" style={{marginBottom:10}}>What happened<textarea value={f.description} onChange={e=>upd("description",e.target.value)} className="notes-ta" rows={3} placeholder="Describe the incident…"/></label>
-    <label className="cf-label" style={{marginBottom:10}}>Response / Action taken<textarea value={f.response} onChange={e=>upd("response",e.target.value)} className="notes-ta" rows={2} placeholder="What was done in response?"/></label>
+    <label className="cf-label" style={{marginBottom:10}}>Details <span className="cf-optional">optional</span><textarea value={f.description} onChange={e=>upd("description",e.target.value)} className="notes-ta" rows={3} placeholder="Describe the incident…"/></label>
+    <label className="cf-label" style={{marginBottom:10}}>Response / Action taken <span className="cf-optional">optional</span><textarea value={f.response} onChange={e=>upd("response",e.target.value)} className="notes-ta" rows={2} placeholder="What was done in response?"/></label>
     <div className="cf-grid">
       <label className="cf-label">Injuries (if any)<input value={f.injuries} onChange={e=>upd("injuries",e.target.value)} className="cf-input" placeholder="None, bruise, laceration…"/></label>
       <label className="cf-label">Provider notified<input value={f.providerNotified} onChange={e=>upd("providerNotified",e.target.value)} className="cf-input" placeholder="Dr. name, 911, none…"/></label>
     </div>
     <label className="cf-label">Photos</label>
     <div className="photo-attach-row">
-      <button onClick={()=>incidentPhotoRef.current&&incidentPhotoRef.current.click()} type="button" className="edit-btn" style={{marginTop:0,fontSize:12}}>📷 Add photo{incPhotos.length>0?" ("+incPhotos.length+")":""}</button>
+      <button onClick={()=>incidentPhotoRef.current&&incidentPhotoRef.current.click()} type="button" className="edit-btn" style={{marginTop:0,fontSize:"0.8889rem"}}>📷 Add photo{incPhotos.length>0?" ("+incPhotos.length+")":""}</button>
       <input ref={incidentPhotoRef} type="file" accept="image/*" capture="environment" multiple style={{display:"none"}} onChange={e=>handlePhotoCapture(e,setIncPhotos)}/>
-      {incPhotos.length>0&&<button onClick={()=>setIncPhotos([])} type="button" className="cancel-btn" style={{fontSize:11,padding:"4px 10px"}}>Clear</button>}
+      {incPhotos.length>0&&<button onClick={()=>setIncPhotos([])} type="button" className="cancel-btn" style={{fontSize:"0.8148rem",padding:"4px 10px"}}>Clear</button>}
     </div>
     {incPhotos.length>0&&<div className="photo-preview-row" style={{marginBottom:8}}>{incPhotos.map((p,i)=>(<div key={i} className="photo-thumb"><img src={p} alt={"Photo "+(i+1)}/><button onClick={()=>setIncPhotos(prev=>prev.filter((_,j)=>j!==i))} className="photo-remove">×</button></div>))}</div>}
     <div className="cf-actions" style={{marginTop:12}}>
-      <button disabled={!f.description.trim()} onClick={()=>{f.photos=incPhotos;saveIncident(f,incidentForm.id)}} className="save-btn" style={{opacity:f.description.trim()?1:.4}}>Save</button>
+      <button disabled={!f.type} onClick={()=>{f.photos=incPhotos;saveIncident(f,incidentForm.id)}} className="save-btn" style={{opacity:f.type?1:.4}}>Save</button>
       {incidentForm.mode==="edit"&&<button onClick={()=>deleteIncident(incidentForm.id)} className="cd-delete-btn">Delete</button>}
       <button onClick={()=>setIncidentForm(null)} className="cancel-btn">Cancel</button>
     </div>
   </div></div>)};
 
+/* Without a boundary, an uncaught render error unmounts the whole tree: the
+   screen goes blank or a tap appears to do nothing, with the cause visible only
+   in the console. This keeps the failure on screen and nameable, and lets the
+   rest of the app carry on — which matters most for the views a caregiver
+   reaches mid-shift. */
+class ViewErrorBoundary extends Component {
+  constructor(props){ super(props); this.state={error:null}; }
+  static getDerivedStateFromError(error){ return {error}; }
+  componentDidCatch(error,info){ try{ console.error("Care Guardian view error:",error,info); }catch{} }
+  componentDidUpdate(prev){ if(prev.viewKey!==this.props.viewKey&&this.state.error) this.setState({error:null}); }
+  render(){
+    if(!this.state.error) return this.props.children;
+    return (
+      <div className="view-error">
+        <h2 className="view-error-title">This screen didn't load</h2>
+        <p className="view-error-body">Your records are safe — nothing was lost, and the rest of the app still works. Use the buttons at the bottom to go somewhere else.</p>
+        <p className="view-error-detail">{String((this.state.error&&this.state.error.message)||this.state.error)}</p>
+        <button className="save-btn" onClick={()=>this.setState({error:null})}>Try this screen again</button>
+      </div>
+    );
+  }
+}
+
+const EcardFormUI=({info,setEcardForm,saveEmergencyInfo,ecardPhotoRef,handlePhotoCapture})=>{
+  const[f,setF]=useState(info);
+  const upd=(k,v)=>setF(p=>({...p,[k]:v}));
+  const setPhoto=(updater)=>{const arr=typeof updater==="function"?updater(f.clientPhoto?[f.clientPhoto]:[]):updater;upd("clientPhoto",(arr&&arr[arr.length-1])||"")};
+  return(
+  <div className="cf-overlay" onClick={()=>setEcardForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:"min(100%,25.56rem)"}}>
+    <h2 className="cf-title">Edit Emergency Info</h2>
+    <label className="cf-label" style={{marginBottom:6}}>Code status</label>
+    <div className="tap-select">{CODE_STATUS_OPTIONS.map(o=>(
+      <button key={o} type="button" onClick={()=>upd("codeStatus",f.codeStatus===o?"":o)} aria-pressed={f.codeStatus===o} className={`tap-opt ${f.codeStatus===o?"tap-opt-on":""}`}>{o}</button>))}
+    </div>
+    <input value={f.codeStatus||""} onChange={e=>upd("codeStatus",e.target.value)} className="cf-input" style={{marginTop:8}} placeholder="…or type it (POLST location, etc.)"/>
+    <label className="cf-label" style={{marginTop:12,marginBottom:10}}>Allergies<textarea value={f.allergiesText||""} onChange={e=>upd("allergiesText",e.target.value)} className="notes-ta" rows={2} placeholder="Penicillin, sulfa, latex… or 'No known allergies'"/></label>
+    <label className="cf-label" style={{marginBottom:10}}>What's normal for this person <span className="cf-optional">baseline</span><textarea value={f.baselineNote||""} onChange={e=>upd("baselineNote",e.target.value)} className="notes-ta" rows={3} placeholder="Usually oriented to person only. Walks with a walker. Speech is slow but clear. Any change from this is new."/></label>
+    <p className="hint" style={{marginTop:-4}}>Responders can't tell a change from a baseline they've never seen. This is what tells them.</p>
+    <label className="cf-label" style={{marginTop:12}}>Photo <span className="cf-optional">for identification during a wandering episode</span></label>
+    <div className="photo-attach-row">
+      <button onClick={()=>ecardPhotoRef.current&&ecardPhotoRef.current.click()} type="button" className="edit-btn" style={{marginTop:0,fontSize:"0.8889rem"}}>📷 {f.clientPhoto?"Replace photo":"Add photo"}</button>
+      <input ref={ecardPhotoRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={e=>handlePhotoCapture(e,setPhoto)}/>
+      {f.clientPhoto&&<button onClick={()=>upd("clientPhoto","")} type="button" className="cancel-btn" style={{fontSize:"0.8148rem",padding:"4px 10px"}}>Remove</button>}
+    </div>
+    {f.clientPhoto&&<div className="photo-preview-row" style={{marginBottom:8}}><div className="photo-thumb"><img src={f.clientPhoto} alt="Photo for the emergency card"/></div></div>}
+    <div className="cf-actions" style={{marginTop:12}}>
+      <button onClick={()=>saveEmergencyInfo(f)} className="save-btn">Save</button>
+      <button onClick={()=>setEcardForm(null)} className="cancel-btn">Cancel</button>
+    </div>
+  </div></div>)};
+
 const ExpenseFormUI=({expenseForm,setExpenseForm,saveExpense,deleteExpense})=>{const[f,setF]=useState(expenseForm.expense);const upd=(k,v)=>setF(p=>({...p,[k]:v}));return(
-  <div className="cf-overlay" onClick={()=>setExpenseForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
+  <div className="cf-overlay" onClick={()=>setExpenseForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:"min(100%,24.44rem)"}}>
     <h2 className="cf-title">{expenseForm.mode==="edit"?"Edit Expense":"Add Expense"}</h2>
     <div className="cf-grid">
       <label className="cf-label">Date<input type="date" value={f.date} onChange={e=>upd("date",e.target.value)} className="cf-input"/></label>
@@ -1573,13 +1745,31 @@ const ExpenseFormUI=({expenseForm,setExpenseForm,saveExpense,deleteExpense})=>{c
   </div></div>)};
 
 const MedFormUI=({medForm,setMedForm,addMedToSchedule,editMedInSchedule,removeMedFromSchedule})=>{const[f,setF]=useState(medForm.med);const toggleSlot=(s)=>setF(p=>({...p,timeSlots:p.timeSlots.includes(s)?p.timeSlots.filter(x=>x!==s):[...p.timeSlots,s]}));return(
-  <div className="cf-overlay" onClick={()=>setMedForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
+  <div className="cf-overlay" onClick={()=>setMedForm(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:"min(100%,24.44rem)"}}>
     <h2 className="cf-title">{medForm.mode==="edit"?"Edit Medication":"Add Medication to Schedule"}</h2>
     <label className="cf-label" style={{marginBottom:10}}>Medication Name<input value={f.name} onChange={e=>setF(p=>({...p,name:e.target.value}))} className="cf-input" placeholder="Donepezil"/></label>
     <label className="cf-label" style={{marginBottom:10}}>Dosage<input value={f.dosage} onChange={e=>setF(p=>({...p,dosage:e.target.value}))} className="cf-input" placeholder="10 mg"/></label>
     <label className="cf-label" style={{marginBottom:10}}>Time Slots</label>
     <div className="med-slot-row">{MED_TIME_SLOTS.map(s=>(<button key={s} onClick={()=>toggleSlot(s)} className={`cc-btn ${f.timeSlots.includes(s)?"cc-active":""}`}>{s}</button>))}</div>
+    <label className="cf-label" style={{marginTop:12,marginBottom:10}}>What it's for <span className="cf-optional">plain English</span><input value={f.purpose||""} onChange={e=>setF(p=>({...p,purpose:e.target.value}))} className="cf-input" placeholder="For memory"/></label>
+    <label className="cf-label" style={{marginBottom:6}}>What it looks like <span className="cf-optional">optional</span></label>
+    <div className="tap-select">{MED_VISUAL_IDS.map(v=>(
+      <button key={v} type="button" onClick={()=>setF(p=>({...p,visualId:p.visualId===v?"":v}))} aria-pressed={f.visualId===v} className={`tap-opt ${f.visualId===v?"tap-opt-on":""}`}>{v}</button>))}
+    </div>
+    <input value={f.visualId||""} onChange={e=>setF(p=>({...p,visualId:e.target.value}))} className="cf-input" style={{marginTop:8}} placeholder="…or describe it yourself"/>
     <label className="cf-label" style={{marginTop:12,marginBottom:10}}>Notes<input value={f.notes||""} onChange={e=>setF(p=>({...p,notes:e.target.value}))} className="cf-input" placeholder="Take with food, etc."/></label>
+    <label className="med-flag"><input type="checkbox" checked={!!f.isCritical} onChange={e=>setF(p=>({...p,isCritical:e.target.checked}))}/>
+      <span><strong>Critical — a missed dose matters.</strong> If this is refused, the prescriber's missed-dose instructions are surfaced instead of just logging it.</span></label>
+    <label className="med-flag"><input type="checkbox" checked={!!f.isRedFlag} onChange={e=>setF(p=>({...p,isRedFlag:e.target.checked}))}/>
+      <span><strong>Flag for paramedics.</strong> Blood thinners, antipsychotics, and anything else an emergency responder must know about. Shows on the Emergency Info Card.</span></label>
+    <details className="med-cabinet-details"><summary>Prescriber, pharmacy &amp; refills</summary>
+      <div className="cf-grid" style={{marginTop:10}}>
+        <label className="cf-label">Prescriber<input value={f.prescriber||""} onChange={e=>setF(p=>({...p,prescriber:e.target.value}))} className="cf-input" placeholder="Dr. Reyes"/></label>
+        <label className="cf-label">Refill due<input type="date" value={f.refillDate||""} onChange={e=>setF(p=>({...p,refillDate:e.target.value}))} className="cf-input"/></label>
+        <label className="cf-label">Pharmacy<input value={f.pharmacy||""} onChange={e=>setF(p=>({...p,pharmacy:e.target.value}))} className="cf-input" placeholder="Walgreens — Burnside"/></label>
+        <label className="cf-label">Pharmacy phone<input type="tel" value={f.pharmacyPhone||""} onChange={e=>setF(p=>({...p,pharmacyPhone:e.target.value}))} className="cf-input" placeholder="503-555-0142"/></label>
+      </div>
+    </details>
     <div className="cf-actions" style={{marginTop:8}}>
       <button disabled={!f.name.trim()||!f.timeSlots.length} onClick={()=>medForm.mode==="edit"?editMedInSchedule(f,medForm.id):addMedToSchedule(f)} className="save-btn" style={{opacity:f.name.trim()&&f.timeSlots.length?1:.4}}>Save</button>
       {medForm.mode==="edit"&&<button onClick={()=>{removeMedFromSchedule(medForm.id);setMedForm(null)}} className="cd-delete-btn">Remove</button>}
@@ -1587,26 +1777,470 @@ const MedFormUI=({medForm,setMedForm,addMedToSchedule,editMedInSchedule,removeMe
     </div>
   </div></div>)};
 
-const CreateTeamForm=({data,flash,createTeam,setTeamSetupMode})=>{const[tn,setTn]=useState("");const[cn,setCn]=useState("");const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[mr,setMr]=useState("Primary Caregiver");return(
-  <div className="team-form">
-    <h4 className="sync-sub-title">Create Your Care Team</h4>
-    <label className="cf-label">Team name<input value={tn} onChange={e=>setTn(e.target.value)} className="cf-input" placeholder="e.g., Mom's Care Team"/></label>
+const CreateCircleForm=({data,flash,createCircle,setCircleSetupMode})=>{const[tn,setTn]=useState("");const[cn,setCn]=useState("");const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[mr,setMr]=useState("Primary Caregiver");return(
+  <div className="circle-form">
+    <h4 className="sync-sub-title">Create Your Care Circle</h4>
+    <label className="cf-label">Circle name<input value={tn} onChange={e=>setTn(e.target.value)} className="cf-input" placeholder="e.g., Mom's Care Circle"/></label>
     <label className="cf-label">Who are you caring for?<input value={cn} onChange={e=>setCn(e.target.value)} className="cf-input" placeholder="e.g., Margaret Johnson"/></label>
     <label className="cf-label">Your name<input value={mn} onChange={e=>setMn(e.target.value)} className="cf-input" placeholder="e.g., David"/></label>
     <label className="cf-label">Your role<input value={mr} onChange={e=>setMr(e.target.value)} className="cf-input" placeholder="e.g., Primary Caregiver, Daughter, Aide"/></label>
-    <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!tn.trim()||!cn.trim()||!mn.trim()){flash("Please fill in all fields.");return}createTeam(tn,cn,mn,mr)}} className="save-btn">Create Team</button><button onClick={()=>setTeamSetupMode(null)} className="cancel-btn">Cancel</button></div>
+    <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!tn.trim()||!cn.trim()||!mn.trim()){flash("Please fill in all fields.");return}createCircle(tn,cn,mn,mr)}} className="save-btn">Create Circle</button><button onClick={()=>setCircleSetupMode(null)} className="cancel-btn">Cancel</button></div>
   </div>)};
 
-const JoinTeamForm=({data,joinCode,setJoinCode,parseInviteCode,flash,joinTeamFromCode,setTeamSetupMode})=>{const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[mr,setMr]=useState("");const[rk,setRk]=useState("family");return(
-  <div className="team-form">
-    <h4 className="sync-sub-title">Join an Existing Team</h4>
-    <label className="cf-label">Invite code<input value={joinCode} onChange={e=>setJoinCode(e.target.value)} className="cf-input" placeholder="Paste the code from your team member" style={{fontFamily:"monospace",fontSize:12}}/></label>
-    {joinCode&&parseInviteCode(joinCode)&&<p className="hint" style={{color:"#718355"}}>✓ Team: <strong>{parseInviteCode(joinCode).teamName}</strong> · Caring for: <strong>{parseInviteCode(joinCode).clientName}</strong></p>}
+const JoinCircleForm=({data,joinCode,setJoinCode,parseInviteCode,flash,joinCircleFromCode,setCircleSetupMode})=>{const[mn,setMn]=useState((data.settings&&data.settings.deviceName)||"");const[tk,setTk]=useState("");const[mr,setMr]=useState("");const[rk,setRk]=useState("family");return(
+  <div className="circle-form">
+    <h4 className="sync-sub-title">Join an Existing Circle</h4>
+    <label className="cf-label">Invite code<input value={joinCode} onChange={e=>setJoinCode(e.target.value)} className="cf-input" placeholder="Paste the code from your circle member" style={{fontFamily:"monospace",fontSize:"0.8889rem"}}/></label>
+    {joinCode&&parseInviteCode(joinCode)&&<p className="hint" style={{color:"var(--color-text-success)"}}>✓ Circle: <strong>{parseInviteCode(joinCode).circleName}</strong></p>}
+    <label className="cf-label">Circle key<input value={tk} onChange={e=>setTk(e.target.value)} className="cf-input" placeholder="The key sent to you separately" style={{fontFamily:"var(--font-code)"}}/></label>
+    <p className="hint" style={{marginTop:-4}}>Your circle sends this on its own, apart from the invite code. You'll only ever enter it here.</p>
     <label className="cf-label">Your name<input value={mn} onChange={e=>setMn(e.target.value)} className="cf-input" placeholder="e.g., Sarah"/></label>
     <label className="cf-label">Your role title<input value={mr} onChange={e=>setMr(e.target.value)} className="cf-input" placeholder="e.g., Weekend Caregiver, Son, Home Health Aide"/></label>
     <label className="cf-label">Access level<select value={rk} onChange={e=>setRk(e.target.value)} className="cf-select">{ROLES.filter(r=>r.key!=="admin"&&!r.key.startsWith("client")).map(r=>(<option key={r.key} value={r.key}>{r.icon} {r.label} — {r.desc}</option>))}</select></label>
-    <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!joinCode.trim()||!mn.trim()){flash("Please enter the invite code and your name.");return}joinTeamFromCode(joinCode,mn,mr,rk)}} className="save-btn">Join Team</button><button onClick={()=>{setTeamSetupMode(null);setJoinCode("")}} className="cancel-btn">Cancel</button></div>
+    <div className="cf-actions" style={{marginTop:12}}><button onClick={()=>{if(!joinCode.trim()||!mn.trim()){flash("Please enter the invite code and your name.");return}joinCircleFromCode(joinCode,mn,mr,rk,tk)}} className="save-btn">Join Circle</button><button onClick={()=>{setCircleSetupMode(null);setJoinCode("")}} className="cancel-btn">Cancel</button></div>
   </div>)};
+
+/* ═══════════════ CLOUD STORAGE ═══════════════
+   Ported from the storage prototype. Every provider is treated as intermittent —
+   offline, expired token, revoked consent and full quota are indistinguishable
+   from here — so a durable outbox absorbs the gaps rather than Google being
+   special-cased. Objects are per-device with an encrypted manifest as the index,
+   because a single shared file races between pull and push. */
+
+// Reference provider: Dropbox, because its PKCE flow needs only a public app key (no secret), issues real
+// refresh tokens to a pure browser client, and its "App Folder" scope sandboxes us to our own folder. The
+// CLOUD_PROVIDERS shape is deliberately generic so Google Drive / OneDrive can be added behind the same
+// interface. APP keys are public by design; fill DROPBOX_APP_KEY after registering the app (see DEPLOY.md).
+/* Provider app identifiers. Public by design — these are client IDs, not secrets —
+   but they are per-deployment, so they come from the build environment rather than
+   being baked in. See DEPLOY.md for registering each one. */
+const DROPBOX_APP_KEY=(import.meta.env&&import.meta.env.VITE_DROPBOX_APP_KEY)||"";
+const GOOGLE_CLIENT_ID=(import.meta.env&&import.meta.env.VITE_GOOGLE_CLIENT_ID)||"";
+const MS_CLIENT_ID=(import.meta.env&&import.meta.env.VITE_MS_CLIENT_ID)||"";
+
+/* ── Google Identity Services ──
+   Google has no public-client type for web apps: its token endpoint wants a
+   client_secret even under PKCE, and a secret in a browser bundle is not a secret.
+   GIS is the flow Google actually intends for browser apps. It returns a
+   short-lived access token and deliberately no refresh token, so Drive access is
+   session-scoped — real while the tab is open, gone when it closes. The outbox
+   below is what makes that survivable: edits queue and drain on reconnect.
+
+   The script is loaded lazily, only when someone actually connects Drive, so an
+   install that never touches Google keeps the app's zero-external-request property. */
+const GIS_SRC="https://accounts.google.com/gsi/client";
+let _gisLoad=null;
+function loadGis(){
+  if(_gisLoad)return _gisLoad;
+  _gisLoad=new Promise((resolve,reject)=>{
+    if(typeof window==="undefined")return reject(new Error("No browser context."));
+    if(window.google&&window.google.accounts&&window.google.accounts.oauth2)return resolve();
+    const s=document.createElement("script");
+    s.src=GIS_SRC;s.async=true;s.defer=true;
+    s.onload=()=>resolve();
+    s.onerror=()=>{_gisLoad=null;reject(new Error("Couldn't reach Google to sign in. Check your connection."))};
+    document.head.appendChild(s);
+  });
+  return _gisLoad;
+}
+/* silent:true asks Google to reuse an existing session without a prompt. It is a
+   best effort — browser privacy rules increasingly break silent third-party auth —
+   so callers must treat failure as "ask the user to tap reconnect", never as fatal. */
+async function gisRequestToken({clientId,scope,silent}){
+  if(!clientId)throw new Error("Google Drive isn't configured for this deployment.");
+  await loadGis();
+  return new Promise((resolve,reject)=>{
+    let settled=false;
+    const client=window.google.accounts.oauth2.initTokenClient({
+      client_id:clientId, scope,
+      callback:(resp)=>{
+        if(settled)return; settled=true;
+        if(resp&&resp.access_token)resolve({accessToken:resp.access_token,expiresAt:Date.now()+(((resp.expires_in||3600)-60)*1000)});
+        else reject(new Error("Google didn't return an access token."));
+      },
+      error_callback:(err)=>{ if(settled)return; settled=true; reject(new Error((err&&(err.type||err.message))||"Google sign-in was cancelled.")); },
+    });
+    try{ client.requestAccessToken(silent?{prompt:""}:{}); }
+    catch(e){ if(!settled){settled=true;reject(e)} }
+  });
+}
+
+const CLOUD_SYNC_PATH="/care-guardian-sync.json"; // inside the per-account app folder
+function b64url(bytes){ let s=btoa(String.fromCharCode(...new Uint8Array(bytes))); return s.replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,""); }
+async function pkceChallengeFor(verifier){ const d=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(verifier)); return b64url(d); }
+function newPkceVerifier(){ return b64url(crypto.getRandomValues(new Uint8Array(64))); } // 86 url-safe chars, within 43–128
+const CLOUD_PROVIDERS={
+  dropbox:{
+    id:"dropbox", label:"Dropbox", icon:"📦",
+    authUrl:({challenge,state,redirectUri})=>`https://www.dropbox.com/oauth2/authorize?client_id=${encodeURIComponent(DROPBOX_APP_KEY)}&response_type=code&code_challenge=${encodeURIComponent(challenge)}&code_challenge_method=S256&token_access_type=offline&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}`,
+    exchangeBody:({code,verifier,redirectUri})=>new URLSearchParams({code,grant_type:"authorization_code",code_verifier:verifier,client_id:DROPBOX_APP_KEY,redirect_uri:redirectUri}),
+    refreshBody:(refreshToken)=>new URLSearchParams({grant_type:"refresh_token",refresh_token:refreshToken,client_id:DROPBOX_APP_KEY}),
+    tokenUrl:"https://api.dropboxapi.com/oauth2/token",
+    // Returns the stored ciphertext string, or null if the file doesn't exist yet (first sync).
+    download:async(accessToken,path)=>{
+      const r=await fetch("https://content.dropboxapi.com/2/files/download",{method:"POST",headers:{Authorization:"Bearer "+accessToken,"Dropbox-API-Arg":JSON.stringify({path})}});
+      if(r.status===409)return null; // path/not_found → nothing uploaded yet
+      if(!r.ok)throw new Error("Dropbox download "+r.status);
+      return await r.text();
+    },
+    upload:async(accessToken,path,content)=>{
+      const r=await fetch("https://content.dropboxapi.com/2/files/upload",{method:"POST",headers:{Authorization:"Bearer "+accessToken,"Dropbox-API-Arg":JSON.stringify({path,mode:"overwrite",mute:true}),"Content-Type":"application/octet-stream"},body:content});
+      if(!r.ok)throw new Error("Dropbox upload "+r.status);
+      return true;
+    },
+  },
+  onedrive:{
+    // Microsoft Graph — nearly as clean as Dropbox: PKCE without a secret (SPA platform), refresh tokens via
+    // offline_access, and a path-addressable per-app folder (special/approot) so we only ever see our own files.
+    id:"onedrive", label:"OneDrive", icon:"🟦",
+    authUrl:({challenge,state,redirectUri})=>`https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=${encodeURIComponent(MS_CLIENT_ID)}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent("Files.ReadWrite.AppFolder offline_access")}&code_challenge=${encodeURIComponent(challenge)}&code_challenge_method=S256&state=${encodeURIComponent(state)}`,
+    exchangeBody:({code,verifier,redirectUri})=>new URLSearchParams({code,grant_type:"authorization_code",code_verifier:verifier,client_id:MS_CLIENT_ID,redirect_uri:redirectUri,scope:"Files.ReadWrite.AppFolder offline_access"}),
+    refreshBody:(refreshToken)=>new URLSearchParams({grant_type:"refresh_token",refresh_token:refreshToken,client_id:MS_CLIENT_ID,scope:"Files.ReadWrite.AppFolder offline_access"}),
+    tokenUrl:"https://login.microsoftonline.com/common/oauth2/v2.0/token",
+    download:async(accessToken,path)=>{
+      const p=path.replace(/^\//,"");
+      const r=await fetch(`https://graph.microsoft.com/v1.0/me/drive/special/approot:/${encodeURIComponent(p)}:/content`,{headers:{Authorization:"Bearer "+accessToken}});
+      if(r.status===404)return null;
+      if(!r.ok)throw new Error("OneDrive download "+r.status);
+      return await r.text();
+    },
+    upload:async(accessToken,path,content)=>{
+      const p=path.replace(/^\//,"");
+      const r=await fetch(`https://graph.microsoft.com/v1.0/me/drive/special/approot:/${encodeURIComponent(p)}:/content`,{method:"PUT",headers:{Authorization:"Bearer "+accessToken,"Content-Type":"application/json"},body:content});
+      if(!r.ok)throw new Error("OneDrive upload "+r.status);
+      return true;
+    },
+  },
+  googledrive:{
+    // Google Drive, scope drive.file — the app only ever sees files it created, so
+    // the user can find and copy their own backup, and the scope is non-sensitive.
+    // Drive is file-ID-addressed rather than path-addressed, so each call resolves
+    // our object by name first. Auth is GIS: session-scoped, no refresh token.
+    id:"googledrive", label:"Google Drive", icon:"🗂", auth:"gis",
+    scope:"https://www.googleapis.com/auth/drive.file",
+    connect:async({silent}={})=>await gisRequestToken({clientId:GOOGLE_CLIENT_ID,scope:"https://www.googleapis.com/auth/drive.file",silent}),
+    configured:()=>!!GOOGLE_CLIENT_ID,
+    _findFileId:async(accessToken,name)=>{
+      const q=encodeURIComponent(`name='${name.replace(/'/g,"\\'")}' and trashed=false`);
+      const r=await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id,name)`,{headers:{Authorization:"Bearer "+accessToken}});
+      if(!r.ok)throw new Error("Drive list "+r.status);
+      const j=await r.json(); return (j.files&&j.files[0]&&j.files[0].id)||null;
+    },
+    download:async function(accessToken,path){
+      const name=path.replace(/^\//,"");
+      const id=await this._findFileId(accessToken,name); if(!id)return null;
+      const r=await fetch(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`,{headers:{Authorization:"Bearer "+accessToken}});
+      if(r.status===404)return null;
+      if(!r.ok)throw new Error("Drive download "+r.status);
+      return await r.text();
+    },
+    upload:async function(accessToken,path,content){
+      const name=path.replace(/^\//,"");
+      const id=await this._findFileId(accessToken,name);
+      if(id){
+        const r=await fetch(`https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media`,{method:"PATCH",headers:{Authorization:"Bearer "+accessToken,"Content-Type":"application/json"},body:content});
+        if(!r.ok)throw new Error("Drive update "+r.status);
+      }else{
+        const boundary="cg"+Math.random().toString(36).slice(2);
+        const body=`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({name})}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${boundary}--`;
+        const r=await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",{method:"POST",headers:{Authorization:"Bearer "+accessToken,"Content-Type":`multipart/related; boundary=${boundary}`},body});
+        if(!r.ok)throw new Error("Drive create "+r.status);
+      }
+      return true;
+    },
+  },
+};
+
+// ── Which providers this build can actually offer ──
+// Dropbox and OneDrive keep their PKCE definitions above as the shape for later, but neither has a
+// redirect handler yet, so neither is offered: a chooser that lists a provider you cannot finish
+// connecting to is worse than one that lists fewer. Readiness is "has a connect() and has a client
+// ID", which today means Google Drive alone.
+const cloudProviderReady=(p)=>!!(p && typeof p.connect==="function" && typeof p.configured==="function" && p.configured());
+const cloudProvidersReady=()=>Object.values(CLOUD_PROVIDERS).filter(cloudProviderReady);
+
+// The backup object is named, not obfuscated. Elsewhere in this layer object names are HMAC-derived
+// so a provider learns nothing from a folder listing — but a backup has to be findable by the person
+// who owns it, from a device whose vault is gone and which therefore cannot derive any name at all.
+// The contents are encrypted; the filename tells Google only what the OAuth grant already told it.
+const CLOUD_BACKUP_PATH="/Care Guardian Backup.care";
+
+// Adapt a CLOUD_PROVIDERS entry plus a live access token into the {put,get} shape outboxDrain wants,
+// and normalise provider errors into the classification the rest of the layer speaks.
+function cloudStorageAdapter(provider, getToken){
+  const wrap=async(fn)=>{
+    try{ return await fn(await getToken()); }
+    catch(e){
+      const cls=classifyStorageError(e,{offline:typeof navigator!=="undefined"&&navigator.onLine===false});
+      throw Object.assign(e instanceof Error?e:new Error(String(e)),{cls,code:cls==="quota"?"QUOTA":cls.toUpperCase()});
+    }
+  };
+  return {
+    id:provider.id,
+    label:provider.label,
+    put:(key,body)=>wrap(tok=>provider.upload(tok,key,body)),
+    get:(key)=>wrap(tok=>provider.download(tok,key)),
+  };
+}
+
+async function storageNameKey(circleKeyB64){
+  if(_objNameKey && _objNameKeyFor===circleKeyB64) return _objNameKey;
+  const raw=await crypto.subtle.importKey("raw", b64dec(circleKeyB64||"0"), {name:"HKDF"}, false, ["deriveBits"]);
+  const bits=await crypto.subtle.deriveBits({name:"HKDF",hash:"SHA-256",salt:new Uint8Array(0),info:new TextEncoder().encode(STORAGE_NAME_INFO)}, raw, 256);
+  _objNameKey=await crypto.subtle.importKey("raw", bits, {name:"HMAC",hash:"SHA-256"}, false, ["sign"]);
+  _objNameKeyFor=circleKeyB64;
+  return _objNameKey;
+}
+async function storageObjName(circleKeyB64, parts){
+  const key=await storageNameKey(circleKeyB64);
+  const sig=await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(parts.join("\u0000")));
+  return b64enc(new Uint8Array(sig).slice(0,15)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+}
+// Plain layout, kept for the local/relay case and as the fallback when no circle key is available (solo use
+// before a circle exists). The manifest records which scheme a device used, so both can coexist.
+const storageKeys = {
+  state:   (circleId,deviceId)=>"circle/"+circleId+"/"+deviceId+"/state.enc",
+  rotation:(circleId)=>"circle/"+circleId+"/rotation/latest.enc",
+  manifest:(circleId)=>"circle/"+circleId+"/manifest.enc",
+  audit:   (circleId,deviceId,month)=>"archive/"+month+"/audit-"+deviceId+"."+circleId+".enc",
+  blob:    (blobId)=>"blobs/"+blobId+".enc",
+};
+// Opaque equivalents. Everything lands in one flat folder: a directory tree is itself a disclosure (it shows how
+// the data is organised and how many of each kind exist), so there isn't one.
+const storageKeysOpaque = {
+  async state(circleKey,circleId,deviceId){ return "cg/"+await storageObjName(circleKey,["state",circleId,deviceId])+".bin"; },
+  async rotation(circleKey,circleId){ return "cg/"+await storageObjName(circleKey,["rotation",circleId])+".bin"; },
+  async audit(circleKey,circleId,deviceId,month){ return "cg/"+await storageObjName(circleKey,["audit",circleId,deviceId,month])+".bin"; },
+  async blob(circleKey,blobId){ return "cg/"+await storageObjName(circleKey,["blob",blobId])+".bin"; },
+};
+// The manifest keeps a FIXED name: a device arriving for the first time must be able to find the index, and it
+// can only derive names once it holds the circle key — which it does, but the fixed name also lets a device with
+// a rotated key still locate the index rather than losing the whole store.
+const STORAGE_MANIFEST_NAME="cg/index.bin";
+// ── Size padding ──
+// Ciphertext length leaks content volume: a 40 KB state object versus 400 KB says how much care is being
+// recorded, and a sudden jump says something happened. Padding to buckets blunts that. Buckets grow
+// proportionally so the overhead stays bounded (never more than ~25%) rather than padding everything to a
+// worst case nobody needs.
+function storagePadTo(len){
+  const steps=[4096,8192,16384,32768,65536,131072,262144,524288,1048576];
+  for(const s of steps) if(len<=s) return s;
+  return Math.ceil(len/1048576)*1048576;
+}
+function storagePad(text){
+  const len=new TextEncoder().encode(text).length;
+  const target=storagePadTo(len+16);
+  return text+"\n"+"#".repeat(Math.max(0,target-len-1));   // padding is outside the JSON, stripped on read
+}
+const storageUnpad=(text)=>String(text||"").replace(/\n#+$/,"");
+const storageIsStateKey=(k)=>/^circle\/[^/]+\/[^/]+\/state\.enc$/.test(String(k||""));
+const storageDeviceOfKey=(k)=>{ const m=/^circle\/[^/]+\/([^/]+)\/state\.enc$/.exec(String(k||"")); return m?m[1]:""; };
+// In-memory provider. Used by tests, and it is also the honest shape of "device only" — writes succeed, nothing
+// travels. Quota is modelled so quota-exhaustion handling can be tested without filling a real Drive.
+function createMemoryStorage(opts){
+  const o=opts||{}; const store=new Map(); let used=0;
+  const quota=o.quotaBytes||5*1024*1024;
+  const fail=()=>{ if(o.failWith) throw new Error(o.failWith); };
+  return {
+    kind:"memory", label:o.label||"This device",
+    async put(key,text){ fail();
+      const size=new TextEncoder().encode(String(text)).length;
+      const prev=store.has(key)?new TextEncoder().encode(store.get(key)).length:0;
+      if(used-prev+size>quota){ const e=new Error("STORAGE_QUOTA"); e.code="QUOTA"; throw e; }
+      used=used-prev+size; store.set(key,String(text)); return {key,size}; },
+    async get(key){ fail(); if(!store.has(key)){ const e=new Error("STORAGE_NOT_FOUND"); e.code="NOT_FOUND"; throw e; } return store.get(key); },
+    async list(prefix){ fail(); return [...store.keys()].filter(k=>k.startsWith(prefix||"")).sort(); },
+    async del(key){ fail(); if(store.has(key)){ used-=new TextEncoder().encode(store.get(key)).length; store.delete(key); } return true; },
+    async quota(){ return {used,total:quota,free:Math.max(0,quota-used)}; },
+  };
+}
+// ── Storage failure classification (Phase 4) ═══
+// Every provider reports trouble differently and most of it arrives as an HTTP status inside an Error message.
+// Without classification the app can only say "sync failed", which is the least useful thing it could say: the
+// user cannot tell whether to reconnect, free up space, wait, or worry about their records. Each class below maps
+// to ONE required behaviour, and the invariant across all of them is that recording never stops — a storage
+// problem must never become a reason someone can't write down that a dose was given.
+const STORAGE_FAIL = {
+  AUTH:"auth",        // token expired or consent revoked → degrade to local, offer one-tap reconnect
+  QUOTA:"quota",      // account full → stop uploading, keep recording, tell them early
+  OFFLINE:"offline",  // no network → retry silently, this is normal on a phone
+  OUTAGE:"outage",    // provider 5xx → retry with backoff, surface only if it persists
+  RATE:"rate",        // throttled → back off, never hammer
+  MISSING:"missing",  // folder or manifest deleted → offer to re-upload from the local vault
+  UNKNOWN:"unknown",
+};
+function classifyStorageError(err, opts){
+  const o=opts||{};
+  if(o.offline===true) return STORAGE_FAIL.OFFLINE;
+  const msg=String((err&&err.message)||err||"");
+  const status=(err&&err.status)||Number((msg.match(/\b(4\d\d|5\d\d)\b/)||[])[1])||0;
+  if(err&&err.code==="QUOTA") return STORAGE_FAIL.QUOTA;
+  if(/insufficient[_ ]?(storage|space)|quota|storage.?full|507/i.test(msg)) return STORAGE_FAIL.QUOTA;
+  if(status===401||status===403||/expired|revoked|reconnect|invalid[_ ]grant|unauthor/i.test(msg)) return STORAGE_FAIL.AUTH;
+  if(status===429||/rate.?limit|too many requests|throttl/i.test(msg)) return STORAGE_FAIL.RATE;
+  if(status===404||/not[_ ]?found|LOCAL_MISSING/i.test(msg)) return STORAGE_FAIL.MISSING;
+  if(status>=500||/服务|unavailable|bad gateway|timeout|network|failed to fetch/i.test(msg)) return STORAGE_FAIL.OUTAGE;
+  return STORAGE_FAIL.UNKNOWN;
+}
+// What the user is told, and what the app does. Every message says where the records actually are, because that
+// is the only question a caregiver seeing an error actually cares about.
+const STORAGE_FAIL_UI = {
+  auth:   {title:"Reconnect your storage", body:"Your storage sign-in has expired. Your records are safe on this device and will upload as soon as you reconnect.", action:"reconnect", retry:false, alarm:true},
+  quota:  {title:"Your cloud storage is full", body:"Care Guardian has stopped uploading, but it is still recording everything on this device. Free up space and it will catch up on its own.", action:"none", retry:false, alarm:true},
+  offline:{title:"No connection", body:"Your records are being saved on this device and will upload when you're back online.", action:"none", retry:true, alarm:false},
+  outage: {title:"Storage is not responding", body:"Your provider isn't answering right now. Your records are safe on this device and Care Guardian will keep trying.", action:"none", retry:true, alarm:false},
+  rate:   {title:"Slowing down", body:"Your provider asked us to slow down. Care Guardian will finish uploading shortly.", action:"none", retry:true, alarm:false},
+  missing:{title:"Storage folder is missing", body:"The folder Care Guardian was using can't be found — it may have been moved or deleted. Everything is still on this device and can be uploaded again.", action:"reupload", retry:false, alarm:true},
+  unknown:{title:"Couldn't reach your storage", body:"Your records are safe on this device. Care Guardian will try again on the next sync.", action:"none", retry:true, alarm:false},
+};
+const storageFailUI=(cls)=>STORAGE_FAIL_UI[cls]||STORAGE_FAIL_UI.unknown;
+// Exponential backoff with a ceiling, so a provider outage is retried politely rather than hammered.
+function storageBackoffMs(attempt, baseMs, capMs){
+  const base=baseMs||30000, cap=capMs||3600000;
+  const raw=base*Math.pow(2,Math.max(0,(attempt||1)-1));
+  return Math.min(raw,cap);
+}
+const storageShouldRetryNow=(state,now)=>{
+  if(!state||!state.nextAttemptAt) return true;
+  return (now?new Date(now).getTime():Date.now())>=new Date(state.nextAttemptAt).getTime();
+};
+// Quota warning at 80%, so someone learns their Drive is filling up BEFORE uploads stop.
+const STORAGE_QUOTA_WARN = 0.8;
+function storageQuotaState(used,total){
+  if(!total||!isFinite(total)||total<=0) return {level:"unknown",pct:null};
+  const pct=used/total;
+  return {pct:Math.round(pct*100), level: pct>=1?"full" : pct>=STORAGE_QUOTA_WARN?"warn" : "ok"};
+}
+// ── Manifest: the index that makes per-device objects discoverable ──
+// The cloud providers here implement upload and download but NOT list — Dropbox, Drive and OneDrive each expose
+// listing differently and none is wired. So discovery cannot rely on enumerating a folder: the manifest IS the
+// index. Each device publishes its own state object and records itself in the manifest; every other device reads
+// the manifest to learn which objects to fetch.
+// Why per-device objects at all: with one shared file, two devices syncing the same day overwrite each other and
+// the loser's work is gone with no trace. Per-device objects mean writes never collide, and merging happens in
+// the app where the HLC clock can resolve it.
+const MANIFEST_VERSION = 1;
+function manifestEmpty(circleId){ return {v:MANIFEST_VERSION, circleId:circleId||"", epoch:0, devices:{}, updatedAt:""}; }
+// Record this device's contribution. Never removes another device's entry — a device that hasn't synced lately is
+// not a device that has left.
+function manifestPut(manifest, deviceId, entry, now){
+  const m=manifest&&manifest.v===MANIFEST_VERSION?{...manifest,devices:{...manifest.devices}}:manifestEmpty(manifest&&manifest.circleId);
+  // NOTE: the true byte size is deliberately NOT recorded. Nothing reads it, and publishing it would defeat the
+  // size padding applied to the objects themselves — the manifest would hand back exactly what padding hides.
+  m.devices[deviceId]={key:entry.key, updatedAt:now||new Date().toISOString(),
+    label:entry.label||"", epoch:entry.epoch||0};
+  m.epoch=Math.max(m.epoch||0, entry.epoch||0);
+  m.updatedAt=now||new Date().toISOString();
+  return m;
+}
+// Which objects should this device pull? Everyone else's, newest first, skipping ones we've already seen.
+function manifestPullList(manifest, selfDeviceId, seen){
+  const devices=(manifest&&manifest.devices)||{};
+  return Object.keys(devices)
+    .filter(id=>id!==selfDeviceId)
+    .map(id=>({deviceId:id,...devices[id]}))
+    .filter(d=>d.key && !(seen&&seen[d.deviceId]===d.updatedAt))
+    .sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+// Two devices can write the manifest at nearly the same moment and the later write wins at file level, dropping
+// the other's entry. Merging on read repairs that: take the newest entry per device from both copies.
+function manifestMerge(a, b){
+  const out=manifestEmpty((a&&a.circleId)||(b&&b.circleId));
+  for(const src of [a,b]){
+    if(!src||!src.devices) continue;
+    for(const id of Object.keys(src.devices)){
+      const cand=src.devices[id], cur=out.devices[id];
+      if(!cur || String(cand.updatedAt||"")>String(cur.updatedAt||"")) out.devices[id]=cand;
+    }
+    out.epoch=Math.max(out.epoch||0, src.epoch||0);
+    if(String(src.updatedAt||"")>String(out.updatedAt||"")) out.updatedAt=src.updatedAt;
+  }
+  return out;
+}
+// A device whose objects belong to a superseded key epoch can't be read after rotation; report rather than fail.
+function manifestStaleDevices(manifest, currentEpoch){
+  const devices=(manifest&&manifest.devices)||{};
+  return Object.keys(devices).filter(id=>(devices[id].epoch||0)<(currentEpoch||0)).map(id=>({deviceId:id,...devices[id]}));
+}
+// ── Provider capability: the architectural consequence of supporting Google Drive ──
+// Dropbox and OneDrive are PKCE public clients that issue a REFRESH token, so authorisation survives the app
+// being closed. Google Drive in a browser cannot: its Web-application client type requires a client_secret at the
+// token endpoint (which a browser cannot keep), and the Google Identity Services token model — the flow Google
+// actually recommends for SPAs — issues a short-lived access token and NO refresh token. Google access is
+// therefore SESSION-SCOPED: real while the app is open, gone when it closes.
+// Rather than treat that as a defect, the sync engine now treats provider availability as intermittent by
+// default. That is honest for every provider — offline, expired token, revoked consent, exhausted quota all look
+// the same — so the design that makes Google first-class also makes Dropbox and OneDrive more robust.
+const STORAGE_CAPS = {
+  dropbox:  {auth:"persistent", background:true,  label:"Dropbox"},
+  onedrive: {auth:"persistent", background:true,  label:"OneDrive"},
+  googledrive:{auth:"session",  background:false, label:"Google Drive",
+    note:"Google doesn't allow a browser app to stay signed in between visits, so Care Guardian saves to Drive while you're using it and reconnects with one tap when you come back."},
+  memory:   {auth:"persistent", background:true,  label:"This device"},
+};
+const storageCaps=(id)=>STORAGE_CAPS[id]||{auth:"session",background:false,label:String(id||"")};
+// ── Outbox: what makes intermittent providers safe ──
+// Every change that needs uploading is queued locally and drained whenever storage happens to be available.
+// Entries are deduplicated BY KEY, because each object is a complete snapshot: queueing state.enc five times
+// means the fifth supersedes the rest. Without that the queue would grow without bound on a busy day.
+const STORAGE_OUTBOX_MAX = 500;
+function outboxEnqueue(outbox, entry, now){
+  const q=(outbox||[]).filter(e=>e && e.key!==entry.key);
+  q.push({key:entry.key, kind:entry.kind||"state", queuedAt:now||new Date().toISOString(), tries:0});
+  return q.length>STORAGE_OUTBOX_MAX ? q.slice(q.length-STORAGE_OUTBOX_MAX) : q;
+}
+// The manifest must be written last, so it is always drained after everything else it points at.
+function outboxOrder(outbox){
+  const q=[...(outbox||[])];
+  return q.sort((a,b)=>(a.kind==="manifest"?1:0)-(b.kind==="manifest"?1:0)||String(a.queuedAt).localeCompare(String(b.queuedAt)));
+}
+// Drain against any provider. A failure is retried, not dropped: a queue that discards on error is not a queue.
+// A quota failure stops the run — retrying the rest would just fail too, and hammering the provider is rude.
+async function outboxDrain(provider, outbox, readObject, opts){
+  const o=opts||{}; const maxTries=o.maxTries||5;
+  let remaining=[...outboxOrder(outbox)]; const done=[]; let stopped=null;
+  for(const entry of outboxOrder(outbox)){
+    let body;
+    try{ body=await readObject(entry); }catch(e){ remaining=remaining.filter(x=>x.key!==entry.key); continue; } // object gone: drop it
+    try{
+      await provider.put(entry.key, body);
+      remaining=remaining.filter(x=>x.key!==entry.key); done.push(entry.key);
+    }catch(e){
+      const code=e&&e.code;
+      if(code==="QUOTA"){ stopped="QUOTA"; break; }
+      remaining=remaining.map(x=>x.key===entry.key?{...x,tries:(x.tries||0)+1,lastError:String(e&&e.message||e)}:x)
+                         .filter(x=>x.key!==entry.key||(x.tries||0)<maxTries);
+      if(o.stopOnError){ stopped=code||"ERROR"; break; }
+    }
+  }
+  return {outbox:remaining, uploaded:done, stopped, complete:remaining.length===0};
+}
+// ── Staleness (locked: 7 days) ──
+function storageStaleness(lastOkAt, now){
+  if(!lastOkAt) return {days:null,level:"never",stale:true};
+  const t=new Date(lastOkAt).getTime(), n=(now?new Date(now):new Date()).getTime();
+  if(!isFinite(t)) return {days:null,level:"never",stale:true};
+  const days=Math.floor((n-t)/86400000);
+  return {days, stale:days>=STORAGE_STALE_DAYS, level:days>=STORAGE_STALE_DAYS?"stale":(days>=Math.floor(STORAGE_STALE_DAYS/2)?"ageing":"fresh")};
+}
+// ── One provider per circle ──
+// A second admin connecting different storage must be surfaced, never silently merged: two clouds means two
+// divergent copies of the record and no way to say which is authoritative.
+function storageProviderConflict(local, remote){
+  const a=local&&local.provider, b=remote&&remote.provider;
+  if(!a||!b||a===b) return null;
+  return {conflict:true, local:a, remote:b,
+    localAccount:(local&&local.account)||"", remoteAccount:(remote&&remote.account)||""};
+}
+// ── What a sync writes ──
+function storagePlanUploads(circleId, deviceId, opts){
+  const o=opts||{}; const out=[{key:storageKeys.state(circleId,deviceId),kind:"state"}];
+  if(o.rotation) out.push({key:storageKeys.rotation(circleId),kind:"rotation"});
+  if(o.auditMonth) out.push({key:storageKeys.audit(circleId,deviceId,o.auditMonth),kind:"audit"});
+  for(const b of (o.blobIds||[])) out.push({key:storageKeys.blob(b),kind:"blob"});
+  out.push({key:storageKeys.manifest(circleId),kind:"manifest",last:true}); // manifest written LAST
+  return out;
+}
 
 /* ═══════════════ COMPONENT ═══════════════ */
 export default function App() {
@@ -1616,6 +2250,11 @@ export default function App() {
   const [setupMode,setSetupMode]=useState(false);
   const [setupCgPw,setSetupCgPw]=useState("");
   const [dataLossDetected,setDataLossDetected]=useState(false);
+  /* The caregiver passcode, held only for this session so a backup written now
+     can carry a passcode wrap. Never persisted; cleared on lock with the DEK.
+     Only used when it clears BACKUP_PW_MIN — a short sign-in PIN must not become
+     the cheapest way into a file that can be copied and attacked offline. */
+  const cgPasscodeRef=useRef("");
   const [recoveryReason,setRecoveryReason]=useState("dataloss"); // "dataloss" (eviction) | "forgot" (user-initiated from unlock)
   const [recoveryData,setRecoveryData]=useState(null);
   const [recoveryPw,setRecoveryPw]=useState("");
@@ -1636,11 +2275,9 @@ export default function App() {
   const dekRef=useRef(null);
   const rKeyRef=useRef(null);            // restricted-zone key (DEK_R); caregiver sessions derive it, scoped client sessions hold ONLY it
   const clientScopedRef=useRef(false);   // true → this session is cryptographically scoped: persist projection ONLY, never vault/WAL/audit
-  const [clientScoped,setClientScoped]=useState(false);
   const [srChainStatus,setSrChainStatus]=useState(null); // client self-report chain verification result
   const [outboxOversized,setOutboxOversized]=useState(0); // bytes; >0 → quarantined pending review
   const auditKeyRef=useRef(null);
-  const [auditEntries,setAuditEntries]=useState([]);
   const [storageInfo,setStorageInfo]=useState(null);
   const [auditChainStatus,setAuditChainStatus]=useState(null); // {status, brokenAtSeq, chained, total}
   const [storageAtRisk,setStorageAtRisk]=useState(false);       // persistent storage not granted → eviction risk
@@ -1662,7 +2299,6 @@ export default function App() {
   const [mfaAddPasskey,setMfaAddPasskey]=useState(false);
   const [mfaAddPc,setMfaAddPc]=useState("");
   const [mfaAddBusy,setMfaAddBusy]=useState(false);
-  const [auditCount,setAuditCount]=useState(0);
   const lastActivityRef=useRef(Date.now());
   const [data,setData]=useState(()=>initState(""));
   const DOMAINS=buildDomains((data.settings&&data.settings.stateCode)||"");
@@ -1670,9 +2306,9 @@ export default function App() {
   /* ── Role & permissions ── */
   const getRole=()=>{
     if(authMode==="client"){const ct=data.settings&&data.settings.clientTier;return ct||"client-restricted"}
-    const team=data.settings&&data.settings.team;
-    if(!team)return authMode==="caregiver"?"admin":"client-restricted";
-    const members=team.members||[];
+    const circle=data.settings&&data.settings.circle;
+    if(!circle)return authMode==="caregiver"?"admin":"client-restricted";
+    const members=circle.members||[];
     const did=data.settings&&data.settings.deviceId;
     const me=members.find(m=>m.deviceId===did);
     return(me&&me.role_key)||"family";
@@ -1684,8 +2320,25 @@ export default function App() {
   const isCarePro=role==="carepro";
   const isClientFull=role==="client-full";
   const isClientRestricted=role==="client-restricted";
+  const isObserver=role==="observer";
+  // Clients and observers both see the app read-only. UI edit affordances gate
+  // on this; anything client-specific still gates on isClient.
+  const isReadOnly=isClient||isObserver;
 
   const can=(action,context)=>{
+    // Observer is a hard read-only role. Rather than excluding it in each of the
+    // ~45 cases below — several of which read "anyone who isn't X" and would
+    // silently grant it — permissions are allow-listed here. A permission added
+    // later is therefore denied to observers by default, not accidentally opened.
+    if(isObserver){
+      switch(action){
+        case "view-domain": return OBSERVER_DOMAINS.includes(context);
+        case "view-contacts": case "view-documents": case "view-shifts":
+        case "view-selfreport":
+          return true;
+        default: return false; // every edit-/add-/remove-/delete-/check-/log-/med-admin/export/manage-* action
+      }
+    }
     switch(action){
       case "view-domain": return isCarePro?CAREPRO_DOMAINS.includes(context):true;
       case "view-legal": return !isCarePro&&!isClientRestricted;
@@ -1713,7 +2366,7 @@ export default function App() {
       case "submit-selfreport": return isClient||isAdmin||isFamily;
       case "view-selfreport": return true;
       case "export-data": return isAdmin||isFamily||isClientFull;
-      case "manage-team": return isAdmin;
+      case "manage-circle": return isAdmin;
       case "manage-settings": return isAdmin;
       case "manage-sync": return isAdmin;
       case "change-passcodes": return isAdmin;
@@ -1730,9 +2383,19 @@ export default function App() {
     }
   };
 
-  const switchState=(newCode)=>{const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{const existing=data.domains[d.key];if(existing&&existing.goals){newDomains[d.key]={...existing,goals:d.goals.map((g,gi)=>{const eg=existing.goals[gi];if(eg)return{...eg,subs:g.subs.map((s,si)=>eg.subs[si]||{done:false,lastDone:null,typeOverride:null}),titleOverride:eg.titleOverride,subOverrides:eg.subOverrides,customSubs:eg.customSubs||[]};return{done:false,subs:g.subs.map(()=>({done:false,lastDone:null,typeOverride:null})),customSubs:[],titleOverride:null,subOverrides:{}}})}}else{newDomains[d.key]={status:"not-started",notes:"",lastUpdated:null,goals:d.goals.map(g=>({done:false,subs:g.subs.map(()=>({done:false,lastDone:null,typeOverride:null})),customSubs:[],titleOverride:null,subOverrides:{}}))}}});setData(p=>({...p,domains:newDomains,settings:{...p.settings,stateCode:newCode}}));flash(newCode?"Switched to "+(AVAILABLE_STATES.find(s=>s.code===newCode)||{}).name+" mode.":"Switched to Generic mode.")};
-  const [view,setView]=useState("today-hub");
+  const switchState=(newCode)=>{
+    // Rebuilds every care domain from the new region's template, so it is not a
+    // preference toggle: gate it, and make the caregiver mean it.
+    if(!can("manage-settings")){flash("Only an admin can change the region.");return}
+    const label=(AVAILABLE_STATES.find(x=>x.code===newCode)||{}).name||"Generic";
+    if(!window.confirm(`Switch to ${label}?\n\nThis rebuilds the care plan from that region's template. Notes and completed items you've already recorded are kept, but the goals and tasks themselves change.`))return;
+const newDoms=buildDomains(newCode);const newDomains={};newDoms.forEach(d=>{const existing=data.domains[d.key];if(existing&&existing.goals){newDomains[d.key]={...existing,goals:d.goals.map((g,gi)=>{const eg=existing.goals[gi];if(eg)return{...eg,subs:g.subs.map((s,si)=>eg.subs[si]||{done:false,lastDone:null,typeOverride:null}),titleOverride:eg.titleOverride,subOverrides:eg.subOverrides,customSubs:eg.customSubs||[]};return{done:false,subs:g.subs.map(()=>({done:false,lastDone:null,typeOverride:null})),customSubs:[],titleOverride:null,subOverrides:{}}})}}else{newDomains[d.key]={status:"not-started",notes:"",lastUpdated:null,goals:d.goals.map(g=>({done:false,subs:g.subs.map(()=>({done:false,lastDone:null,typeOverride:null})),customSubs:[],titleOverride:null,subOverrides:{}}))}}});setData(p=>({...p,domains:newDomains,settings:{...p.settings,stateCode:newCode}}));flash(newCode?"Switched to "+(AVAILABLE_STATES.find(s=>s.code===newCode)||{}).name+" mode.":"Switched to Generic mode.")};
+  const [view,setView]=useState("today");
   const [currentHub,setCurrentHub]=useState("today");
+  const [careMenuOpen,setCareMenuOpen]=useState(false);
+  const [medsTab,setMedsTab]=useState("schedule"); // schedule | cabinet
+  const [logTab,setLogTab]=useState("mine");       // mine | patient | patterns
+  const [refusal,setRefusal]=useState(null);       // {medId, slot, date} — Pause & Pivot
   const [navStack,setNavStack]=useState([]);
   const [expanded,setExpanded]=useState({});
   const [editNotes,setEditNotes]=useState(false); const [notesDraft,setNotesDraft]=useState("");
@@ -1742,25 +2405,22 @@ export default function App() {
   const [contactSort,setContactSort]=useState("category"); const [contactFilter,setContactFilter]=useState("all");
   const [contactForm,setContactForm]=useState(null); const [contactDetail,setContactDetail]=useState(null);
   const [contactNoteText,setContactNoteText]=useState("");
-  const [importResult,setImportResult]=useState(null);
   // Calendar
   const [calYear,setCalYear]=useState(new Date().getFullYear()); const [calMonth,setCalMonth]=useState(new Date().getMonth());
   const [calSelected,setCalSelected]=useState(null); const [apptForm,setApptForm]=useState(null);
   // Messages
   const [msgFrom,setMsgFrom]=useState(""); const [msgText,setMsgText]=useState("");
   // Settings
-  const [exportPw,setExportPw]=useState(""); const [importPw,setImportPw]=useState("");
+  const [importPw,setImportPw]=useState(""); // passcode for a circle member's file, on Circle Sync
   const [settingsMsg,setSettingsMsg]=useState(null);
   const [newCaregiverPw,setNewCaregiverPw]=useState(""); const [newClientPw,setNewClientPw]=useState("");
   // Merge
   const [mergePreview,setMergePreview]=useState(null); // {merged, report, sourceName}
-  const mergeFileRef=useRef(null);
   // Sync
   const [syncPasscode,setSyncPasscode]=useState(""); // memory only — never persisted
   const [syncPullUrl,setSyncPullUrl]=useState("");
   const [syncPullText,setSyncPullText]=useState("");
   const [syncStatus,setSyncStatus]=useState(null); // {type:"success"|"error",msg}
-  const [syncPushing,setSyncPushing]=useState(false);
   const [syncPulling,setSyncPulling]=useState(false);
   const syncFileRef=useRef(null);
   // Cloud sync
@@ -1775,9 +2435,23 @@ export default function App() {
   const [lastAutoBackupAt,setLastAutoBackupAt]=useState(null);
   const [backupBusy,setBackupBusy]=useState(false);
   const backupTimerRef=useRef(null);
+  // Cloud backup (OAuth). "off" until a provider is chosen; "active" once we hold a live token;
+  // "reconnect" when the provider is remembered but the token could not be renewed silently.
+  const [cloudBkStatus,setCloudBkStatus]=useState("off"); // off | active | reconnect
+  const [cloudBkBusy,setCloudBkBusy]=useState(false);
+  const [cloudBkFail,setCloudBkFail]=useState(null);      // STORAGE_FAIL class, or null
+  const [cloudBkLastAt,setCloudBkLastAt]=useState(null);
+  // The access token lives in memory for the session only. GIS issues no refresh token, so there is
+  // nothing here worth persisting — and a token in the vault would outlive the session that earned it.
+  const cloudTokenRef=useRef(null);                        // {accessToken,expiresAt}
+  const cloudBkTimerRef=useRef(null);
+  // The queue is deliberately NOT in the vault: the push is triggered by `data` changing, so
+  // persisting the queue into `data` would make every upload trigger the next one, forever.
+  // Cross-launch retry is covered instead by pushing once when a session connects.
+  const cloudOutboxRef=useRef([]);
   const [showAdvancedSync,setShowAdvancedSync]=useState(false);
-  // Team
-  const [teamSetupMode,setTeamSetupMode]=useState(null); // null|"create"|"join"
+  // Circle
+  const [circleSetupMode,setCircleSetupMode]=useState(null); // null|"create"|"join"
   const [joinCode,setJoinCode]=useState("");
   const [searchOpen,setSearchOpen]=useState(false);
   const [searchQ,setSearchQ]=useState("");
@@ -1793,6 +2467,9 @@ export default function App() {
   // Incidents
   const [incidentForm,setIncidentForm]=useState(null);
   const incidentPhotoRef=useRef(null);
+  const [ecardForm,setEcardForm]=useState(null);
+  const ecardPhotoRef=useRef(null);
+  const contactPhotoRef=useRef(null);
   const [incidentFilter,setIncidentFilter]=useState("all");
   // Expenses
   const [expenseForm,setExpenseForm]=useState(null);
@@ -1919,6 +2596,16 @@ export default function App() {
     }
   })()},[]);
   useEffect(()=>{if(!(data.settings&&data.settings.deviceId)){setData(p=>({...p,settings:{...p.settings,deviceId:genDeviceId()}}))}},[]);
+  // Text size — Standard is the 18px root; Large/Larger scale the same root so
+  // every rem-based size and the tap-target floor grow together. Missing setting
+  // reads as "standard", so pre-v3 payloads render exactly as they did before.
+  useEffect(()=>{ if(view==="messages"&&authed) markMessagesRead(); },[view,authed,(data.messages||[]).length]);
+
+
+  useEffect(()=>{
+    const pct=UI_SCALE_PCT[(data.settings&&data.settings.textSize)||"standard"]||100;
+    try{document.documentElement.style.setProperty("--ui-scale-pct",String(pct))}catch{}
+  },[data.settings&&data.settings.textSize]);
   // Option 5 — recommend Add to Home Screen on iOS browser tabs (separate storage bucket, less eviction)
   useEffect(()=>{try{
     const standalone=window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches||window.navigator.standalone===true;
@@ -1952,12 +2639,12 @@ export default function App() {
   // Option 4 — backup reminder: prompt if no backup in 7+ days (or never), once authed.
   // Aware of continuous backup: silent when active, prompts resume when paused.
   useEffect(()=>{if(!authed)return;try{
-    if(backupStatus==="active"){setShowBackupReminder(false);return}
+    if(backupStatus==="active"||cloudBkStatus==="active"){setShowBackupReminder(false);return}
     if(backupStatus==="paused"){setShowBackupReminder(true);return}
     const last=data.settings&&data.settings.lastBackupAt;
     const stale=!last||(Date.now()-new Date(last).getTime())>7*24*60*60*1000;
     if(stale&&can("export-data"))setShowBackupReminder(true);
-  }catch{}},[authed,backupStatus]);
+  }catch{}},[authed,backupStatus,cloudBkStatus]);
   // Restore cloud file handle on mount
   useEffect(()=>{(async()=>{try{const h=await loadSyncHandle();if(h){setCloudHandle(h);setCloudFileName(h.name);setCloudConnected(true)}}catch{}})()},[]);
   // Restore the continuous-backup handle once authed; silently check whether write permission survived this session.
@@ -1971,7 +2658,7 @@ export default function App() {
   // Debounced automatic write whenever data changes and backup is active.
   useEffect(()=>{
     if(!authed||backupStatus!=="active"||!backupHandle)return;
-    const pw=getBackupPasscode();if(!pw)return;
+    const pw=getRecoveryKey()||getBackupPasscode();if(!pw)return;
     if(backupTimerRef.current)clearTimeout(backupTimerRef.current);
     backupTimerRef.current=setTimeout(async()=>{
       try{
@@ -1983,6 +2670,28 @@ export default function App() {
     },4000);
     return()=>{if(backupTimerRef.current)clearTimeout(backupTimerRef.current)};
   },[data,authed,backupStatus,backupHandle]);
+  // Cloud backup, on launch: if a provider was connected before, ask for a token silently. This is
+  // the half of "automatic" the file-handle path can't do — no picker, no permission prompt, no tap.
+  useEffect(()=>{
+    if(!authed)return;
+    const cb=data.settings&&data.settings.cloudBackup;
+    if(!cb||!cb.provider)return;
+    if(cloudBkStatus!=="off")return;
+    let cancelled=false;
+    (async()=>{
+      try{ await cloudBkToken(true); if(cancelled)return; setCloudBkStatus("active");setCloudBkFail(null);await cloudBkPush(); }
+      catch{ if(!cancelled)setCloudBkStatus("reconnect") }
+    })();
+    return()=>{cancelled=true};
+  },[authed]);
+  // Cloud backup, on change: same 4s debounce as the local path, so a burst of edits is one upload.
+  useEffect(()=>{
+    if(!authed||cloudBkStatus!=="active")return;
+    if(!(getRecoveryKey()||getBackupPasscode()))return;
+    if(cloudBkTimerRef.current)clearTimeout(cloudBkTimerRef.current);
+    cloudBkTimerRef.current=setTimeout(()=>{cloudBkPush()},4000);
+    return()=>{if(cloudBkTimerRef.current)clearTimeout(cloudBkTimerRef.current)};
+  },[data,authed,cloudBkStatus]);
 
   /* ── Cloud sync handlers ── */
   const cloudConnect=async()=>{
@@ -1999,23 +2708,45 @@ export default function App() {
         await writable.write(JSON.stringify({encrypted:true,version:"2.0",sync:true,data:b64}));
         await writable.close();
       }
-      setSyncStatus({type:"success",msg:"Connected to "+handle.name+". Place this file in a shared Google Drive, Dropbox, iCloud, or OneDrive folder. All team members select the same file."});
+      setSyncStatus({type:"success",msg:"Connected to "+handle.name+". Place this file in a shared Google Drive, Dropbox, iCloud, or OneDrive folder. All circle members select the same file."});
     }catch(e){if(e.name!=="AbortError")setSyncStatus({type:"error",msg:"Connection failed: "+e.message})}
   };
 
   const cloudDisconnect=async()=>{await clearSyncHandle();setCloudHandle(null);setCloudFileName(null);setCloudConnected(false);setSyncStatus({type:"success",msg:"Disconnected from cloud sync."})};
 
-  /* ── Continuous encrypted backup (File System Access) ── */
-  const [backupPw,setBackupPw]=useState("");
+  /* ── Encrypted backup ── */
+  // One passcode protects the backup file, whether it was written automatically
+  // or saved by hand: both produce the same .care file, and the restore screen
+  // asks for this one secret by this one name.
+  // One saved key. It opens backup files, and when MFA is on it is the same
+  // string as the passkey backstop — so a caregiver holds one, not two.
+  // The caregiver passcode is only offered as a backup wrap when it clears the
+  // same floor the dedicated backup passcode had. A backup file can be copied
+  // and attacked offline, so a 4-character sign-in PIN must not become the
+  // weakest way into it — below the floor, the Recovery Key is the only factor.
+  const caregiverPasscodeForWrap=()=>{
+    const pc=cgPasscodeRef.current||"";
+    return pc.length>=BACKUP_PW_MIN?pc:"";
+  };
+  const getRecoveryKey=()=>(data.settings&&data.settings.recoveryKey)||"";
+  const ensureRecoveryKey=()=>{
+    const existing=getRecoveryKey();
+    if(existing)return existing;
+    const key=genRecoveryCode();
+    setData(p=>({...p,settings:{...p.settings,recoveryKey:key}}));
+    return key;
+  };
   const getBackupPasscode=()=>(data.settings&&data.settings.backupPasscode)||"";
   // Encrypt the full vault with the backup passcode and write it to the handle. Self-contained .care file.
   const writeBackupToHandle=async(handle,passcode)=>{
     if(!handle||!passcode)return false;
     const exportMeta={exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId)||"",exportedByName:(data.settings&&data.settings.deviceName)||"",formatVersion:"2.0",source:"auto-backup"};
     const payload={...data,_sync:{...(data._sync||{}),...exportMeta},_exportMeta:exportMeta};
-    const b64=await encryptData(await packageWithBlobs(payload,dekRef.current,rKeyRef.current),passcode);
+    const file=await buildBackupFile(
+      async(fileKey)=>await encryptData(await packageWithBlobs(payload,dekRef.current,rKeyRef.current),fileKey),
+      getRecoveryKey()||passcode, caregiverPasscodeForWrap());
     const writable=await handle.createWritable();
-    await writable.write(JSON.stringify({encrypted:true,version:"2.0",data:b64}));
+    await writable.write(JSON.stringify(file));
     await writable.close();
     return true;
   };
@@ -2023,19 +2754,20 @@ export default function App() {
   const setupContinuousBackup=async()=>{
     if(!can("export-data")){flash("You don't have permission to configure backups.");return}
     if(!hasFileSystemAccess){flash("Continuous backup needs Chrome, Edge, or Brave. On other browsers, use manual backup below.");return}
-    if(!backupPw.trim()||backupPw.trim().length<6){flash("Choose a backup passcode of at least 6 characters. You'll need it to restore.");return}
+    const chosen=getRecoveryKey()||getBackupPasscode();
+    if(!chosen){flash("Create your Recovery Key first — it's what locks the backup file.");return}
     try{
       const handle=await window.showSaveFilePicker({suggestedName:"care-guardian-backup.care",types:[{description:"Care Guardian Backup",accept:{"application/json":[".care"]}}]});
       const perm=await checkHandlePermission(handle,true);
       if(perm!=="granted"){flash("Backup needs write access to that file to continue.");return}
-      const pw=backupPw.trim();
+      const pw=chosen;
       setBackupBusy(true);
       await writeBackupToHandle(handle,pw);
       await saveBackupHandle(handle);
       setBackupHandle(handle);setBackupFileName(handle.name);setBackupStatus("active");
       const now=new Date().toISOString();setLastAutoBackupAt(now);
-      setData(p=>({...p,settings:{...p.settings,backupPasscode:pw,lastBackupAt:now,continuousBackup:true}}));
-      setBackupPw("");setShowBackupReminder(false);
+      setData(p=>({...p,settings:{...p.settings,lastBackupAt:now,continuousBackup:true}}));
+      setShowBackupReminder(false);
       hipaaAudit("export","Continuous backup configured","all");
       flash("Continuous backup active. Your data will be saved automatically.");
     }catch(e){if(e&&e.name==="AbortError"){/* user cancelled picker */}else{flash("Couldn't set up backup: "+(e&&e.message||"unknown error"))}}
@@ -2047,7 +2779,7 @@ export default function App() {
     const perm=await checkHandlePermission(backupHandle,true);
     if(perm==="granted"){
       setBackupStatus("active");
-      const pw=getBackupPasscode();
+      const pw=getRecoveryKey()||getBackupPasscode();
       if(pw){try{setBackupBusy(true);await writeBackupToHandle(backupHandle,pw);const now=new Date().toISOString();setLastAutoBackupAt(now);setData(p=>({...p,settings:{...p.settings,lastBackupAt:now}}))}catch{}finally{setBackupBusy(false)}}
       flash("Backup resumed.");
     }else{flash("Write access was not granted, so backup is still paused.")}
@@ -2058,9 +2790,107 @@ export default function App() {
     flash("Continuous backup turned off. Your existing backup file is unchanged.");
   };
 
+  /* ── Cloud backup (OAuth) ──────────────────────────────────────────────
+     The File System Access backup above is excellent where it works and absent where it
+     doesn't: Firefox and Safari have no picker at all, and even on Chrome the write
+     permission lapses every time the app is reopened, so "automatic" means "automatic
+     after you tap Resume". Backing up to the caregiver's own cloud account removes both
+     limits. The file that goes up is byte-for-byte the same encrypted .care file the
+     local path writes — the provider holds ciphertext and nothing else. */
+  const cloudBkSettings=()=>(data.settings&&data.settings.cloudBackup)||null;
+  const cloudBkProvider=()=>{const cb=cloudBkSettings();return cb&&CLOUD_PROVIDERS[cb.provider]||null};
+
+  // Hand back a live access token, renewing silently when it has aged out. Silent renewal is
+  // what makes this "automatic": GIS re-issues without UI as long as the Google session is alive.
+  const cloudBkToken=async(silent)=>{
+    const t=cloudTokenRef.current;
+    if(t&&t.accessToken&&Date.now()<t.expiresAt)return t.accessToken;
+    const prov=cloudBkProvider();
+    if(!prov||!cloudProviderReady(prov))throw Object.assign(new Error("Cloud backup isn't set up."),{code:"AUTH",cls:"auth"});
+    const got=await prov.connect({silent:silent!==false});
+    cloudTokenRef.current=got;
+    return got.accessToken;
+  };
+
+  // The same file buildBackupFile produces for every other backup path.
+  const cloudBkFileBody=async()=>{
+    const pw=getRecoveryKey()||getBackupPasscode();
+    if(!pw)throw Object.assign(new Error("No Recovery Key yet."),{code:"MISSING",cls:"missing"});
+    const exportMeta={exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId)||"",exportedByName:(data.settings&&data.settings.deviceName)||"",formatVersion:BACKUP_FORMAT,source:"cloud-backup"};
+    const payload={...data,_sync:{...(data._sync||{}),...exportMeta},_exportMeta:exportMeta};
+    const file=await buildBackupFile(
+      async(fileKey)=>await encryptData(await packageWithBlobs(payload,dekRef.current,rKeyRef.current),fileKey),
+      pw, caregiverPasscodeForWrap());
+    return JSON.stringify(file);
+  };
+
+  // Enqueue and drain. The outbox holds one key today, but it is the reason a failed upload is
+  // retried on the next launch rather than forgotten the moment the app closes.
+  const cloudBkPush=async()=>{
+    const prov=cloudBkProvider();
+    if(!prov)return {ok:false,cls:"auth"};
+    let body;
+    try{ body=await cloudBkFileBody(); }
+    catch(e){ const cls=(e&&e.cls)||"unknown"; setCloudBkFail(cls); return {ok:false,cls} }
+    const adapter=cloudStorageAdapter(prov,()=>cloudBkToken(true));
+    const queued=outboxEnqueue(cloudOutboxRef.current,{key:CLOUD_BACKUP_PATH,kind:"state"});
+    let res=await outboxDrain(adapter,queued,async()=>body,{maxTries:5,stopOnError:true});
+    // An expired token is the one failure worth retrying immediately: ask GIS for a fresh one and
+    // go again, so a caregiver who left the app open over lunch never sees an error for it.
+    if(!res.complete&&String(res.stopped)==="AUTH"){
+      cloudTokenRef.current=null;
+      try{ await cloudBkToken(true); res=await outboxDrain(adapter,queued,async()=>body,{maxTries:5,stopOnError:true}); }catch{}
+    }
+    cloudOutboxRef.current=res.outbox;
+    if(res.complete){
+      setCloudBkFail(null);setCloudBkStatus("active");setCloudBkLastAt(new Date().toISOString());
+      return {ok:true};
+    }
+    const cls=String(res.stopped||"unknown").toLowerCase();
+    setCloudBkFail(cls);
+    if(cls==="auth"){cloudTokenRef.current=null;setCloudBkStatus("reconnect")}
+    return {ok:false,cls};
+  };
+
+  const cloudBackupConnect=async(providerId)=>{
+    if(!can("export-data")){flash("You don't have permission to configure backups.");return}
+    if(!getRecoveryKey()){flash("Create your Recovery Key first — it's what locks the backup file.");return}
+    const prov=CLOUD_PROVIDERS[providerId];
+    if(!cloudProviderReady(prov)){flash("That storage provider isn't available in this build.");return}
+    setCloudBkBusy(true);setCloudBkFail(null);
+    try{
+      // Not silent: this is the one moment a consent screen belongs, and it has a user gesture behind it.
+      cloudTokenRef.current=await prov.connect({silent:false});
+      setData(p=>({...p,settings:{...p.settings,lastBackupAt:new Date().toISOString(),cloudBackup:{provider:providerId,connectedAt:new Date().toISOString()}}}));
+      setCloudBkStatus("active");
+      hipaaAudit("export","Cloud backup connected: "+prov.label,"all");
+      flash("Connected to "+prov.label+". Saving your first backup…");
+    }catch(e){
+      setCloudBkStatus("off");
+      const cls=classifyStorageError(e);
+      setCloudBkFail(cls==="auth"?null:cls);
+      flash(/popup|denied|closed|abort/i.test(String(e&&e.message||e))?"Connection cancelled.":"Couldn't connect: "+(e&&e.message||"unknown error"));
+    }finally{setCloudBkBusy(false)}
+  };
+
+  const cloudBackupReconnect=async()=>{
+    const prov=cloudBkProvider();if(!prov)return;
+    setCloudBkBusy(true);
+    try{ cloudTokenRef.current=await prov.connect({silent:false}); setCloudBkStatus("active"); setCloudBkFail(null); await cloudBkPush(); }
+    catch{ flash("Still not connected. Try again, or turn cloud backup off and on.") }
+    finally{setCloudBkBusy(false)}
+  };
+
+  const cloudBackupDisconnect=()=>{
+    cloudTokenRef.current=null;
+    setCloudBkStatus("off");setCloudBkFail(null);setCloudBkLastAt(null);
+    setData(p=>{const st={...p.settings};delete st.cloudBackup;return{...p,settings:st}});
+    flash("Cloud backup turned off. The backup already in your account is left where it is.");
+  };
+
   const cloudSync=async()=>{if(clientScopedRef.current){flash("Sync and import aren't available in client sign-in.");return}
     const pw=getSyncPasscode();
-    if(!pw){setSyncStatus({type:"error",msg:"Set a team sync passcode first."});return}
+    if(!pw){setSyncStatus({type:"error",msg:"Set a circle sync passcode first."});return}
     if(!cloudHandle){setSyncStatus({type:"error",msg:"No cloud file connected. Tap 'Connect Cloud Folder' to set up."});return}
     setCloudSyncing(true);setSyncStatus(null);
     try{
@@ -2094,7 +2924,7 @@ export default function App() {
       // Report
       const added=((pullReport&&pullReport.added&&pullReport.added.length)||0);const updated=((pullReport&&pullReport.updated&&pullReport.updated.length)||0);
       hipaaAudit("sync","Sync completed: "+added+" new, "+updated+" updated","all");
-      const msg=added+updated>0?`Synced: ${added} new, ${updated} updated from team.`:"Synced — your data is up to date.";
+      const msg=added+updated>0?`Synced: ${added} new, ${updated} updated from circle.`:"Synced — your data is up to date.";
       setSyncStatus({type:"success",msg});
       setData(p=>({...p,_sync:{...p._sync,lastSync:new Date().toISOString()}}));
     }catch(e){
@@ -2120,7 +2950,7 @@ export default function App() {
 
   const serverSync=async()=>{
     const pw=getSyncPasscode();
-    if(!pw){setSyncStatus({type:"error",msg:"Enter a team sync passcode."});return}
+    if(!pw){setSyncStatus({type:"error",msg:"Enter a circle sync passcode."});return}
     const serverUrl=getServerUrl();
     if(!serverUrl){setSyncStatus({type:"error",msg:"Enter your sync server URL in the setup above."});return}
     setCloudSyncing(true);setSyncStatus(null);
@@ -2162,7 +2992,7 @@ export default function App() {
       if(!putResp.ok){const err=await putResp.json().catch(()=>({}));throw new Error(err.error||"Server returned "+putResp.status)}
 
       const added=((pullReport&&pullReport.added&&pullReport.added.length)||0);const updated=((pullReport&&pullReport.updated&&pullReport.updated.length)||0);
-      setSyncStatus({type:"success",msg:added+updated>0?`Synced: ${added} new, ${updated} updates from team.`:"Synced — your data is up to date."});
+      setSyncStatus({type:"success",msg:added+updated>0?`Synced: ${added} new, ${updated} updates from circle.`:"Synced — your data is up to date."});
       setData(p=>({...p,_sync:{...p._sync,lastSync:new Date().toISOString()}}));
     }catch(e){setSyncStatus({type:"error",msg:"Server sync failed: "+e.message})}
     setCloudSyncing(false);
@@ -2175,26 +3005,34 @@ export default function App() {
     else{setSyncStatus({type:"error",msg:"No sync method configured. Set up a cloud folder or server below."})}
   };
 
-  /* ── Team management ── */
-  const getTeam=()=>(data.settings&&data.settings.team)||null;
-  const hasTeam=()=>!!(data.settings&&data.settings.team&&data.settings.team.id);
+  /* ── Circle management ── */
+  const getCircle=()=>(data.settings&&data.settings.circle)||null;
+  const hasCircle=()=>!!(data.settings&&data.settings.circle&&data.settings.circle.id);
 
-  const createTeam=(teamName,clientName,myName,myRole)=>{
-    const team={
-      id:"team-"+Math.random().toString(36).slice(2,10)+Date.now().toString(36),
-      name:teamName.trim(),
+  const createCircle=(circleName,clientName,myName,myRole)=>{
+    const circle={
+      id:"circle-"+Math.random().toString(36).slice(2,10)+Date.now().toString(36),
+      name:circleName.trim(),
       clientName:clientName.trim(),
       createdAt:new Date().toISOString(),
       members:[{deviceId:(data.settings&&data.settings.deviceId),name:myName.trim(),role:myRole.trim(),role_key:"admin",joinedAt:new Date().toISOString(),lastSync:null}],
+      // Minted here rather than invented by the family. 125 bits, stored in the
+      // vault, transferred once when someone joins — never remembered, never
+      // re-typed. The passcode it replaces had to be agreed by committee and
+      // re-entered every session on every device.
+      key:genRecoveryCode(),
     };
-    setData(p=>({...p,settings:{...p.settings,team,deviceName:myName.trim(),clientTier:"client-full"}}));
-    setTeamSetupMode(null);
-    flash("Team created: "+teamName);
+    setData(p=>({...p,settings:{...p.settings,circle,deviceName:myName.trim(),clientTier:"client-full"}}));
+    setCircleSetupMode(null);
+    flash("Circle created: "+circleName);
   };
 
   const generateInviteCode=()=>{
-    const team=getTeam();if(!team)return"";
-    const payload={v:1,t:team.name,c:team.clientName,i:team.id,u:getServerUrl()||"",s:(data.settings&&data.settings.stateCode)||""}; // API key intentionally excluded (H7) — share separately
+    const circle=getCircle();if(!circle)return"";
+    // Secrets stay out of this by an earlier decision (H7) — it travels by text.
+    // The client's name is out for the same reason: base64 is not encryption,
+    // and an invite forwarded to the wrong number should not name the patient.
+    const payload={v:2,t:circle.name,i:circle.id,u:getServerUrl()||"",s:(data.settings&&data.settings.stateCode)||""};
     return"CG:"+btoa(JSON.stringify(payload));
   };
 
@@ -2202,27 +3040,29 @@ export default function App() {
     try{
       const b64=code.trim().replace(/^CG:/,"");
       const payload=JSON.parse(atob(b64));
-      if(payload.v&&payload.v!==1)return null;return{teamName:payload.t,clientName:payload.c,teamId:payload.i,serverUrl:payload.u,stateCode:payload.s};
+      if(payload.v&&payload.v!==1&&payload.v!==2)return null;
+      return{circleName:payload.t,clientName:payload.c||"",circleId:payload.i,serverUrl:payload.u,stateCode:payload.s};
     }catch{return null}
   };
 
-  const joinTeamFromCode=(code,myName,myRole,myRoleKey)=>{
+  const joinCircleFromCode=(code,myName,myRole,myRoleKey,circleKey)=>{
     const parsed=parseInviteCode(code);
     if(!parsed){setSyncStatus({type:"error",msg:"Invalid invite code."});return}
-    const team={
-      id:parsed.teamId,
-      name:parsed.teamName,
+    const circle={
+      id:parsed.circleId,
+      name:parsed.circleName,
       clientName:parsed.clientName,
+      key:(circleKey||"").trim().toUpperCase()||undefined,
       createdAt:new Date().toISOString(),
       members:[{deviceId:(data.settings&&data.settings.deviceId),name:myName.trim(),role:myRole.trim(),role_key:myRoleKey||"family",joinedAt:new Date().toISOString(),lastSync:null}],
     };
-    const updates={team,deviceName:myName.trim()};
+    const updates={circle,deviceName:myName.trim()};
     if(parsed.serverUrl)updates.syncServerUrl=parsed.serverUrl;
     if(parsed.stateCode)updates.stateCode=parsed.stateCode;
     setData(p=>({...p,settings:{...p.settings,...updates}}));
     if(parsed.stateCode&&parsed.stateCode!==(data.settings&&data.settings.stateCode)){switchState(parsed.stateCode)}
-    setTeamSetupMode(null);setJoinCode("");
-    flash("Joined team: "+parsed.teamName+". Enter the team sync passcode, then tap Sync Now to pull existing data.");
+    setCircleSetupMode(null);setJoinCode("");
+    flash("Joined circle: "+parsed.circleName+". Enter the circle sync passcode, then tap Sync Now to pull existing data.");
   };
 
 
@@ -2255,8 +3095,7 @@ export default function App() {
       auditTipRef.current={seq:entry.seq,hash:entry.hash};
       saveAuditTip(entry.seq,entry.hash);
       await writeAuditEntry(entry,auditKeyRef.current);
-      setAuditEntries(p=>[entry,...p].slice(0,500));
-      setAuditCount(p=>p+1);
+      
     }).catch(e=>console.error("Audit write failed:",e));
   };
 
@@ -2305,12 +3144,16 @@ export default function App() {
     return{done:oDone+cDone,total:oTotal+g.customSubs.length,pct:(oTotal+g.customSubs.length)?Math.round((oDone+cDone)/(oTotal+g.customSubs.length)*100):0};
   };
   const getSubRecency=(dk,gi,si)=>{const st=getSubState(dk,gi,si);if(!st.lastDone)return null;const age=Math.floor((Date.now()-new Date(st.lastDone).getTime())/(86400000));return age};
-  const getRecencyColor=(age,interval)=>{if(age===null)return"#e5e1db";if(interval){return age<interval?"#718355":age<interval*1.5?"#bc6c25":"#b56576"}return age<7?"#718355":age<30?"#bc6c25":"#b56576"};
+  const getRecencyColor=(age,interval)=>{if(age===null)return"var(--color-border-subtle)";if(interval){return age<interval?"var(--color-text-success)":age<interval*1.5?"var(--color-text-warning)":"var(--color-text-danger)"}return age<7?"var(--color-text-success)":age<30?"var(--color-text-warning)":"var(--color-text-danger)"};
   const getRecencyLabel=(age)=>{if(age===null)return"Not yet attended";if(age===0)return"Today";if(age===1)return"Yesterday";if(age<7)return age+" days ago";if(age<30)return Math.floor(age/7)+"w ago";return Math.floor(age/30)+"mo ago"};
   const changeSubType=(dk,gi,si,newType)=>{setData(p=>{const goals=[...p.domains[dk].goals];const subs=[...goals[gi].subs];subs[si]={...subs[si],typeOverride:newType};goals[gi]={...goals[gi],subs};return{...p,domains:{...p.domains,[dk]:{...p.domains[dk],goals}}}})};
 
   /* ── contacts ── */
-  const saveContact=(c,id)=>{setData(p=>{let contacts;if(id)contacts=p.contacts.map(x=>x.id===id?{...x,...c}:x);else contacts=[...p.contacts,{...c,id:nextId(),notes:c.notes||[],customFields:c.customFields||[]}];return addLog({...p,contacts},"contacts",id?`Edited ${c.name}`:`Added ${c.name}`)});setContactFilter("all");setContactForm(null)};
+  const saveContact=async(c,id)=>{
+    // Photos follow the same path as incident photos: written to the encrypted
+    // blob store and stored as a blobref, never inline in the main payload.
+    if(c.photo&&c.photo.startsWith("data:")){const out=await externalizeMedia([c.photo]);c={...c,photo:out[0]||""}}
+    setData(p=>{let contacts;if(id)contacts=p.contacts.map(x=>x.id===id?{...x,...c}:x);else contacts=[...p.contacts,{...c,id:nextId(),notes:c.notes||[],customFields:c.customFields||[]}];return addLog({...p,contacts},"contacts",id?`Edited ${c.name}`:`Added ${c.name}`)});setContactFilter("all");setContactForm(null)};
   const deleteContact=(id)=>{if(!can("add-contact"))return;hipaaAudit("delete","Contact deleted: "+id,"contacts");const c=data.contacts.find(x=>x.id===id);setData(p=>addLog({...p,contacts:p.contacts.filter(x=>x.id!==id)},"contacts",`Removed ${(c&&c.name)}`));setContactDetail(null)};
   const addContactNote=(id,text)=>{if(!text.trim())return;setData(p=>({...p,contacts:p.contacts.map(c=>c.id===id?{...c,notes:[{text:text.trim(),date:new Date().toLocaleString()},...(c.notes||[])]}:c)}));setContactNoteText("")};
   const deleteContactNote=(cid,ni)=>{setData(p=>({...p,contacts:p.contacts.map(c=>c.id===cid?{...c,notes:c.notes.filter((_,i)=>i!==ni)}:c)}))};
@@ -2324,20 +3167,33 @@ export default function App() {
   const getUpcoming=()=>{const today=fmtDate(new Date().getFullYear(),new Date().getMonth(),new Date().getDate());return(data.appointments||[]).filter(a=>a.date>=today).sort((a,b)=>a.date.localeCompare(b.date)||a.time.localeCompare(b.time)).slice(0,5)};
 
   /* ── messages ── */
-  const sendMessage=()=>{const from=(data.settings&&data.settings.team)?(data.settings&&data.settings.deviceName)||"Unknown":msgFrom.trim();if(!msgText.trim()||!from)return;setData(p=>({...p,messages:[...p.messages,{id:nextId(),from,text:msgText.trim(),timestamp:new Date().toLocaleString(),deviceId:(data.settings&&data.settings.deviceId)}]}));setMsgText("")};
+  const sendMessage=()=>{const from=(data.settings&&data.settings.circle)?(data.settings&&data.settings.deviceName)||"Unknown":msgFrom.trim();if(!msgText.trim()||!from)return;setData(p=>({...p,messages:[...p.messages,{id:nextId(),from,text:msgText.trim(),timestamp:new Date().toLocaleString(),deviceId:(data.settings&&data.settings.deviceId)}]}));setMsgText("")};
 
   /* ── settings / export ── */
   const flash=(msg)=>{setSettingsMsg(msg);setTimeout(()=>setSettingsMsg(null),4000)};
-  const handleEncryptedExport=async()=>{if(!can("export-data"))return;hipaaAudit("export","Encrypted backup exported","all");if(!exportPw.trim()){flash("Enter an export passcode.");return}try{
+  // Manual save. Uses the same passcode and produces the same file as the
+  // automatic backup — previously this asked for a separate "export passcode"
+  // with no minimum length, and the restore screen only ever named the other one.
+  const handleEncryptedExport=async()=>{
+    if(!can("export-data")){flash("You don't have permission to save a backup.");return}
+    const pw=getRecoveryKey()||getBackupPasscode();
+    if(!pw){flash("Create your Recovery Key first — it's what locks the backup.");return}
+    hipaaAudit("export","Encrypted backup saved","all");
+    try{
     // Include export metadata inside encrypted payload for integrity (M5)
     const exportMeta={exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId)||"unknown",exportedByName:(data.settings&&data.settings.deviceName)||"",formatVersion:"2.0"};
     const exportData={...data,_sync:{...(data._sync||{}),...exportMeta},_exportMeta:exportMeta};
-    const b64=await encryptData(await packageWithBlobs(exportData,dekRef.current,rKeyRef.current),exportPw);downloadFile(JSON.stringify({encrypted:true,version:"2.0",data:b64}),"care-guardian-backup.care");
+    const file=await buildBackupFile(
+      async(fileKey)=>await encryptData(await packageWithBlobs(exportData,dekRef.current,rKeyRef.current),fileKey),
+      getRecoveryKey()||pw, caregiverPasscodeForWrap());
+    downloadFile(JSON.stringify(file),"care-guardian-backup.care");
+    // Remember it, so a later restore is answered by the same passcode the app
+    // asked for here, and so the automatic backup can reuse it.
     setData(p=>({...p,settings:{...p.settings,lastBackupAt:new Date().toISOString()}}));
     setShowBackupReminder(false);
-    flash("Encrypted backup downloaded. Keep it somewhere safe — it's your recovery copy.")}catch(e){flash("Export failed: "+e.message)}};
+    flash("Backup saved. Keep the file somewhere you can find it — that plus your backup passcode is a full recovery.")}catch(e){flash("Couldn't save the backup: "+e.message)}};
   const handleNonSensitiveExport=()=>{if(!can("export-data"))return;hipaaAudit("export","Non-sensitive summary exported","summary");const safe={domainOverrides:data.domainOverrides,domainStatus:{},settings:{}}; DOMAINS.forEach(d=>{const prog=getProgress(d.key);const health=prog.pct>=80&&prog.recency>=70?"Healthy":prog.pct>=40||prog.recency>=40?"Fair":"Needs Attention";safe.domainStatus[d.key]={health,foundation:prog.pct+"%",carePulse:prog.recency+"%",progress:prog}});downloadFile(JSON.stringify(safe,null,2),"care-guardian-summary.json");flash("Summary exported (no PHI).")};
-  const handleEncryptedImport=async(e)=>{if(clientScopedRef.current){flash("Sync and import aren't available in client sign-in.");return}const file=(e.target.files&&e.target.files[0]);if(!file)return;try{const text=await file.text();if(rawTextTooLarge(text)){flash("This backup is too large to open safely.");e.target.value="";return}const json=JSON.parse(text);if(!json.encrypted){flash("Not an encrypted backup.");return}if(payloadHardTooLarge(json.data)){flash("This backup is too large to load safely ("+mb(b64Bytes(json.data))+" MB).");e.target.value="";return}const restored=await ingestBlobs(await decryptData(json.data,importPw),dekRef.current,rKeyRef.current);
+  const handleEncryptedImport=async(e)=>{if(clientScopedRef.current){flash("Sync and import aren't available in client sign-in.");return}const file=(e.target.files&&e.target.files[0]);if(!file)return;try{const text=await file.text();if(rawTextTooLarge(text)){flash("This backup is too large to open safely.");e.target.value="";return}const json=JSON.parse(text);if(!json.encrypted){flash("Not an encrypted backup.");return}if(payloadHardTooLarge(json.data)){flash("This backup is too large to load safely ("+mb(b64Bytes(json.data))+" MB).");e.target.value="";return}const restored=await ingestBlobs(await openBackupFile(json,importPw),dekRef.current,rKeyRef.current);
     // Validate and sanitize (M4)
     const validation=validateImportSchema(restored);
     if(!validation.valid){flash("Import rejected: "+validation.errors.join("; "));e.target.value="";return}
@@ -2347,66 +3203,94 @@ export default function App() {
     setMergePreview({merged,report,sourceName,oversized:mergeIsOversized(json.data,report),floodBytes:b64Bytes(json.data)});
   }catch{flash("Import failed. Check passcode.")}e.target.value=""};
   const applyMerge=()=>{if(!mergePreview)return;const r=mergePreview.report;const parts=[];if(r.added.length)parts.push(r.added.length+" added");if(r.updated.length)parts.push(r.updated.length+" updated");if(r.kept.length)parts.push(r.kept.length+" kept");if(r.conflicts&&r.conflicts.length)parts.push(r.conflicts.length+" flagged");setData(mergePreview.merged);flash("Merge complete: "+(parts.join(", ")||"no changes")+".");setMergePreview(null)};
-  const handleFullReplace=async(e)=>{if(clientScopedRef.current){flash("Sync and import aren't available in client sign-in.");return}const file=(e.target.files&&e.target.files[0]);if(!file)return;try{const text=await file.text();if(rawTextTooLarge(text)){flash("This backup is too large to open safely.");e.target.value="";return}const json=JSON.parse(text);if(!json.encrypted){flash("Not an encrypted backup.");return}if(payloadHardTooLarge(json.data)){flash("This backup is too large to load safely ("+mb(b64Bytes(json.data))+" MB).");e.target.value="";return}const restored=await ingestBlobs(await decryptData(json.data,importPw),dekRef.current,rKeyRef.current);
-    const validation=validateImportSchema(restored);
-    if(!validation.valid){flash("Replace rejected: "+validation.errors.join("; "));e.target.value="";return}
-    const sanitized=sanitizeImportData(restored);
-    hipaaAudit("import","Full vault replace from backup","import");
-    setData(sanitized);flash("Full replace complete.")}catch{flash("Import failed. Check passcode.")}e.target.value=""};
-
-  // Recovery from backup after browser eviction (pre-auth)
   const recoveryFileRef=useRef(null);
-  const handleRecoveryFile=async(e)=>{
-    const file=(e.target.files&&e.target.files[0]);if(!file)return;
-    setRecoveryErr("");
-    if(!recoveryPw.trim()){setRecoveryErr("Enter the passcode you used when creating this backup.");e.target.value="";return}
+  // Shared by both restore routes — a file the caregiver picked, and a file pulled from their cloud
+  // account. Returns true when the backup was opened and staged for setup.
+  const ingestRecoveryText=async(text)=>{
+    if(rawTextTooLarge(text)){setRecoveryErr("This backup is too large to open safely on this device.");return false}
+    let json;try{json=JSON.parse(text)}catch{setRecoveryErr("That doesn't look like a Care Guardian backup file.");return false}
+    if(!json||!json.encrypted){setRecoveryErr("That doesn't look like a Care Guardian backup file.");return false}
     try{
-      const text=await file.text();if(rawTextTooLarge(text)){setRecoveryErr("This backup is too large to open safely on this device.");e.target.value="";return}const json=JSON.parse(text);
-      if(!json.encrypted){setRecoveryErr("That doesn't look like a Care Guardian backup file.");e.target.value="";return}
-      const restored=await decryptData(json.data,recoveryPw);
+      const restored=await openBackupFile(json,recoveryPw.trim());
       const recoveredBlobs=(restored&&restored._blobs)||null; // hold blobs aside; they're written under the NEW key at setup
       if(restored)delete restored._blobs;
       const validation=validateImportSchema(restored);
-      if(!validation.valid){setRecoveryErr("Backup could not be read: "+validation.errors.join("; "));e.target.value="";return}
+      if(!validation.valid){setRecoveryErr("Backup could not be read: "+validation.errors.join("; "));return false}
       const sanitized=sanitizeImportData(restored);
       if(recoveredBlobs)sanitized.__recoveredBlobs=recoveredBlobs; // carried through to completeSetup, then stripped
       setRecoveryData(sanitized);
       // Clear the orphaned wrapped keys so the user sets fresh passcodes for the restored vault
       try{localStorage.removeItem(VAULT_KEYS_LS)}catch{}
-    }catch{setRecoveryErr("Couldn't decrypt the backup. Check the backup passcode and try again.")}
+      return true;
+    }catch{setRecoveryErr("Couldn't decrypt the backup. Check the backup passcode and try again.");return false}
+  };
+  const handleRecoveryFile=async(e)=>{
+    const file=(e.target.files&&e.target.files[0]);if(!file)return;
+    setRecoveryErr("");
+    if(!recoveryPw.trim()){setRecoveryErr("Enter your Recovery Key (or the passcode for this file).");e.target.value="";return}
+    await ingestRecoveryText(await file.text());
     e.target.value="";
+  };
+  // Restore straight from the caregiver's cloud account. This device has no vault yet, so there are
+  // no saved provider settings to read — we connect from scratch and fetch the one object by name.
+  const handleRecoveryFromCloud=async(providerId)=>{
+    setRecoveryErr("");
+    if(!recoveryPw.trim()){setRecoveryErr("Enter your Recovery Key first — it's what opens the file.");return}
+    const prov=CLOUD_PROVIDERS[providerId];
+    if(!cloudProviderReady(prov)){setRecoveryErr("That storage provider isn't available in this build.");return}
+    setCloudBkBusy(true);
+    try{
+      const tok=await prov.connect({silent:false});
+      const text=await prov.download(tok.accessToken,CLOUD_BACKUP_PATH);
+      if(!text){setRecoveryErr("No Care Guardian backup was found in that account. Check you signed in with the same one.");return}
+      if(await ingestRecoveryText(text))cloudTokenRef.current=tok; // keep the token so backup resumes after setup
+    }catch(e){
+      const cls=classifyStorageError(e);
+      setRecoveryErr(/popup|denied|closed|abort/i.test(String(e&&e.message||e))?"Sign-in was cancelled.":storageFailUI(cls).title+" — "+storageFailUI(cls).body);
+    }finally{setCloudBkBusy(false)}
   };
 
   /* ── Sync handlers ── */
-  const getSyncPasscode=()=>(data.settings&&data.settings.syncPasscode)||syncPasscode;
-  const saveSyncPasscode=(pw)=>{setSyncPasscode(pw)}; // kept in memory only for session duration
+  const getSyncPasscode=()=>{
+    const t=getCircle();
+    if(t&&t.key)return t.key;                                   // generated at circle creation
+    return (data.settings&&data.settings.syncPasscode)||syncPasscode; // pre-v3 circles
+  };
+  // A circle created before the generated key existed can adopt one, which ends
+  // the per-session re-typing for everyone who joins from then on.
+  const adoptCircleKey=()=>{
+    const t=getCircle();if(!t||t.key)return;
+    const key=genRecoveryCode();
+    setData(p=>({...p,settings:{...p.settings,circle:{...p.settings.circle,key}}}));
+    flash("This circle now has a generated key. Share it with each member once — they won't have to type a sync passcode again.");
+  };
 
   const syncPush=async(method)=>{
-    const pw=getSyncPasscode();if(!pw.trim()){setSyncStatus({type:"error",msg:"Set a team sync passcode first."});return}
-    setSyncPushing(true);setSyncStatus(null);
+    const pw=getSyncPasscode();if(!pw.trim()){setSyncStatus({type:"error",msg:"Set a circle sync passcode first."});return}
+    setSyncStatus(null);
     try{
       const exportData={...data,_sync:{...(data._sync||{}),exportedAt:new Date().toISOString(),exportedBy:(data.settings&&data.settings.deviceId),exportedByName:(data.settings&&data.settings.deviceName)||""}};
       const b64=await encryptData(await packageWithBlobs(exportData,dekRef.current,rKeyRef.current),pw);
       const payload=JSON.stringify({encrypted:true,version:"2.0",sync:true,data:b64});
       if(method==="clipboard"){
         await navigator.clipboard.writeText(payload);
-        setSyncStatus({type:"success",msg:"Encrypted sync data copied to clipboard. Paste it in your team's group chat."});
+        setSyncStatus({type:"success",msg:"Encrypted sync data copied to clipboard. Paste it in your circle's group chat."});
       } else {
         downloadFile(payload,"care-sync-"+new Date().toISOString().slice(0,10)+".json","application/json");
-        setSyncStatus({type:"success",msg:"Sync file downloaded. Drop it in your team's shared folder."});
+        setSyncStatus({type:"success",msg:"Sync file downloaded. Drop it in your circle's shared folder."});
       }
     }catch(e){setSyncStatus({type:"error",msg:"Push failed: "+e.message})}
-    setSyncPushing(false);
+    
   };
 
   const syncPullFromText=async(text)=>{if(clientScopedRef.current){flash("Sync and import aren't available in client sign-in.");return}
-    const pw=getSyncPasscode();if(!pw.trim()){setSyncStatus({type:"error",msg:"Set a team sync passcode first."});return}
+    const pw=getSyncPasscode();if(!pw.trim()){setSyncStatus({type:"error",msg:"Set a circle sync passcode first."});return}
     setSyncPulling(true);setSyncStatus(null);
     try{
       if(rawTextTooLarge(text)){setSyncStatus({type:"error",msg:"This sync data is too large to open safely and was not parsed. Check the source device."});setSyncPulling(false);return}
       const json=JSON.parse(text);if(!json.encrypted){throw new Error("Not encrypted sync data")}
       if(payloadHardTooLarge(json.data)){setSyncStatus({type:"error",msg:"This sync data is too large to load safely ("+mb(b64Bytes(json.data))+" MB) and was not opened. Check the source device."});setSyncPulling(false);return}
-      const restored=await ingestBlobs(await decryptData(json.data,pw),dekRef.current,rKeyRef.current);
+      const restored=await ingestBlobs(await openBackupFile(json,pw),dekRef.current,rKeyRef.current);
       // Validate and sanitize imported data (M4)
       const validation=validateImportSchema(restored);
       if(!validation.valid){setSyncStatus({type:"error",msg:"Import rejected: "+validation.errors.join("; ")});setSyncPulling(false);return}
@@ -2436,7 +3320,7 @@ export default function App() {
     const urlCheck=validateSyncUrl(syncPullUrl.trim());
     if(!urlCheck.valid){setSyncStatus({type:"error",msg:urlCheck.msg});return}
     if(!urlCheck.trusted){setSyncStatus({type:"error",msg:urlCheck.msg+" If you trust this source, download the file manually and use 'Open File' instead."});return}
-    const pw=getSyncPasscode();if(!pw.trim()){setSyncStatus({type:"error",msg:"Set a team sync passcode first."});return}
+    const pw=getSyncPasscode();if(!pw.trim()){setSyncStatus({type:"error",msg:"Set a circle sync passcode first."});return}
     setSyncPulling(true);setSyncStatus(null);
     try{
       const resp=await fetch(syncPullUrl.trim());if(!resp.ok)throw new Error("HTTP "+resp.status);
@@ -2460,7 +3344,7 @@ export default function App() {
         if(tier==="client-restricted"&&rKeyRef.current){ wk.r=await wrapDEK(rKeyRef.current,clPw); wk.clientScope="r"; } // restricted tier: client passcode wraps the scoped key only
         else { wk.r=await wrapDEK(dekRef.current,clPw); delete wk.clientScope; }
       }
-      saveWrappedKeys(wk);flash("Passcode(s) updated.");
+      saveWrappedKeys(wk);if(cgPw)cgPasscodeRef.current=cgPw;flash("Passcode(s) updated.");
     }catch(e){flash("Failed to update passcodes: "+e.message)}
     setNewCaregiverPw("");setNewClientPw("")
   };
@@ -2567,11 +3451,67 @@ export default function App() {
   const getExpenseMonths=()=>{const months=new Set();(data.expenses||[]).forEach(e=>{if(e.date)months.add(e.date.slice(0,7))});return[...months].sort().reverse()};
 
   /* ── med admin ── */
+  // Missing key reads as all-empty, so pre-v3 payloads render the card exactly
+  // as they did before rather than throwing on a field that was never stored.
+  /* Unread messages. Tracked as a device-local set of read ids rather than a
+     high-water-mark id: ids are minted per device (Date.now()-seeded), so they
+     interleave once messages sync and a "last read id" comparison would mark
+     other devices' messages read by accident. Pruned to ids still present, so
+     the list stays bounded. */
+  const getUnreadMessages=()=>{
+    const did=data.settings&&data.settings.deviceId;
+    const read=(data.settings&&data.settings.readMessageIds)||[];
+    return (data.messages||[]).filter(m=>m.deviceId!==did&&!read.includes(m.id));
+  };
+  const markMessagesRead=()=>{
+    const ids=(data.messages||[]).map(m=>m.id);
+    setData(p=>{
+      const prev=(p.settings&&p.settings.readMessageIds)||[];
+      const next=Array.from(new Set([...prev,...ids])).filter(id=>ids.includes(id));
+      if(next.length===prev.length&&next.every((v,i)=>v===prev[i]))return p; // no-op, don't dirty the vault
+      return {...p,settings:{...p.settings,readMessageIds:next}};
+    });
+  };
+
+  const getEmergencyInfo=()=>({...EMPTY_EMERGENCY_INFO,...(data.emergencyInfo||{})});
+  const saveEmergencyInfo=async(info)=>{
+    const photos=await externalizeMedia([info.clientPhoto].filter(Boolean));
+    const next={...EMPTY_EMERGENCY_INFO,...info,clientPhoto:photos[0]||""};
+    setData(p=>addLog({...p,emergencyInfo:next},"emergency_info","Updated emergency info card"));
+    hipaaAudit("update","Updated emergency info card","emergency_info");
+    setEcardForm(null);
+  };
+
   const getMedSchedule=(includeDiscontinued)=>{const ms=data.medSchedule||{medications:[],log:[]};if(includeDiscontinued)return ms;return{...ms,medications:(ms.medications||[]).filter(m=>!m.discontinued)}};
   const addMedToSchedule=(med)=>{setData(p=>{const ms={...(p.medSchedule||{medications:[],log:[]})};ms.medications=[...ms.medications,{...med,id:nextId(),startDate:new Date().toISOString().slice(0,10)}];hipaaAudit("create","Added medication: "+med.name,"medications");
     return addLog({...p,medSchedule:ms},"medadmin",`Added ${med.name} to schedule`)});setMedForm(null)};
   const editMedInSchedule=(med,id)=>{setData(p=>{const ms={...(p.medSchedule||{medications:[],log:[]})};ms.medications=ms.medications.map(m=>m.id===id?{...m,...med}:m);return{...p,medSchedule:ms}});setMedForm(null)};
   const removeMedFromSchedule=(id)=>{if(!can("med-admin"))return;setData(p=>{const ms={...(p.medSchedule||{medications:[],log:[]})};ms.medications=ms.medications.filter(m=>m.id!==id);ms.log=ms.log.filter(l=>l.medId!==id);return addLog({...p,medSchedule:ms},"medadmin","Removed medication from schedule")})};
+  /* Refusal protocol. A refusal isn't a data-entry event, it's a moment where
+     the caregiver needs to stop pushing — so record the reason, then branch:
+     for a critical medication surface the prescriber's missed-dose instructions
+     rather than filing it away silently. */
+  const REFUSAL_REASONS=[
+    {key:"upset",label:"Too upset / agitated",icon:"😣"},
+    {key:"suspicious",label:"Doesn't trust it",icon:"🤨"},
+    {key:"swallow",label:"Trouble swallowing",icon:"😖"},
+    {key:"asleep",label:"Asleep / can't rouse",icon:"😴"},
+    {key:"nausea",label:"Nausea or upset stomach",icon:"🤢"},
+    {key:"other",label:"Something else",icon:"…"},
+  ];
+  const recordRefusal=(medId,slot,date,reason)=>{
+    const logKey=`${medId}|${slot}|${date}`;
+    setData(p=>{
+      const ms={...(p.medSchedule||{medications:[],log:[]})};
+      const existing=(ms.log||[]).find(l=>l.key===logKey);
+      if(existing)ms.log=ms.log.map(l=>l.key===logKey?{...l,status:"refused",refusalReason:reason}:l);
+      else ms.log=[...(ms.log||[]),{key:logKey,medId,slot,date,status:"refused",refusalReason:reason,timestamp:new Date().toLocaleString()}];
+      const med=(ms.medications||[]).find(m=>m.id===medId);
+      return addLog({...p,medSchedule:ms},"medications",`Refused: ${(med&&med.name)||"medication"} (${slot})`);
+    });
+    hipaaAudit("update","Recorded medication refusal","medications");
+  };
+
   const toggleMedAdmin=(medId,slot,date)=>{
     setData(p=>{
       const ms={...(p.medSchedule||{medications:[],log:[]})};
@@ -2616,8 +3556,8 @@ export default function App() {
     return result;
   };
   const myName=()=>(data.settings&&data.settings.deviceName)||"Me";
-  const teamMembers=()=>((data.settings&&data.settings.team&&data.settings.team.members)||[]);
-  const memberName=(devId)=>{const m=teamMembers().find(x=>x.deviceId===devId);return m?m.name:(devId===myDeviceId()?myName():"Unknown")};
+  const circleMembers=()=>((data.settings&&data.settings.circle&&data.settings.circle.members)||[]);
+  const memberName=(devId)=>{const m=circleMembers().find(x=>x.deviceId===devId);return m?m.name:(devId===myDeviceId()?myName():"Unknown")};
 
   const touchShift=(shift)=>{ hlcRef.current=hlcLocal(hlcRef.current,myDeviceId(),Date.now()); saveHlc(hlcRef.current); return {...shift,lastModified:new Date().toISOString(),lastModifiedBy:myName()+" ("+(role||"")+")",hlc:hlcRef.current}; };
   const createShift=(shiftData)=>{
@@ -2760,7 +3700,7 @@ export default function App() {
     else if(srType==="sleep"){if(!srText.trim()){setSrErr("Please describe your sleep before submitting.");return}report.text=srText.trim()}
     else if(srType==="audio"){if(!srAudioData&&!srText.trim()){setSrErr("Please record audio or enter text before submitting.");return}report.audioData=srAudioData?await externalizeOne(srAudioData,rKeyRef.current||dekRef.current):null;report.text=srText.trim()}
     if(srPhotos.length>0)report.photos=await externalizeMedia(srPhotos,rKeyRef.current||dekRef.current);
-    report.origin=isClient?"client":"caregiver"; // client-authored reports become append-only and hash-chained
+    report.origin=isReadOnly?"client":"caregiver"; // client-authored reports become append-only and hash-chained
     try{ const mh=[]; for(const p of srPhotos){ if(typeof p==="string"&&p.startsWith("data:"))mh.push(await sha256Hex(p)); } if(srAudioData&&typeof srAudioData==="string"&&srAudioData.startsWith("data:"))mh.push(await sha256Hex(srAudioData)); if(mh.length)report.mediaHashes=mh; }catch{}
     setSrErr("");
     if(clientScopedRef.current){ try{ await appendOutboxReport(report,rKeyRef.current); }catch(e){console.error("Outbox write failed:",e);setSrErr("Couldn't save your update — please try again.");return} }
@@ -2773,7 +3713,7 @@ export default function App() {
       setData(p=>addLog({...p,selfReports:[report,...(p.selfReports||[])]},"selfreport",`${(SELF_REPORT_TYPES.find(t=>t.key===srType)||{}).label||"Update"} from client`));
     }
     setSrText("");setSrMood("");setSrPain("");setSrAudioData(null);setSrPhotos([]);
-    flash("Update submitted. Your care team will see this.");
+    flash("Update submitted. Your care circle will see this.");
   };
   const deleteSelfReport=(id)=>{
     const target=(data.selfReports||[]).find(r=>r.id===id);
@@ -2793,7 +3733,6 @@ export default function App() {
     e.target.value="";
   };
 
-  const getSrStorageKB=()=>{const sr=data.selfReports||[];let bytes=0;sr.forEach(r=>{bytes+=JSON.stringify(r).length});return Math.round(bytes/1024)};
 
   // Caregiver wellness
   const submitCaregiverCheckin=()=>{
@@ -2868,10 +3807,10 @@ export default function App() {
 
   // Care plan binder generator
   const generateCarePlanBinder=()=>{
-    const team=data.settings&&data.settings.team;
+    const circle=data.settings&&data.settings.circle;
     const lines=[];
     lines.push("═══════════════════════════════════════════");
-    lines.push("CARE PLAN BINDER — "+(team&&team.clientName||"[Client Name]"));
+    lines.push("CARE PLAN BINDER — "+(circle&&circle.clientName||"[Client Name]"));
     lines.push("Generated: "+new Date().toLocaleString());
     lines.push("═══════════════════════════════════════════\n");
     // Diagnoses & medical
@@ -2927,10 +3866,10 @@ export default function App() {
         if(d.outcome)lines.push("  Outcome: "+d.outcome);
       });
     }
-    // Care team
-    lines.push("\nCARE TEAM");
+    // Care circle
+    lines.push("\nCARE CIRCLE");
     lines.push("─────────────────────────");
-    if(team&&team.members){team.members.forEach(m=>{lines.push("• "+m.name+" — "+m.role)})}
+    if(circle&&circle.members){circle.members.forEach(m=>{lines.push("• "+m.name+" — "+m.role)})}
     lines.push("\n═══════════════════════════════════════════");
     lines.push("End of Care Plan Binder");
     return lines.join("\n");
@@ -2958,13 +3897,13 @@ export default function App() {
         if(!logged){
           if(curHour>=range.end){
             // Past this window — missed
-            reminders.push({type:"med-missed",priority:1,icon:"❌",title:med.name+" — "+slot+" missed",sub:"Was due by "+range.end+":00",action:"medadmin",hub:"records"});
+            reminders.push({type:"med-missed",priority:1,icon:"❌",title:med.name+" — "+slot+" missed",sub:"Was due by "+range.end+":00",action:"meds",hub:"meds"});
           } else if(curHour>=range.start){
             // Current window — due now
-            reminders.push({type:"med-due",priority:2,icon:"💊",title:med.name+" — due now",sub:slot+" window ("+range.start+":00–"+range.end+":00)",action:"medadmin",hub:"records"});
+            reminders.push({type:"med-due",priority:2,icon:"💊",title:med.name+" — due now",sub:slot+" window ("+range.start+":00–"+range.end+":00)",action:"meds",hub:"meds"});
           } else if(nextSlot&&nextSlot.name===slot&&nextSlot.inMinutes<=60){
             // Upcoming within the hour
-            reminders.push({type:"med-upcoming",priority:3,icon:"⏰",title:med.name+" — "+slot+" in ~"+nextSlot.inMinutes+"min",sub:"Coming up soon",action:"medadmin",hub:"records"});
+            reminders.push({type:"med-upcoming",priority:3,icon:"⏰",title:med.name+" — "+slot+" in ~"+nextSlot.inMinutes+"min",sub:"Coming up soon",action:"meds",hub:"meds"});
           }
         }
       });
@@ -3000,7 +3939,7 @@ export default function App() {
       const hoursUntil=Math.round((apptDate.getTime()-now.getTime())/3600000);
       if(hoursUntil>0&&hoursUntil<=48){
         const timeLabel=hoursUntil<=2?"in "+hoursUntil+"h":hoursUntil<=24?"today":"tomorrow";
-        reminders.push({type:"appt",priority:hoursUntil<=4?2:3,icon:"📅",title:appt.description||"Appointment",sub:timeLabel+(appt.location?" at "+appt.location:""),action:"calendar",hub:"records"});
+        reminders.push({type:"appt",priority:hoursUntil<=4?2:3,icon:"📅",title:appt.description||"Appointment",sub:timeLabel+(appt.location?" at "+appt.location:""),action:"calendar",hub:"today"});
       }
     });
 
@@ -3117,31 +4056,74 @@ export default function App() {
   const getFilteredDocs=()=>{const list=[...(data.savedDocs||[])];if(docCatFilter==="all")return list;return list.filter(d=>d.category===docCatFilter)};
   const [viewingDoc,setViewingDoc]=useState(null); // doc id to view
 
+  // Escape closes whatever is open, topmost first. Every dialog already closes on
+  // an overlay click; a keyboard or switch user had no equivalent, which left the
+  // only way out of a dialog being a mouse tap on a specific spot.
+  useEffect(()=>{
+    const onKey=(e)=>{
+      if(e.key!=="Escape")return;
+      // Ordered by stacking: the thing drawn on top is the thing Escape dismisses.
+      const layers=[
+        [searchOpen,      ()=>setSearchOpen(false)],
+        [mergePreview,    ()=>setMergePreview(null)],
+        [newRecoveryCode, ()=>setNewRecoveryCode(null)],
+        [viewingDoc,      ()=>setViewingDoc(null)],
+        [refusal,         ()=>setRefusal(null)],
+        [ecardForm,       ()=>setEcardForm(null)],
+        [medForm,         ()=>setMedForm(null)],
+        [incidentForm,    ()=>setIncidentForm(null)],
+        [expenseForm,     ()=>setExpenseForm(null)],
+        [apptForm,        ()=>setApptForm(null)],
+        [contactForm,     ()=>setContactForm(null)],
+        [careMenuOpen,    ()=>setCareMenuOpen(false)],
+      ];
+      const open=layers.find(([isOpen])=>isOpen);
+      if(!open)return;
+      e.preventDefault();
+      e.stopPropagation();
+      open[1]();
+    };
+    window.addEventListener("keydown",onKey);
+    return()=>window.removeEventListener("keydown",onKey);
+  },[searchOpen,mergePreview,newRecoveryCode,viewingDoc,refusal,ecardForm,medForm,incidentForm,expenseForm,apptForm,contactForm,careMenuOpen]);
+
   /* ── nav ── */
   const toggle=(gi)=>setExpanded(p=>({...p,[gi]:!p[gi]}));
-  const PHI_VIEWS={"incidents":"incidents","medadmin":"medications","contacts":"contacts","documents":"documents","selfreport":"self_reports","poa-decisions":"poa_decisions","capacity":"capacity","physical":"domains","cognitive":"domains","wellness":"domains","legal":"domains","financial":"domains","emergency-card":"emergency_info","binder":"care_plan","handoff":"shift_data"};
-  const nav=(v)=>{if(PHI_VIEWS[v]&&authed)hipaaAudit("view","Accessed "+v,PHI_VIEWS[v]);setNavStack(p=>[...p,{view,hub:currentHub}]);setView(v);setExpanded({});setEditNotes(false);setAddSubFor(null);cancelEdit();setContactForm(null);setContactDetail(null);setEditingDomain(null);setApptForm(null);setCalSelected(null);setDocResult(null);setDocMeds([]);setDocLabs([]);setIncidentForm(null);setExpenseForm(null);setMedForm(null);setViewingDoc(null)};
-  const navHub=(hub)=>{setCurrentHub(hub);setView(hub+"-hub");setNavStack([]);setExpanded({})};
-  const navBack=()=>{if(navStack.length>0){const prev=navStack[navStack.length-1];setNavStack(p=>p.slice(0,-1));setView(prev.view);setCurrentHub(prev.hub)}else{navHub(currentHub)}};
-  const isHubView=view.endsWith("-hub");
-  const getViewTitle=()=>{const t={"today-hub":"Today","care-hub":"Care plan","records-hub":"Records","team-hub":"Team",physical:"Physical health",cognitive:"Cognitive health",wellness:"Wellness",legal:"Legal safety",financial:"Financial security",incidents:"Incidents",medadmin:"Medication admin",expenses:"Expenses",calendar:"Calendar",contacts:"Contacts",documents:"Documents",triggers:"Escalation triggers",tracking:"Tracking",visit:"Visit prep",emergency:"Emergency plans",postdeath:"After death",messages:"Messages",sync:"Sync",selfreport:"Self-report",settings:"Settings",help:"Help",overview:"Overview",handoff:"Shift Handoff","emergency-card":"Emergency Card","caregiver-wellness":"Caregiver Check-in","incident-patterns":"Incident Patterns",capacity:"Capacity Observations",binder:"Care Plan Binder","poa-decisions":"POA Decisions",schedule:"Care Schedule",availability:"My Availability"};return t[view]||"Care Guardian"};
-  const getBreadcrumb=()=>{const h={today:"Today",care:"Care plan",records:"Records",team:"Team"};if(isHubView)return null;return h[currentHub]||null};
+  const PHI_VIEWS={"backups":"all","meds":"medications","log":"incidents","sos":"emergency_info","care-domains":"domains","contacts":"contacts","documents":"documents","selfreport":"self_reports","poa-decisions":"poa_decisions","capacity":"capacity","physical":"domains","cognitive":"domains","wellness":"domains","legal":"domains","financial":"domains","emergency-card":"emergency_info","binder":"care_plan","handoff":"shift_data"};
+  // PHI access is audited on every route into a PHI view — including the bottom
+  // nav, which reaches the Meds/Log/SOS roots without going through nav().
+  const auditView=(v)=>{if(PHI_VIEWS[v]&&authed)hipaaAudit("view","Accessed "+v,PHI_VIEWS[v])};
+  // Bottom nav roots. Each is a destination in its own right, not a container
+  // of links — the four hubs it replaces cost a tap before anything happened.
+  const NAV_ROOTS=["today","meds","log","sos"];
+  const navRoot=(root)=>{auditView(root);setCurrentHub(root);setView(root);setNavStack([]);setExpanded({});setCareMenuOpen(false)};
+  const nav=(v)=>{if(NAV_ROOTS.includes(v)){navRoot(v);return}auditView(v);setNavStack(p=>[...p,{view,hub:currentHub}]);setView(v);setExpanded({});setEditNotes(false);setAddSubFor(null);cancelEdit();setContactForm(null);setContactDetail(null);setEditingDomain(null);setApptForm(null);setCalSelected(null);setDocResult(null);setDocMeds([]);setDocLabs([]);setIncidentForm(null);setExpenseForm(null);setMedForm(null);setViewingDoc(null)};
+  const navBack=()=>{if(navStack.length>0){const prev=navStack[navStack.length-1];setNavStack(p=>p.slice(0,-1));setView(prev.view);setCurrentHub(prev.hub)}else{navRoot(NAV_ROOTS.includes(currentHub)?currentHub:"today")}};
+  const isHubView=NAV_ROOTS.includes(view);
+  const getViewTitle=()=>{const t={today:"Today",meds:"Medications",log:"Log",sos:"SOS","care-domains":"Care domains",backups:"Backups",physical:"Physical health",cognitive:"Cognitive health",wellness:"Wellness",legal:"Legal safety",financial:"Financial security",expenses:"Expenses",calendar:"Calendar",contacts:"Contacts",documents:"Documents",triggers:"Escalation triggers",tracking:"Tracking",visit:"Visit prep",emergency:"Emergency plans",postdeath:"After death",messages:"Messages",sync:"Sync",selfreport:"Self-report",settings:"Settings",help:"Help",overview:"Overview",handoff:"Shift Handoff","emergency-card":"Emergency Card","caregiver-wellness":"Caregiver Check-in","incident-patterns":"Incident Patterns",display:"Display settings",capacity:"Capacity Observations",binder:"Care Plan Binder","poa-decisions":"POA Decisions",schedule:"Care Schedule",availability:"My Availability"};return t[view]||"Care Guardian"};
+  const getBreadcrumb=()=>{const h={today:"Today",meds:"Medications",log:"Log",sos:"SOS",care:"Care Hub"};if(isHubView)return null;return h[currentHub]||null};
 
   // Universal search
   const SEARCH_FEATURES=[
-    {label:"Medications",hub:"records",view:"medadmin",icon:"💊",keywords:"medication med admin drug pill prescription"},
-    {label:"Incidents",hub:"records",view:"incidents",icon:"⚠",keywords:"incident fall behavior wandering medication error accident"},
-    {label:"Incident Patterns",hub:"records",view:"incident-patterns",icon:"📊",keywords:"pattern trend chart graph analysis time"},
-    {label:"Expenses",hub:"records",view:"expenses",icon:"$",keywords:"expense cost money payment receipt"},
-    {label:"Documents",hub:"records",view:"documents",icon:"📄",keywords:"document scan pdf lab result upload library"},
-    {label:"Contacts",hub:"records",view:"contacts",icon:"☷",keywords:"contact phone email doctor nurse lawyer provider"},
-    {label:"Calendar",hub:"records",view:"calendar",icon:"▦",keywords:"calendar appointment schedule date"},
-    {label:"Care Schedule",hub:"records",view:"schedule",icon:"🗓",keywords:"schedule shift open swap claim visit clock availability roster assignment"},
-    {label:"Messages",hub:"team",view:"messages",icon:"✉",keywords:"message chat text communication team"},
-    {label:"Self-Reports",hub:"team",view:"selfreport",icon:"🗣",keywords:"self report mood pain sleep voice concern"},
-    {label:"Sync",hub:"team",view:"sync",icon:"📡",keywords:"sync backup export import cloud server team invite"},
-    {label:"Settings",hub:"team",view:"settings",icon:"⚙",keywords:"settings passcode password state region device"},
-    {label:"Help",hub:"team",view:"help",icon:"?",keywords:"help guide how to feature"},
+    {label:"Medications",hub:"meds",view:"meds",icon:"💊",keywords:"medication med admin drug pill prescription schedule dose"},
+    {label:"Medicine Cabinet",hub:"meds",view:"meds",icon:"🗄",keywords:"cabinet medication list purpose prescriber pharmacy refill supply critical"},
+    {label:"SOS / Emergency",hub:"sos",view:"sos",icon:"🚨",keywords:"sos emergency 911 urgent help crisis ambulance paramedic script dispatcher"},
+    {label:"Log",hub:"log",view:"log",icon:"✎",keywords:"log record incident observation note trigger what happened"},
+    {label:"Care Domains",hub:"care",view:"care-domains",icon:"🧭",keywords:"domain care plan physical cognitive wellness legal financial progress foundation"},
+    {label:"Display Settings",hub:"care",view:"display",icon:"🅰",keywords:"display text size larger bigger font contrast dark mode accessibility readable"},
+    {label:"Incidents",hub:"log",view:"log",icon:"⚠",keywords:"incident fall behavior wandering medication error accident"},
+    {label:"Incident Patterns",hub:"log",view:"incident-patterns",icon:"📊",keywords:"pattern trend chart graph analysis time"},
+    {label:"Expenses",hub:"care",view:"expenses",icon:"$",keywords:"expense cost money payment receipt"},
+    {label:"Documents",hub:"care",view:"documents",icon:"📄",keywords:"document scan pdf lab result upload library"},
+    {label:"Contacts",hub:"sos",view:"contacts",icon:"☷",keywords:"contact phone email doctor nurse lawyer provider"},
+    {label:"Calendar",hub:"today",view:"calendar",icon:"▦",keywords:"calendar appointment schedule date"},
+    {label:"Care Schedule",hub:"care",view:"schedule",icon:"🗓",keywords:"schedule shift open swap claim visit clock availability roster assignment"},
+    {label:"Messages",hub:"today",view:"messages",icon:"✉",keywords:"message chat text communication circle team"},
+    {label:"Self-Reports",hub:"log",view:"selfreport",icon:"🗣",keywords:"self report mood pain sleep voice concern"},
+    {label:"Backups",hub:"care",view:"backups",icon:"🛟",keywords:"backup restore save copy export recover lost device passcode encrypted care file"},
+    {label:"Circle Sync",hub:"care",view:"sync",icon:"📡",keywords:"sync cloud server circle team invite merge device name"},
+    {label:"Settings",hub:"care",view:"settings",icon:"⚙",keywords:"settings passcode password state region device"},
+    {label:"Help",hub:"care",view:"help",icon:"?",keywords:"help guide how to feature"},
     {label:"Physical Health",hub:"care",view:"physical",icon:"♥",keywords:"physical health mobility fall nutrition dental vision sleep"},
     {label:"Cognitive Health",hub:"care",view:"cognitive",icon:"◐",keywords:"cognitive memory assessment routine behavior orientation"},
     {label:"Wellness",hub:"care",view:"wellness",icon:"✿",keywords:"wellness emotional social activity engagement respite"},
@@ -3150,12 +4132,12 @@ export default function App() {
     {label:"Escalation Triggers",hub:"care",view:"triggers",icon:"📊",keywords:"trigger escalation transition warning condition monitor"},
     {label:"Tracking",hub:"care",view:"tracking",icon:"📈",keywords:"tracking longitudinal snapshot history trend progress"},
     {label:"Visit Prep",hub:"care",view:"visit",icon:"📋",keywords:"visit prep doctor appointment provider summary"},
-    {label:"Emergency Plans",hub:"care",view:"emergency",icon:"🚨",keywords:"emergency plan fall choking wandering agitation"},
+    {label:"Emergency Plans",hub:"sos",view:"emergency",icon:"🚨",keywords:"emergency plan fall choking wandering agitation"},
     {label:"POA Decisions",hub:"care",view:"poa-decisions",icon:"⚖",keywords:"poa power attorney decision medical financial legal guardian agent fiduciary"},
     {label:"Capacity Observations",hub:"care",view:"capacity",icon:"📝",keywords:"capacity observation ability assessment functional decline"},
     {label:"Care Plan Binder",hub:"care",view:"binder",icon:"📖",keywords:"binder care plan printable comprehensive document"},
     {label:"Shift Handoff",hub:"today",view:"handoff",icon:"📋",keywords:"handoff shift change summary incoming outgoing"},
-    {label:"Emergency Card",hub:"today",view:"emergency-card",icon:"🆔",keywords:"emergency card wallet id printable diagnoses medications"},
+    {label:"Emergency Card",hub:"sos",view:"emergency-card",icon:"🆔",keywords:"emergency card wallet id printable diagnoses medications"},
     {label:"Caregiver Check-in",hub:"today",view:"caregiver-wellness",icon:"💛",keywords:"caregiver wellness burnout stress sleep respite self care"},
   ];
 
@@ -3171,32 +4153,32 @@ export default function App() {
     // Search incidents
     (data.incidents||[]).forEach(i=>{
       if((i.description||"").toLowerCase().includes(ql)||(i.type||"").toLowerCase().includes(ql)||(i.response||"").toLowerCase().includes(ql))
-        results.data.push({type:"incident",icon:"⚠",title:i.type+" — "+i.severity,sub:(i.description||"").slice(0,80),date:i.date,hub:"records",view:"incidents",id:i.id});
+        results.data.push({type:"incident",icon:"⚠",title:i.type+" — "+i.severity,sub:(i.description||"").slice(0,80),date:i.date,hub:"log",view:"log",id:i.id});
     });
 
     // Search contacts
     (data.contacts||[]).forEach(c=>{
       if((c.name||"").toLowerCase().includes(ql)||(c.role||"").toLowerCase().includes(ql)||(c.organization||"").toLowerCase().includes(ql))
-        results.data.push({type:"contact",icon:"☷",title:c.name,sub:c.role||c.category||"",hub:"records",view:"contacts",id:c.id});
+        results.data.push({type:"contact",icon:"☷",title:c.name,sub:c.role||c.category||"",hub:"sos",view:"contacts",id:c.id});
     });
 
     // Search documents
     (data.savedDocs||[]).forEach(d=>{
       const name=(d.fileName||d.category||"Document");
       if(name.toLowerCase().includes(ql)||(d.rawText||"").toLowerCase().includes(ql))
-        results.data.push({type:"document",icon:"📄",title:name,sub:d.category||"",hub:"records",view:"documents",id:d.id});
+        results.data.push({type:"document",icon:"📄",title:name,sub:d.category||"",hub:"care",view:"documents",id:d.id});
     });
 
     // Search medications
     getMedSchedule(true).medications.forEach(m=>{
       if((m.name||"").toLowerCase().includes(ql)||(m.dosage||"").toLowerCase().includes(ql))
-        results.data.push({type:"medication",icon:"💊",title:m.name+(m.dosage?" "+m.dosage:""),sub:m.discontinued?"Discontinued":"Active",hub:"records",view:"medadmin",id:m.id});
+        results.data.push({type:"medication",icon:"💊",title:m.name+(m.dosage?" "+m.dosage:""),sub:m.discontinued?"Discontinued":"Active",hub:"meds",view:"meds",id:m.id});
     });
 
     // Search messages
     (data.messages||[]).slice(0,50).forEach(m=>{
       if((m.text||"").toLowerCase().includes(ql)||(m.from||"").toLowerCase().includes(ql))
-        results.data.push({type:"message",icon:"✉",title:m.from||"",sub:(m.text||"").slice(0,80),date:m.timestamp,hub:"team",view:"messages",id:m.id});
+        results.data.push({type:"message",icon:"✉",title:m.from||"",sub:(m.text||"").slice(0,80),date:m.timestamp,hub:"today",view:"messages",id:m.id});
     });
 
     // Search POA decisions
@@ -3208,19 +4190,19 @@ export default function App() {
     // Search expenses
     (data.expenses||[]).forEach(e=>{
       if((e.description||"").toLowerCase().includes(ql)||(e.payee||"").toLowerCase().includes(ql)||(e.category||"").toLowerCase().includes(ql))
-        results.data.push({type:"expense",icon:"$",title:e.description||"Expense",sub:"$"+(e.amount||0)+" — "+e.date,hub:"records",view:"expenses",id:e.id});
+        results.data.push({type:"expense",icon:"$",title:e.description||"Expense",sub:"$"+(e.amount||0)+" — "+e.date,hub:"care",view:"expenses",id:e.id});
     });
 
     // Search self-reports
     (data.selfReports||[]).slice(0,30).forEach(r=>{
       if((r.text||"").toLowerCase().includes(ql)||(r.mood||"").toLowerCase().includes(ql))
-        results.data.push({type:"self-report",icon:"🗣",title:(r.mood||r.type||"Report"),sub:(r.text||"").slice(0,80),date:r.timestamp,hub:"team",view:"selfreport",id:r.id});
+        results.data.push({type:"self-report",icon:"🗣",title:(r.mood||r.type||"Report"),sub:(r.text||"").slice(0,80),date:r.timestamp,hub:"log",view:"selfreport",id:r.id});
     });
 
     return results;
   };
   const persistAuditTipToVault=()=>{ const t=auditTipRef.current; if(t&&t.seq){ setData(p=>((p.settings&&p.settings.auditTip&&p.settings.auditTip.seq>=t.seq)?p:{...p,settings:{...p.settings,auditTip:{seq:t.seq,hash:t.hash}}})); } };
-  const lock=()=>{persistAuditTipToVault();if(rKeyRef.current&&!clientScopedRef.current){try{writeProjection(data,rKeyRef.current)}catch{}}hipaaAudit("logout","Session locked","");dekRef.current=null;auditKeyRef.current=null;rKeyRef.current=null;clientScopedRef.current=false;_scopedWriteLock=false;setClientScoped(false);_mediaCache.clear();setAuditEntries([]);setSyncPasscode("");setAuthed(false);setAuthMode(null);setPc("");navHub("today")};
+  const lock=()=>{persistAuditTipToVault();if(rKeyRef.current&&!clientScopedRef.current){try{writeProjection(data,rKeyRef.current)}catch{}}hipaaAudit("logout","Session locked","");dekRef.current=null;cgPasscodeRef.current="";auditKeyRef.current=null;rKeyRef.current=null;clientScopedRef.current=false;_scopedWriteLock=false;_mediaCache.clear();setSyncPasscode("");setAuthed(false);setAuthMode(null);setPc("");navRoot("today")};
 
   // Sync reminder & forced lock
   const SYNC_WARN_DAYS=7;const SYNC_LOCK_DAYS=14;const SYNC_LOCK_ACTIONS=50;
@@ -3261,16 +4243,12 @@ export default function App() {
           saveWrappedKeys(wk);
           await saveVaultData(await encryptWithDEK(cleanData,dek));
           clearLegacyData();await requestPersistentStorage();
-          dekRef.current=dek;
+          dekRef.current=dek;cgPasscodeRef.current=pc;
         // Derive separate audit key and load audit log from IndexedDB
         try{
           const aKey=await deriveAuditKey(pc);
           auditKeyRef.current=aKey;
-          const entries=await readAuditLog(aKey,500);
-          setAuditEntries(entries);
-          const cnt=await getAuditCount();
           const si=await getStorageEstimate();setStorageInfo(si);
-          setAuditCount(cnt);
         }catch(e){console.error("Audit key derivation failed:",e)}setData(cleanData);setAuthed(true);setAuthMode(mode);setPcErr(false);setAuthAttempts(0);
           flash("Data migrated to encrypted storage.");return;
         }
@@ -3314,7 +4292,7 @@ export default function App() {
   };
   // Shared post-unwrap routine: load vault via snapshot+WAL, seed refs, load audit log, verify chain.
   const finishUnlock=async(dek,mode,pc)=>{
-    _scopedWriteLock=false;clientScopedRef.current=false;setClientScoped(false);
+    _scopedWriteLock=false;clientScopedRef.current=false;
     const loaded=await loadVaultV4(dek);
     if(!loaded){setDataLossDetected(true);return false} // every slot failed to decrypt → treat as data loss
     dekRef.current=dek;
@@ -3322,7 +4300,7 @@ export default function App() {
     lastCkptSeqRef.current=loaded.baseSeq;
     ckptSlotRef.current=loaded.baseSlot==="snapB"?"snapA":"snapB";
     prevPersistedRef.current=loaded.state;
-    try{const aKey=await deriveAuditKey(pc);auditKeyRef.current=aKey;const aKeyLegacy=await deriveAuditKey(pc,KDF_ITER_LEGACY);const entries=await readAuditLog([aKey,aKeyLegacy],500);setAuditEntries(entries);const cnt=await getAuditCount();setAuditCount(cnt);const si=await getStorageEstimate();setStorageInfo(si);const chained=entries.filter(e=>typeof e.seq==="number"&&e.hash);if(chained.length){const last=chained.sort((a,b)=>a.seq-b.seq)[chained.length-1];auditTipRef.current={seq:last.seq,hash:last.hash}}const cs=await verifyAuditChain(entries,(loaded.state.settings&&loaded.state.settings.auditTip)||null);setAuditChainStatus(cs);if(cs.status==="ok"&&cs.tip)saveAuditTip(cs.tip.seq,cs.tip.hash);}catch(e){console.error("Audit key derivation failed:",e)}
+    try{const aKey=await deriveAuditKey(pc);auditKeyRef.current=aKey;const aKeyLegacy=await deriveAuditKey(pc,KDF_ITER_LEGACY);const entries=await readAuditLog([aKey,aKeyLegacy],500);const si=await getStorageEstimate();setStorageInfo(si);const chained=entries.filter(e=>typeof e.seq==="number"&&e.hash);if(chained.length){const last=chained.sort((a,b)=>a.seq-b.seq)[chained.length-1];auditTipRef.current={seq:last.seq,hash:last.hash}}const cs=await verifyAuditChain(entries,(loaded.state.settings&&loaded.state.settings.auditTip)||null);setAuditChainStatus(cs);if(cs.status==="ok"&&cs.tip)saveAuditTip(cs.tip.seq,cs.tip.hash);}catch(e){console.error("Audit key derivation failed:",e)}
     if(loaded.state.settings){ const sv=loaded.state.settings.schemaVersion; if(sv==null){loaded.state.settings.schemaVersion=SCHEMA_VERSION} else if(sv>SCHEMA_VERSION){setNewerSchema(true)} } // newer build wrote this vault → warn, don't clobber
     // ── Cryptographic role scoping: derive (or create) the restricted-zone key, ingest any client-written
     //    self-reports from the encrypted outbox, and refresh the client projection. ──
@@ -3369,7 +4347,7 @@ export default function App() {
     const skeleton=initState((proj.settings&&proj.settings.stateCode)||"");
     delete skeleton.settings.caregiverPasscode;delete skeleton.settings.clientPasscode;
     const merged={...skeleton,...proj,domains:{...skeleton.domains,...(proj.domains||{})},settings:{...skeleton.settings,...(proj.settings||{})}};
-    dekRef.current=rKey;rKeyRef.current=rKey;clientScopedRef.current=true;_scopedWriteLock=true;setClientScoped(true);
+    dekRef.current=rKey;rKeyRef.current=rKey;clientScopedRef.current=true;_scopedWriteLock=true;
     prevPersistedRef.current=merged;
     setData(merged);setAuthed(true);setAuthMode("client");setPcErr(false);setAuthAttempts(0);
     try{ setSrChainStatus(await verifySrChain(merged.selfReports,(merged.settings&&merged.settings.selfReportTip)||null)); }catch{}
@@ -3422,7 +4400,10 @@ export default function App() {
     try{
       const prfSalt=crypto.getRandomValues(new Uint8Array(32));
       const {credentialId, prfOutput}=await mfaRegisterPasskey(myName(), prfSalt);
-      const code=genRecoveryCode();
+      // Reuse the Recovery Key the caregiver already saved, so enabling MFA does
+      // not hand them a second 25-character string to file away. Only mints a
+      // fresh one if this install somehow has none.
+      const code=getRecoveryKey()||ensureRecoveryKey()||genRecoveryCode();
       const {cMfa, cRecovery}=await buildMfaWraps(dek, mfaEnrollPc, prfOutput, code);
       // SAFETY: verify both new factors recover the exact DEK before we ever drop the passcode-only wrap
       const v1=await unwrapWithPasskey(cMfa, mfaEnrollPc, prfOutput);
@@ -3494,7 +4475,7 @@ export default function App() {
   };
   const regenerateRecoveryCode=async(pc)=>{
     if(!dekRef.current)return;
-    try{ const code=genRecoveryCode(); const cRecovery=await buildRecoveryWrap(dekRef.current, pc, code); const ko=loadWrappedKeys(); ko.wk.cRecovery=cRecovery; saveWrappedKeys(ko.wk); setNewRecoveryCode(code); hipaaAudit("security","Recovery code regenerated","security"); }
+    try{ const code=genRecoveryCode(); setData(p=>({...p,settings:{...p.settings,recoveryKey:code}})); const cRecovery=await buildRecoveryWrap(dekRef.current, pc, code); const ko=loadWrappedKeys(); ko.wk.cRecovery=cRecovery; saveWrappedKeys(ko.wk); setNewRecoveryCode(code); hipaaAudit("security","Recovery code regenerated","security"); }
     catch(e){ flash("Couldn't regenerate the recovery code."); }
   };
 
@@ -3546,8 +4527,8 @@ export default function App() {
       setData(p=>{
         let next={...p};
         if(name){
-          const team=(p.settings&&p.settings.team)||null;
-          next={...next,settings:{...p.settings,clientName:name,team:team?{...team,clientName:team.clientName||name}:team}};
+          const circle=(p.settings&&p.settings.circle)||null;
+          next={...next,settings:{...p.settings,clientName:name,circle:circle?{...circle,clientName:circle.clientName||name}:circle}};
         }
         if(docName||docPhone){
           const contact={...EMPTY_CONTACT,name:docName||"Primary doctor",role:"Primary Care Physician",phone:docPhone,category:"medical",id:nextId(),notes:[],customFields:[]};
@@ -3558,32 +4539,39 @@ export default function App() {
     }
     setShowFirstWin(false);setFwName("");setFwDocName("");setFwDocPhone("");
   };
-  const clientDisplayName=()=>((data.settings&&data.settings.team&&data.settings.team.clientName))||((data.settings&&data.settings.clientName))||"";
+  const clientDisplayName=()=>((data.settings&&data.settings.circle&&data.settings.circle.clientName))||((data.settings&&data.settings.clientName))||"";
 
   // Recovery screen — browser evicted the local vault but wrapped keys survived
   if(dataLossDetected&&!recoveryData) return(<>
     <style dangerouslySetInnerHTML={{__html:CSS}}/>
-    <div className="auth-wrap"><div className="auth-card" style={{maxWidth:420}}>
-      <div style={{fontSize:38,marginBottom:10}}>⚠️</div>
-      <h1 className="auth-title">{recoveryReason==="forgot"?"Can't sign in?":"Your local data was cleared"}</h1>
-      {recoveryReason==="forgot"?(<p className="auth-sub" style={{textAlign:"left",lineHeight:1.5}}>If you've forgotten the passcodes for this browser, you have two options: restore from an encrypted backup file (you'll need that backup's password), or erase this browser's stored data and set up again. <strong>Without a backup, erased data cannot be recovered.</strong></p>):(<p className="auth-sub" style={{textAlign:"left",lineHeight:1.5}}>Your device's browser appears to have cleared Care Guardian's stored data. This can happen on iPhones and iPads when the device runs low on storage. <strong>Your information is not lost if you have a backup file.</strong></p>)}
+    <div className="auth-wrap"><div className="auth-card" style={{maxWidth:"min(100%,23.33rem)"}}>
+      <div style={{fontSize:"2.8148rem",marginBottom:10}}>⚠️</div>
+      <h1 className="auth-title">{recoveryReason==="forgot"?"Can't sign in?":recoveryReason==="newdevice"?"Restore onto this device":"Your local data was cleared"}</h1>
+      {recoveryReason==="newdevice"?(<p className="auth-sub" style={{textAlign:"left",lineHeight:1.5}}>Choose the <code>.care</code> backup file from your other device and enter its backup passcode. Everything comes back — records, medications, contacts and documents.</p>):recoveryReason==="forgot"?(<p className="auth-sub" style={{textAlign:"left",lineHeight:1.5}}>If you've forgotten the passcodes for this browser, you have two options: restore from an encrypted backup file (you'll need that backup's password), or erase this browser's stored data and set up again. <strong>Without a backup, erased data cannot be recovered.</strong></p>):(<p className="auth-sub" style={{textAlign:"left",lineHeight:1.5}}>Your device's browser appears to have cleared Care Guardian's stored data. This can happen on iPhones and iPads when the device runs low on storage. <strong>Your information is not lost if you have a backup file.</strong></p>)}
       <div className="recovery-box">
         <p className="recovery-label">Restore from your encrypted backup</p>
-        <input type="password" value={recoveryPw} onChange={e=>{setRecoveryPw(e.target.value);setRecoveryErr("")}} placeholder="Backup passcode" className="auth-input" style={{marginBottom:8}}/>
+        <input type="password" value={recoveryPw} onChange={e=>{setRecoveryPw(e.target.value);setRecoveryErr("")}} placeholder="Recovery Key" className="auth-input" style={{marginBottom:8,letterSpacing:"normal",textAlign:"left",fontFamily:"var(--font-ui)"}}/>
+        {/* Backups saved before this release could carry either of two passcodes —
+            the app used to ask for a separate one on each path. Say so, rather than
+            leaving someone guessing at the one moment it has to work. */}
+        <p className="auth-note" style={{textAlign:"left",marginBottom:8}}>Your <strong>Recovery Key</strong> — the one saved with your papers. A long caregiver passcode also works, and older files may want the backup passcode you typed at the time.</p>
         <input ref={recoveryFileRef} type="file" accept=".care,.json" style={{display:"none"}} onChange={handleRecoveryFile}/>
         <button onClick={()=>{if(!recoveryPw.trim()){setRecoveryErr("Enter the passcode you used when creating this backup.");return}recoveryFileRef.current&&recoveryFileRef.current.click()}} className="auth-btn">Choose backup file (.care)</button>
+        {cloudProvidersReady().map(pr=>(
+          <button key={pr.id} onClick={()=>handleRecoveryFromCloud(pr.id)} className="auth-btn" style={{marginTop:8}} disabled={cloudBkBusy}>{pr.icon} Restore from {pr.label}</button>
+        ))}
         {recoveryErr&&<p className="auth-error">{recoveryErr}</p>}
       </div>
-      <p className="auth-footer" style={{marginTop:16}}>No backup file? You can start fresh — but previously stored information cannot be recovered without a backup.</p>
-      <button onClick={async()=>{if(recoveryReason==="forgot"&&!window.confirm("This permanently erases ALL Care Guardian data stored in this browser. Without a backup file, it cannot be recovered. Erase and start over?"))return;await wipeAllLocalData(true);setRecoveryReason("dataloss");setDataLossDetected(false);setSetupMode(true)}} className="text-btn">{recoveryReason==="forgot"?"Erase this browser's data & start over":"Start fresh instead"}</button>
+      <p className="auth-footer" style={{marginTop:16}}>{recoveryReason==="newdevice"?"Haven't got the file to hand? You can set this device up now and restore later.":"No backup file? You can start fresh — but previously stored information cannot be recovered without a backup."}</p>
+      <button onClick={async()=>{if(recoveryReason==="forgot"&&!window.confirm("This permanently erases ALL Care Guardian data stored in this browser. Without a backup file, it cannot be recovered. Erase and start over?"))return;if(recoveryReason==="newdevice"){setDataLossDetected(false);setRecoveryReason("dataloss");return}await wipeAllLocalData(true);setRecoveryReason("dataloss");setDataLossDetected(false);setSetupMode(true)}} className="text-btn">{recoveryReason==="newdevice"?"← Back to setup":recoveryReason==="forgot"?"Erase this browser's data & start over":"Start fresh instead"}</button>
     </div></div>
   </>);
 
   // Recovery: returning user after eviction — straight to passcode, no first-run onboarding.
   if(recoveryData) return(<>
     <style dangerouslySetInnerHTML={{__html:CSS}}/>
-    <div className="auth-wrap"><div className="auth-card" style={{maxWidth:380}}>
-      <div style={{fontSize:38,marginBottom:10}}>♻️</div>
+    <div className="auth-wrap"><div className="auth-card" style={{maxWidth:"min(100%,21.11rem)"}}>
+      <div style={{fontSize:"2.8148rem",marginBottom:10}}>♻️</div>
       <h1 className="auth-title">Set new passcodes</h1>
       <p className="auth-sub">Your backup was decrypted. Create new passcodes to secure your restored data on this device.</p>
       <div className="recovery-banner">✓ Backup loaded — your records will be restored once you set passcodes.</div>
@@ -3610,6 +4598,7 @@ export default function App() {
           <h1 className="auth-title">Your family's privacy comes first</h1>
           <p className="onb-body">Care Guardian does not use the cloud. We have no servers, and we can never see your data. Everything you type stays exactly where it belongs: <strong>right here on your device.</strong></p>
           <button onClick={()=>setOnbStep(isStandalone?2:1)} className="auth-btn">Get started</button>
+          <button onClick={()=>{setRecoveryReason("newdevice");setDataLossDetected(true)}} className="text-btn">Already have a backup file? Restore it →</button>
           <Dots/>
         </>)}
 
@@ -3657,11 +4646,11 @@ export default function App() {
   if(authed&&checkSyncLock()&&!syncLocked){setSyncLocked(true)}
   if(authed&&syncLocked) return(<>
     <style dangerouslySetInnerHTML={{__html:CSS}}/>
-    <div className="auth-wrap"><div className="auth-card" style={{maxWidth:400}}>
-      <div style={{fontSize:38,marginBottom:10}}>📡</div>
+    <div className="auth-wrap"><div className="auth-card" style={{maxWidth:"min(100%,22.22rem)"}}>
+      <div style={{fontSize:"2.8148rem",marginBottom:10}}>📡</div>
       <h1 className="auth-title">Sync Required</h1>
-      <p className="auth-sub">{"Your data hasn\'t been synced in over "+getSyncAge().days+" days, or you have "+getSyncAge().actions+" unsynced changes. Please sync now to protect your data and keep your team up to date."}</p>
-      <button onClick={()=>{setSyncLocked(false);navHub("team");setTimeout(()=>nav("sync"),100)}} className="auth-btn">Open Sync</button>
+      <p className="auth-sub">{"Your data hasn\'t been synced in over "+getSyncAge().days+" days, or you have "+getSyncAge().actions+" unsynced changes. Please sync now to protect your data and keep your circle up to date."}</p>
+      <button onClick={()=>{setSyncLocked(false);navRoot("today");setTimeout(()=>{setCurrentHub("care");nav("sync")},100)}} className="auth-btn">Open Sync</button>
       <p className="auth-footer">Your data exists only on this device until synced.</p>
     </div></div>
   </>);
@@ -3669,8 +4658,8 @@ export default function App() {
   // MFA second-factor screen — caregiver passcode accepted, awaiting passkey or recovery code
   if(!authed && mfaPending) return(<>
     <style dangerouslySetInnerHTML={{__html:CSS}}/>
-    <div className="auth-wrap"><div className="auth-card" style={{maxWidth:400}}>
-      <div style={{fontSize:38,marginBottom:10}}>🔐</div>
+    <div className="auth-wrap"><div className="auth-card" style={{maxWidth:"min(100%,22.22rem)"}}>
+      <div style={{fontSize:"2.8148rem",marginBottom:10}}>🔐</div>
       <h1 className="auth-title">Second step</h1>
       {!mfaShowRecovery?(<>
         <p className="auth-sub">Confirm it's you with your passkey to finish unlocking.</p>
@@ -3690,7 +4679,7 @@ export default function App() {
   if(!authed) return(<>
     <style dangerouslySetInnerHTML={{__html:CSS}}/>
     <div className="auth-wrap"><div className="auth-card">
-      <div style={{fontSize:38,marginBottom:10}}>🛡</div>
+      <div style={{fontSize:"2.8148rem",marginBottom:10}}>🛡</div>
       <h1 className="auth-title">Care Guardian</h1>
       <p className="auth-sub">Enter your passcode.<br/><span className="auth-note">Data is encrypted at rest on this device.</span></p>
       <input type="password" value={pc} onChange={e=>{setPc(e.target.value);setPcErr(false)}} onKeyDown={e=>e.key==="Enter"&&tryAuth()} placeholder="Passcode" className={`auth-input ${pcErr?"auth-input-err":""}`}/>
@@ -3730,7 +4719,7 @@ export default function App() {
     {storageAtRisk&&(<div className="nudge-banner nudge-risk">
       <span className="nudge-icon">⚠️</span>
       <div className="nudge-body"><strong>This browser hasn't granted durable storage.</strong> Your records could be cleared if the device runs low on space. Add the app to your home screen and keep a recent backup so nothing is lost.{backupStatus==="active"?" Your continuous backup is protecting you in the meantime.":""}</div>
-      <button className="nudge-act" onClick={()=>{setCurrentHub("team");nav("settings")}}>Back up</button>
+      <button className="nudge-act" onClick={()=>{setCurrentHub("care");nav("backups")}}>Back up</button>
       <button className="nudge-x" onClick={()=>setStorageAtRisk(false)}>×</button>
     </div>)}
     {/* Truthful durability indicator — "saved" only after the edit's append has committed */}
@@ -3750,7 +4739,7 @@ export default function App() {
     </div>):(<div className="nudge-banner nudge-backup">
       <span className="nudge-icon">💾</span>
       <div className="nudge-body"><strong>Time to back up.</strong> {(data.settings&&data.settings.lastBackupAt)?"It's been a while since your last backup.":"You haven't made a backup yet."} A downloaded backup file survives even if your browser clears its storage — it's how you recover everything.</div>
-      <button className="nudge-act" onClick={()=>{setShowBackupReminder(false);setCurrentHub("team");nav("settings")}}>Back up now</button>
+      <button className="nudge-act" onClick={()=>{setShowBackupReminder(false);setCurrentHub("care");nav("backups")}}>Back up now</button>
       <button className="nudge-x" onClick={()=>setShowBackupReminder(false)}>×</button>
     </div>))}
     {searchOpen&&(<div className="search-overlay" onClick={()=>setSearchOpen(false)}>
@@ -3770,15 +4759,51 @@ export default function App() {
           </div>):<div className="search-hint">Type at least 2 characters to search</div>})()}
       </div>
     </div>)}
-    {contactForm&&!isClient&&<ContactFormUI key={"contact-"+(contactForm.id||contactForm.mode)} contactForm={contactForm} setContactForm={setContactForm} saveContact={saveContact}/>}
-    {apptForm&&!isClient&&<ApptFormUI key={"appt-"+(apptForm.id||apptForm.mode)} apptForm={apptForm} setApptForm={setApptForm} saveAppt={saveAppt} deleteAppt={deleteAppt}/>}
-    {editingDomain&&!isClient&&<DomainEditModal key={"domain-"+editingDomain.key} editingDomain={editingDomain} setEditingDomain={setEditingDomain} setData={setData} addLog={addLog}/>}
-    {incidentForm&&!isClient&&<IncidentFormUI key={"incident-"+(incidentForm.id||incidentForm.mode)} incidentForm={incidentForm} setIncidentForm={setIncidentForm} saveIncident={saveIncident} deleteIncident={deleteIncident} incidentPhotoRef={incidentPhotoRef} handlePhotoCapture={handlePhotoCapture}/>}
-    {expenseForm&&!isClient&&<ExpenseFormUI key={"expense-"+(expenseForm.id||expenseForm.mode)} expenseForm={expenseForm} setExpenseForm={setExpenseForm} saveExpense={saveExpense} deleteExpense={deleteExpense}/>}
-    {medForm&&!isClient&&<MedFormUI key={"med-"+(medForm.id||medForm.mode)} medForm={medForm} setMedForm={setMedForm} addMedToSchedule={addMedToSchedule} editMedInSchedule={editMedInSchedule} removeMedFromSchedule={removeMedFromSchedule}/>}
+    {contactForm&&!isReadOnly&&<ContactFormUI key={"contact-"+(contactForm.id||contactForm.mode)} contactForm={contactForm} setContactForm={setContactForm} saveContact={saveContact} contactPhotoRef={contactPhotoRef} handlePhotoCapture={handlePhotoCapture}/>}
+    {apptForm&&!isReadOnly&&<ApptFormUI key={"appt-"+(apptForm.id||apptForm.mode)} apptForm={apptForm} setApptForm={setApptForm} saveAppt={saveAppt} deleteAppt={deleteAppt}/>}
+    {editingDomain&&!isReadOnly&&<DomainEditModal key={"domain-"+editingDomain.key} editingDomain={editingDomain} setEditingDomain={setEditingDomain} setData={setData} addLog={addLog}/>}
+    {refusal&&(()=>{
+      const med=getMedSchedule().medications.find(m=>m.id===refusal.medId);
+      if(!med)return null;
+      return(<div className="cf-overlay" onClick={()=>setRefusal(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:"min(100%,25.56rem)"}}>
+        {!refusal.reason?(<>
+          <h2 className="cf-title">Pause &amp; pivot</h2>
+          <p className="refusal-lead">Don't push. Step back, change something small — the room, the cup, who's asking — and try again in a few minutes.</p>
+          <p className="refusal-med"><strong>{med.name}</strong>{med.dosage?" · "+med.dosage:""}{med.purpose?" · "+med.purpose:""}</p>
+          <label className="cf-label" style={{marginBottom:6}}>What got in the way?</label>
+          <div className="tap-select">{REFUSAL_REASONS.map(r=>(
+            <button key={r.key} type="button" onClick={()=>{recordRefusal(refusal.medId,refusal.slot,refusal.date,r.key);setRefusal({...refusal,reason:r.key})}} className="tap-opt">
+              <span className="tap-opt-icon">{r.icon}</span><span>{r.label}</span></button>))}
+          </div>
+          <div className="cf-actions" style={{marginTop:14}}><button onClick={()=>setRefusal(null)} className="cancel-btn">Cancel</button></div>
+        </>):med.isCritical?(<>
+          <h2 className="cf-title" style={{color:"var(--color-text-danger)"}}>⚠ This one is critical</h2>
+          <p className="refusal-lead">Logged. <strong>{med.name}</strong> is marked critical, so a missed dose needs a decision — not just a record.</p>
+          <div className="refusal-critical">
+            <div className="refusal-critical-title">Do this now</div>
+            <ol className="sos-script-list">
+              <li>Check the label or the prescriber's instructions for what to do about a missed dose.</li>
+              <li>Call the prescriber{med.prescriber?<> — <strong>{med.prescriber}</strong></>:""} or the pharmacy{med.pharmacyPhone?<> at <a href={"tel:"+med.pharmacyPhone} className="link-btn">{med.pharmacyPhone}</a></>:""}.</li>
+              <li>Don't double the next dose unless you're told to.</li>
+            </ol>
+          </div>
+          <div className="cf-actions" style={{marginTop:14}}>
+            {can("view-contacts")&&<button onClick={()=>{setRefusal(null);setCurrentHub("sos");nav("contacts")}} className="save-btn">Find the number</button>}
+            <button onClick={()=>setRefusal(null)} className="cancel-btn">Done</button>
+          </div>
+        </>):(<>
+          <h2 className="cf-title">Logged</h2>
+          <p className="refusal-lead">Noted, and it's not an emergency — <strong>{med.name}</strong> isn't marked critical. Try again at the next window.</p>
+          <div className="cf-actions" style={{marginTop:14}}><button onClick={()=>setRefusal(null)} className="save-btn">Done</button></div>
+        </>)}
+      </div></div>)})()}
+    {ecardForm&&can("edit-emergency")&&<EcardFormUI info={ecardForm} setEcardForm={setEcardForm} saveEmergencyInfo={saveEmergencyInfo} ecardPhotoRef={ecardPhotoRef} handlePhotoCapture={handlePhotoCapture}/>}
+    {incidentForm&&!isReadOnly&&<IncidentFormUI key={"incident-"+(incidentForm.id||incidentForm.mode)} incidentForm={incidentForm} setIncidentForm={setIncidentForm} saveIncident={saveIncident} deleteIncident={deleteIncident} incidentPhotoRef={incidentPhotoRef} handlePhotoCapture={handlePhotoCapture}/>}
+    {expenseForm&&!isReadOnly&&<ExpenseFormUI key={"expense-"+(expenseForm.id||expenseForm.mode)} expenseForm={expenseForm} setExpenseForm={setExpenseForm} saveExpense={saveExpense} deleteExpense={deleteExpense}/>}
+    {medForm&&!isReadOnly&&<MedFormUI key={"med-"+(medForm.id||medForm.mode)} medForm={medForm} setMedForm={setMedForm} addMedToSchedule={addMedToSchedule} editMedInSchedule={editMedInSchedule} removeMedFromSchedule={removeMedFromSchedule}/>}
     {/* Merge Preview Modal */}
     {/* MFA enrollment */}
-    {mfaEnroll&&(<div className="cf-overlay" onClick={()=>{if(mfaEnroll!=="registering"){setMfaEnroll(null);setMfaEnrollPrepared(null)}}}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:440}}>
+    {mfaEnroll&&(<div className="cf-overlay" onClick={()=>{if(mfaEnroll!=="registering"){setMfaEnroll(null);setMfaEnrollPrepared(null)}}}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:"min(100%,24.44rem)"}}>
       <h2 className="cf-title">🔐 Enable multi-factor sign-in</h2>
       {mfaEnroll==="passcode"&&(<>
         <p className="hint">Confirm your caregiver passcode. Next you'll register a passkey, then save a one-time recovery code.</p>
@@ -3791,20 +4816,20 @@ export default function App() {
         <p className="hint">Your passkey is registered. <strong>Write down or print this recovery code now</strong> — it's shown only once and is the only way in if you lose your passkey.</p>
         <div className="recovery-code-box">{mfaEnrollPrepared.code}</div>
         <div style={{display:"flex",gap:8,marginTop:8}}><button className="mini-btn" onClick={()=>{try{navigator.clipboard.writeText(mfaEnrollPrepared.code);flash("Recovery code copied.")}catch{}}}>Copy</button><button className="mini-btn" onClick={()=>window.print()}>Print</button></div>
-        <p className="hint" style={{marginTop:10,color:"#9a5a2a"}}><strong>Store it away from this device</strong> — in a password manager or a locked location, never in the same drawer or on the same device. Anyone who has both this code and the caregiver passcode can sign in without the passkey, so treat it like a spare key.</p>
+        <p className="hint" style={{marginTop:10,color:"var(--color-text-warning)"}}><strong>Store it away from this device</strong> — in a password manager or a locked location, never in the same drawer or on the same device. Anyone who has both this code and the caregiver passcode can sign in without the passkey, so treat it like a spare key.</p>
         <label className="confirm-check"><input type="checkbox" checked={mfaCodeConfirmed} onChange={e=>setMfaCodeConfirmed(e.target.checked)}/> I've saved this code in a separate, secure location.</label>
         <div className="cf-actions" style={{marginTop:12}}><button className="save-btn" onClick={confirmMfaEnroll} disabled={!mfaCodeConfirmed}>Turn on MFA</button></div>
       </>)}
     </div></div>)}
     {/* MFA add backup passkey */}
-    {mfaAddPasskey&&(<div className="cf-overlay" onClick={()=>{if(!mfaAddBusy)setMfaAddPasskey(false)}}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:430}}>
+    {mfaAddPasskey&&(<div className="cf-overlay" onClick={()=>{if(!mfaAddBusy)setMfaAddPasskey(false)}}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:"min(100%,23.89rem)"}}>
       <h2 className="cf-title">Add a backup passkey</h2>
       <p className="hint">Register a second passkey — for example a hardware security key kept in a safe, or another device. Enter your passcode, confirm with an <strong>existing</strong> passkey, then create the new one. With two passkeys you can remove the paper recovery code entirely.</p>
       <input type="password" value={mfaAddPc} onChange={e=>{setMfaAddPc(e.target.value);setMfaEnrollErr("")}} placeholder="Caregiver passcode" className="cf-input" style={{marginTop:10}}/>
       {mfaEnrollErr&&<p className="auth-error">{mfaEnrollErr}</p>}
       <div className="cf-actions" style={{marginTop:14}}><button className="save-btn" onClick={submitAddPasskey} disabled={!mfaAddPc.trim()||mfaAddBusy}>{mfaAddBusy?"Follow the prompts…":"Add passkey"}</button><button className="cancel-btn" onClick={()=>setMfaAddPasskey(false)} disabled={mfaAddBusy}>Cancel</button></div>
     </div></div>)}
-    {/* MFA disable */}    {mfaDisable&&(<div className="cf-overlay" onClick={()=>setMfaDisable(false)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
+    {/* MFA disable */}    {mfaDisable&&(<div className="cf-overlay" onClick={()=>setMfaDisable(false)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:"min(100%,23.33rem)"}}>
       <h2 className="cf-title">Turn off multi-factor sign-in</h2>
       <p className="hint">Confirm your caregiver passcode and tap your passkey. After this, the passcode alone will unlock the vault again.</p>
       <input type="password" value={mfaDisablePc} onChange={e=>{setMfaDisablePc(e.target.value);setMfaEnrollErr("")}} placeholder="Caregiver passcode" className="cf-input" style={{marginTop:10}}/>
@@ -3812,7 +4837,7 @@ export default function App() {
       <div className="cf-actions" style={{marginTop:14}}><button className="save-btn" onClick={submitMfaDisable} disabled={!mfaDisablePc.trim()}>Confirm &amp; turn off</button><button className="cancel-btn" onClick={()=>setMfaDisable(false)}>Cancel</button></div>
     </div></div>)}
     {/* New recovery code (after one-time use or regeneration) */}
-    {newRecoveryCode&&(<div className="cf-overlay" onClick={()=>setNewRecoveryCode(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
+    {newRecoveryCode&&(<div className="cf-overlay" onClick={()=>setNewRecoveryCode(null)}><div className="cf-modal" onClick={e=>e.stopPropagation()} style={{maxWidth:"min(100%,23.33rem)"}}>
       <h2 className="cf-title">Your new recovery code</h2>
       <p className="hint">Your previous recovery code is no longer valid. Save this new one in a safe place — a password manager or locked location, <strong>separate from this device</strong>.</p>
       <div className="recovery-code-box">{newRecoveryCode}</div>
@@ -3823,20 +4848,20 @@ export default function App() {
       <h2 className="cf-title">📡 Merge Preview</h2>
       <p className="merge-source">Merging from: <strong>{mergePreview.sourceName}</strong></p>
       {mergePreview.oversized&&(<div className="flood-warn">⚠ This update is unusually large{mergePreview.floodBytes?` — about ${mb(mergePreview.floodBytes)} MB`:""}{mergePreview.report&&mergePreview.report.added?`, ${mergePreview.report.added.length} new items`:""}. It was <strong>not</strong> applied automatically. A flood of records can come from a corrupted or compromised device — confirm this looks legitimate before applying.</div>)}
-      {mergePreview.report.added.length>0&&(<div className="merge-section"><h4 className="merge-section-title" style={{color:"#718355"}}>+ New items to add ({mergePreview.report.added.length})</h4>
+      {mergePreview.report.added.length>0&&(<div className="merge-section"><h4 className="merge-section-title" style={{color:"var(--color-text-success)"}}>+ New items to add ({mergePreview.report.added.length})</h4>
         {mergePreview.report.added.map((item,i)=><div key={i} className="merge-item merge-added">{item}</div>)}</div>)}
-      {mergePreview.report.updated.length>0&&(<div className="merge-section"><h4 className="merge-section-title" style={{color:"#bc6c25"}}>↻ Items updated from remote ({mergePreview.report.updated.length})</h4>
+      {mergePreview.report.updated.length>0&&(<div className="merge-section"><h4 className="merge-section-title" style={{color:"var(--color-text-warning)"}}>↻ Items updated from remote ({mergePreview.report.updated.length})</h4>
         {mergePreview.report.updated.map((item,i)=><div key={i} className="merge-item merge-updated">{item}</div>)}</div>)}
-      {mergePreview.report.kept.length>0&&(<div className="merge-section"><h4 className="merge-section-title" style={{color:"#8d99ae"}}>= Local version kept ({mergePreview.report.kept.length})</h4>
+      {mergePreview.report.kept.length>0&&(<div className="merge-section"><h4 className="merge-section-title" style={{color:"var(--color-text-muted)"}}>= Local version kept ({mergePreview.report.kept.length})</h4>
         {mergePreview.report.kept.map((item,i)=><div key={i} className="merge-item merge-kept">{item}</div>)}</div>)}
-      {mergePreview.report.conflicts.length>0&&(<div className="merge-section"><h4 className="merge-section-title" style={{color:"#b04434"}}>⚠ Flagged — not applied ({mergePreview.report.conflicts.length})</h4>
-        {mergePreview.report.conflicts.map((item,i)=><div key={i} className="merge-item" style={{color:"#b04434"}}>{item}</div>)}</div>)}
+      {mergePreview.report.conflicts.length>0&&(<div className="merge-section"><h4 className="merge-section-title" style={{color:"var(--color-text-danger)"}}>⚠ Flagged — not applied ({mergePreview.report.conflicts.length})</h4>
+        {mergePreview.report.conflicts.map((item,i)=><div key={i} className="merge-item" style={{color:"var(--color-text-danger)"}}>{item}</div>)}</div>)}
       {mergePreview.report.added.length===0&&mergePreview.report.updated.length===0&&<p className="hint">No new changes detected — your data is already up to date.</p>}
       <div className="cf-actions" style={{marginTop:16}}>
         <button onClick={applyMerge} className="save-btn" disabled={mergePreview.report.added.length===0&&mergePreview.report.updated.length===0}>Apply Merge</button>
         <button onClick={()=>setMergePreview(null)} className="cancel-btn">Cancel</button>
       </div>
-      <p className="hint" style={{marginTop:12,fontSize:11.5}}>Merge adds new items and keeps the more recent version of each changed section. Your passcodes and device ID are never overwritten.</p>
+      <p className="hint" style={{marginTop:12,fontSize:"0.8519rem"}}>Merge adds new items and keeps the more recent version of each changed section. Your passcodes and device ID are never overwritten.</p>
     </div></div>)}
     <input ref={fileRef} type="file" accept=".vcf,.vcard" style={{display:"none"}} onChange={handleImportVCard}/>
     <input ref={importFileRef} type="file" accept=".json" style={{display:"none"}} onChange={handleEncryptedImport}/>
@@ -3846,93 +4871,372 @@ export default function App() {
     <div className="shell">
       <main className="main-area-v2">
         <header className="hub-topbar">
-          {!isHubView&&<button onClick={navBack} className="hub-back"><i style={{fontSize:18}}>←</i></button>}
+          <button onClick={()=>setCareMenuOpen(true)} className="topbar-icon" aria-label="Open the Care Hub menu" aria-expanded={careMenuOpen}>☰</button>
+          {!isHubView&&<button onClick={navBack} className="hub-back" aria-label="Back"><i style={{fontSize:"1.3333rem"}}>←</i></button>}
           <div className="hub-topbar-text">
             <span className="hub-topbar-title">{getViewTitle()}</span>
             {getBreadcrumb()&&<span className="hub-topbar-crumb">{getBreadcrumb()}</span>}
           </div>
-          {isClient&&<span className="client-badge">View Only</span>}
-          <button onClick={()=>{setSearchOpen(true);setSearchQ("")}} className="search-btn">🔍</button>
-          <button onClick={lock} className="top-lock">🔒</button>
+          {isReadOnly&&<span className="client-badge">View Only</span>}
+          <button onClick={()=>{setSearchOpen(true);setSearchQ("")}} className="topbar-icon" aria-label="Search">🔍</button>
+          {(()=>{const unread=getUnreadMessages().length;return(
+            <button onClick={()=>{setCurrentHub("today");nav("messages")}} className="topbar-icon topbar-msg" aria-label={unread>0?`Messages, ${unread} unread`:"Messages"}>
+              💬{unread>0&&<span className="msg-badge">{unread>99?"99+":unread}</span>}
+            </button>)})()}
+          <button onClick={lock} className="topbar-icon" aria-label="Lock">🔒</button>
         </header>
 
         <div className="content-v2">
-          {(settingsMsg||importResult)&&<div className="import-toast">{settingsMsg||importResult}</div>}
+          {settingsMsg&&<div className="import-toast">{settingsMsg}</div>}
+          <ViewErrorBoundary viewKey={view}>
 
           {/* ═══ TODAY HUB ═══ */}
-          {view==="today-hub"&&(<>
-            <div className="hub-welcome">🛡 Care Guardian{(data.settings&&data.settings.team)?" — "+(data.settings.team.name||""):""}</div>
+          {/* ═══ TODAY ═══ */}
+          {view==="today"&&(<>
+            <div className="hub-welcome">🛡 Care Guardian{(data.settings&&data.settings.circle)?" — "+(data.settings.circle.name||""):""}</div>
             {clientDisplayName()&&<p className="hub-client">Caring for <strong>{clientDisplayName()}</strong></p>}
-            {getSyncWarning()==="warn"&&<div className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub("team");nav("sync")}}><div className="hub-card-icon" style={{background:"var(--color-background-warning)"}}><span style={{color:"var(--color-text-warning)"}}>📡</span></div><div className="hub-card-body"><div className="hub-card-title">Sync overdue <span className="pill pill-a">{getSyncAge().days}d ago</span></div><div className="hub-card-sub">Sync now to protect your data</div></div><span className="hub-card-arr">›</span></div>}
-            {(()=>{const d=daysSinceRespite();if(d===null||d<14)return null;return(<div className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub("team");nav("caregiver-wellness")}}><div className="hub-card-icon" style={{background:"var(--color-background-danger)"}}><span style={{color:"var(--color-text-danger)"}}>💛</span></div><div className="hub-card-body"><div className="hub-card-title">No respite in {d} days</div><div className="hub-card-sub">Caregiver burnout risk — please take a break</div></div><span className="hub-card-arr">›</span></div>)})()}
+            {getSyncWarning()==="warn"&&<div className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub("care");nav("sync")}}><div className="hub-card-icon" style={{background:"var(--color-background-warning)"}}><span style={{color:"var(--color-text-warning)"}}>📡</span></div><div className="hub-card-body"><div className="hub-card-title">Sync overdue <span className="pill pill-a">{getSyncAge().days}d ago</span></div><div className="hub-card-sub">Sync now to protect your data</div></div><span className="hub-card-arr">›</span></div>}
+            {(()=>{const d=daysSinceRespite();if(d===null||d<14)return null;return(<div className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub("today");nav("caregiver-wellness")}}><div className="hub-card-icon" style={{background:"var(--color-background-danger)"}}><span style={{color:"var(--color-text-danger)"}}>💛</span></div><div className="hub-card-body"><div className="hub-card-title">No respite in {d} days</div><div className="hub-card-sub">Caregiver burnout risk — please take a break</div></div><span className="hub-card-arr">›</span></div>)})()}
             {(()=>{const rems=getReminders();const missed=rems.filter(r=>r.type==="med-missed");const dueMeds=rems.filter(r=>r.type==="med-due");const upcoming=rems.filter(r=>r.type==="med-upcoming");const overdueT=rems.filter(r=>r.type==="task-overdue");const upcomingT=rems.filter(r=>r.type==="task-upcoming");const appts=rems.filter(r=>r.type==="appt");const hasAlerts=missed.length+dueMeds.length+overdueT.length+appts.length>0;
               return(<>
-                {missed.length>0&&<><div className="hub-section-label" style={{color:"#b56576"}}>⚠ Missed medications</div>{missed.map((r,i)=>(<div key={"m"+i} className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#fde2e8"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
-                {dueMeds.length>0&&<><div className="hub-section-label">💊 Medications due now</div>{dueMeds.map((r,i)=>(<div key={"d"+i} className="hub-card" style={{borderLeft:"3px solid #bc6c25"}} onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#fdf0d5"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
-                {appts.length>0&&<><div className="hub-section-label">📅 Upcoming appointments</div>{appts.map((r,i)=>(<div key={"a"+i} className="hub-card" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#eef4f8"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
-                {overdueT.length>0&&<><div className="hub-section-label">Overdue recurring tasks</div>{overdueT.slice(0,5).map((r,i)=>(<div key={"t"+i} className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#fde2e8"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
-                {upcoming.length>0&&<><div className="hub-section-label">Coming up</div>{upcoming.map((r,i)=>(<div key={"u"+i} className="hub-card" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#f6f4f0"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
-                {upcomingT.length>0&&<><div className="hub-section-label">Tasks due this week</div>{upcomingT.slice(0,5).map((r,i)=>(<div key={"tw"+i} className="hub-card" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"#fdf0d5"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
-                {!hasAlerts&&<><div className="hub-section-label">Status</div><div className="hub-card hub-card-ok"><div className="hub-card-icon" style={{background:"#e8f0df"}}><span style={{color:"#718355"}}>✓</span></div><div className="hub-card-body"><div className="hub-card-title">All clear</div><div className="hub-card-sub">No overdue medications, tasks, or appointments</div></div></div></>}
+                {missed.length>0&&<><div className="hub-section-label" style={{color:"var(--color-text-danger)"}}>⚠ Missed medications</div>{missed.map((r,i)=>(<div key={"m"+i} className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"var(--color-background-danger)"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
+                {dueMeds.length>0&&<><div className="hub-section-label">💊 Medications due now</div>{dueMeds.map((r,i)=>(<div key={"d"+i} className="hub-card" style={{borderLeft:"3px solid var(--color-text-warning)"}} onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"var(--color-background-warning)"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
+                {appts.length>0&&<><div className="hub-section-label">📅 Upcoming appointments</div>{appts.map((r,i)=>(<div key={"a"+i} className="hub-card" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"var(--color-background-info)"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
+                {overdueT.length>0&&<><div className="hub-section-label">Overdue recurring tasks</div>{overdueT.slice(0,5).map((r,i)=>(<div key={"t"+i} className="hub-card hub-card-urgent" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"var(--color-background-danger)"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
+                {upcoming.length>0&&<><div className="hub-section-label">Coming up</div>{upcoming.map((r,i)=>(<div key={"u"+i} className="hub-card" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
+                {upcomingT.length>0&&<><div className="hub-section-label">Tasks due this week</div>{upcomingT.slice(0,5).map((r,i)=>(<div key={"tw"+i} className="hub-card" onClick={()=>{setCurrentHub(r.hub);nav(r.action)}}><div className="hub-card-icon" style={{background:"var(--color-background-warning)"}}><span>{r.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{r.title}</div><div className="hub-card-sub">{r.sub}</div></div><span className="hub-card-arr">›</span></div>))}</>}
+                {!hasAlerts&&<><div className="hub-section-label">Status</div><div className="hub-card hub-card-ok"><div className="hub-card-icon" style={{background:"var(--color-background-success)"}}><span style={{color:"var(--color-text-success)"}}>✓</span></div><div className="hub-card-body"><div className="hub-card-title">All clear</div><div className="hub-card-sub">No overdue medications, tasks, or appointments</div></div></div></>}
               </>)})()}
-            <div className="hub-section-label">Daily tasks</div>
-            <div className="hub-card" onClick={()=>{setCurrentHub("records");nav("medadmin")}}><div className="hub-card-icon" style={{background:"var(--color-background-warning)"}}><span style={{color:"var(--color-text-warning)"}}>💊</span></div><div className="hub-card-body"><div className="hub-card-title">Medications</div><div className="hub-card-sub">Today's med admin grid</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-card" onClick={()=>{setCurrentHub("records");nav("calendar")}}><div className="hub-card-icon" style={{background:"var(--color-background-info)"}}><span style={{color:"var(--color-text-info)"}}>▦</span></div><div className="hub-card-body"><div className="hub-card-title">Appointments</div><div className="hub-card-sub">{(data.appointments||[]).length} scheduled</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-card" onClick={()=>{setCurrentHub("team");nav("messages")}}><div className="hub-card-icon" style={{background:"var(--color-background-success)"}}><span style={{color:"var(--color-text-success)"}}>✉</span></div><div className="hub-card-body"><div className="hub-card-title">Messages</div><div className="hub-card-sub">Team chat</div></div><span className="hub-card-arr">›</span></div>
+
+            {/* This week's appointments — the calendar moved here from Records,
+                where a day's schedule was a hub and two taps away. */}
+            {(()=>{
+              const start=new Date();start.setHours(0,0,0,0);
+              const days=[];for(let i=0;i<7;i++){const d=new Date(start);d.setDate(d.getDate()+i);days.push(d)}
+              const any=days.some(d=>getApptsForDate(fmtDate(d.getFullYear(),d.getMonth(),d.getDate())).length>0);
+              return(<>
+                <div className="hub-section-label">📅 This week</div>
+                <div className="week-strip">{days.map((d,i)=>{
+                  const ds=fmtDate(d.getFullYear(),d.getMonth(),d.getDate());
+                  const appts=getApptsForDate(ds);
+                  return(<button key={ds} onClick={()=>{setCalSelected(ds);setCurrentHub("today");nav("calendar")}} className={`week-day ${i===0?"week-day-today":""} ${appts.length?"week-day-has":""}`}>
+                    <span className="week-dow">{DAYS[d.getDay()]}</span>
+                    <span className="week-num">{d.getDate()}</span>
+                    {appts.length>0&&<span className="week-count">{appts.length}</span>}
+                  </button>)})}
+                </div>
+                {!any&&<p className="hint" style={{marginTop:-4}}>Nothing scheduled this week.</p>}
+                <button onClick={()=>{setCurrentHub("today");nav("calendar")}} className="text-btn">View month →</button>
+              </>)})()}
+
             <div className="hub-section-label">Quick actions</div>
-            <div className="hub-card" onClick={()=>{setCurrentHub("today");nav("handoff")}}><div className="hub-card-icon" style={{background:"var(--color-background-info)"}}><span style={{color:"var(--color-text-info)"}}>📋</span></div><div className="hub-card-body"><div className="hub-card-title">Shift handoff</div><div className="hub-card-sub">Summary of recent activity for incoming caregiver</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-card" onClick={()=>{setCurrentHub("records");nav("incidents")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>⚠</span></div><div className="hub-card-body"><div className="hub-card-title">Log incident</div><div className="hub-card-sub">Fall, behavior, medication error</div></div><span className="hub-card-arr">›</span></div>
-            {can("submit-selfreport")&&<div className="hub-card" onClick={()=>{setCurrentHub("team");nav("selfreport")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🗣</span></div><div className="hub-card-body"><div className="hub-card-title">Self-report</div><div className="hub-card-sub">Mood, pain, sleep, voice note</div></div><span className="hub-card-arr">›</span></div>}
-            <div className="hub-card" onClick={()=>{setCurrentHub("today");nav("emergency-card")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🆔</span></div><div className="hub-card-body"><div className="hub-card-title">Emergency info card</div><div className="hub-card-sub">Printable wallet card with vitals</div></div><span className="hub-card-arr">›</span></div>
-            {!isClient&&<div className="hub-card" onClick={()=>{setCurrentHub("today");nav("caregiver-wellness")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>💛</span></div><div className="hub-card-body"><div className="hub-card-title">Caregiver check-in</div><div className="hub-card-sub">Track your stress, sleep, and respite</div></div><span className="hub-card-arr">›</span></div>}
+            <div className="hub-card" onClick={()=>{setCurrentHub("today");nav("handoff")}}><div className="hub-card-icon" style={{background:"var(--color-background-info)"}}><span style={{color:"var(--color-text-info)"}}>📋</span></div><div className="hub-card-body"><div className="hub-card-title">Shift handoff</div><div className="hub-card-sub">Summary for the incoming caregiver</div></div><span className="hub-card-arr">›</span></div>
+            {!isReadOnly&&<div className="hub-card" onClick={()=>{setCurrentHub("today");nav("caregiver-wellness")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>💛</span></div><div className="hub-card-body"><div className="hub-card-title">Caregiver check-in</div><div className="hub-card-sub">Track your own wellbeing</div></div><span className="hub-card-arr">›</span></div>}
+
+            {/* The long-term work, kept visibly separate from today's list so a
+                foundational task never competes with a medication that's due. */}
+            <div className="hub-section-label">The bigger picture</div>
+            <div className="hub-card" onClick={()=>{setCurrentHub("care");nav("care-domains")}}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🧭</span></div><div className="hub-card-body"><div className="hub-card-title">Care domains</div><div className="hub-card-sub">Physical, cognitive, wellness{can("view-legal")?", legal, financial":""} — the foundational work</div></div><span className="hub-card-arr">›</span></div>
           </>)}
 
-          {/* ═══ CARE PLAN HUB ═══ */}
-          {view==="care-hub"&&(<>
-            <div className="strat-grid">{DOMAINS.filter(d=>can("view-domain",d.key)).map(d=>{const p=getProgress(d.key);const hc=p.pct>=80&&p.recency>=70?"#718355":p.pct>=40||p.recency>=40?"#bc6c25":"#b56576";return(
+          {/* ═══ MEDS ═══ */}
+          {view==="meds"&&(<>
+            <div className="seg-tabs" role="tablist">
+              <button role="tab" aria-selected={medsTab==="schedule"} onClick={()=>setMedsTab("schedule")} className={`seg-tab ${medsTab==="schedule"?"seg-tab-on":""}`}>Today's schedule</button>
+              <button role="tab" aria-selected={medsTab==="cabinet"} onClick={()=>setMedsTab("cabinet")} className={`seg-tab ${medsTab==="cabinet"?"seg-tab-on":""}`}>Cabinet</button>
+            </div>
+            {medsTab==="schedule"&&(<>
+              <p className="page-sub">Tap a time slot to cycle: given ✓ · missed ✗ · refused ⊘</p>
+              <div className="med-date-nav">
+                <button onClick={()=>{const d=new Date(medAdminDate+"T12:00:00");d.setDate(d.getDate()-1);setMedAdminDate(fmtDate(d.getFullYear(),d.getMonth(),d.getDate()))}} className="cal-nav-btn" aria-label="Previous day">‹</button>
+                <input type="date" value={medAdminDate} onChange={e=>setMedAdminDate(e.target.value)} className="cf-input" style={{textAlign:"center",fontWeight:700,maxWidth:180}}/>
+                <button onClick={()=>{const d=new Date(medAdminDate+"T12:00:00");d.setDate(d.getDate()+1);setMedAdminDate(fmtDate(d.getFullYear(),d.getMonth(),d.getDate()))}} className="cal-nav-btn" aria-label="Next day">›</button>
+                <button onClick={()=>setMedAdminDate(fmtDate(new Date().getFullYear(),new Date().getMonth(),new Date().getDate()))} className="cc-btn cc-active" style={{marginLeft:8}}>Today</button>
+              </div>
+              {(()=>{const stats=getMedDayStats(medAdminDate);return stats.total>0?(<div className="med-day-stats">
+                <span className="med-stat med-stat-given">✓ {stats.given}</span>
+                <span className="med-stat med-stat-missed">✗ {stats.missed}</span>
+                <span className="med-stat med-stat-refused">⊘ {stats.refused}</span>
+                <span className="med-stat med-stat-pending">○ {stats.pending} pending</span>
+              </div>):null})()}
+              {getMedSchedule().medications.length===0?<div className="contacts-empty"><p>No medications yet. Add them in the Cabinet.</p></div>:
+                <div className="med-cards">{getMedSchedule().medications.map(m=>(
+                  <div key={m.id} className="med-card">
+                    <div className="med-card-head">
+                      <div style={{flex:1,minWidth:0}}>
+                        <div className="med-card-name">{m.name} {m.isCritical&&<span className="med-crit-badge" title="A missed dose matters">critical</span>}</div>
+                        <div className="med-card-sub">{m.dosage}{m.purpose?" · "+m.purpose:""}</div>
+                        {m.visualId&&<div className="med-card-visual">{m.visualId}</div>}
+                      </div>
+                    </div>
+                    <div className="med-slot-grid">{MED_TIME_SLOTS.filter(s=>(m.timeSlots||[]).includes(s)).map(s=>{
+                      const status=getMedStatus(m.id,s,medAdminDate);
+                      return(<button key={s} disabled={isReadOnly} onClick={()=>toggleMedAdmin(m.id,s,medAdminDate)} className={`med-slot-btn med-slot-${status||"pending"}`}>
+                        <span className="med-slot-name">{s}</span>
+                        <span className="med-slot-mark">{status==="given"?"✓":status==="missed"?"✗":status==="refused"?"⊘":"○"}</span>
+                      </button>)})}
+                    </div>
+                    {!isReadOnly&&<div className="med-card-actions">
+                      <button onClick={()=>setRefusal({medId:m.id,slot:((m.timeSlots||[])[0]||"Morning"),date:medAdminDate})} className="mini-btn">Refused…</button>
+                      <button onClick={()=>setMedForm({mode:"edit",med:{...EMPTY_MED,...m},id:m.id})} className="mini-btn">Edit</button>
+                    </div>}
+                  </div>))}
+                </div>}
+            </>)}
+            {medsTab==="cabinet"&&(<>
+              <div className="contacts-header"><div><p className="page-sub" style={{margin:0}}>Every medication on record — what it's for, who prescribed it, and when it runs out.</p></div>
+                {!isReadOnly&&<button onClick={()=>setMedForm({mode:"add",med:{...EMPTY_MED}})} className="save-btn">+ Add medication</button>}
+              </div>
+              {getMedSchedule().medications.length===0?<div className="contacts-empty"><p>No medications recorded yet.</p></div>:
+                <div className="cabinet-list">{getMedSchedule().medications.map(m=>{
+                  const days=m.refillDate?Math.ceil((new Date(m.refillDate+"T12:00:00")-new Date().setHours(12,0,0,0))/86400000):null;
+                  return(<div key={m.id} className="cabinet-card">
+                    <div className="cabinet-head">
+                      <div style={{flex:1,minWidth:0}}>
+                        <div className="cabinet-name">{m.name} {m.isCritical&&<span className="med-crit-badge">critical</span>} {m.isRedFlag&&<span className="med-flag-badge" title="Shown to paramedics on the Emergency Info Card">⚑ alert</span>}</div>
+                        <div className="cabinet-sub">{m.dosage}{m.purpose?" · "+m.purpose:""}</div>
+                      </div>
+                      {!isReadOnly&&<button onClick={()=>setMedForm({mode:"edit",med:{...EMPTY_MED,...m},id:m.id})} className="edit-icon edit-icon-visible" aria-label={"Edit "+m.name}>✎</button>}
+                    </div>
+                    <div className="cabinet-meta">
+                      {m.visualId&&<span>💊 {m.visualId}</span>}
+                      {m.timeSlots&&m.timeSlots.length>0&&<span>🕑 {m.timeSlots.join(", ")}</span>}
+                      {m.prescriber&&<span>🩺 {m.prescriber}</span>}
+                      {m.pharmacy&&<span>🏪 {m.pharmacy}{m.pharmacyPhone?" · ":""}{m.pharmacyPhone&&<a href={"tel:"+m.pharmacyPhone} className="link-btn">{m.pharmacyPhone}</a>}</span>}
+                    </div>
+                    {days!==null&&<div className={`cabinet-refill ${days<0?"refill-over":days<=7?"refill-soon":""}`}>
+                      {days<0?`Refill was due ${Math.abs(days)} day${Math.abs(days)===1?"":"s"} ago`:days===0?"Refill due today":`Refill in ${days} day${days===1?"":"s"}`}
+                    </div>}
+                    {m.notes&&<div className="cabinet-notes">{m.notes}</div>}
+                  </div>)})}
+                </div>}
+            </>)}
+          </>)}
+
+          {/* ═══ LOG ═══ */}
+          {view==="log"&&(<>
+            <div className="seg-tabs" role="tablist">
+              <button role="tab" aria-selected={logTab==="mine"} onClick={()=>setLogTab("mine")} className={`seg-tab ${logTab==="mine"?"seg-tab-on":""}`}>My observations</button>
+              {can("submit-selfreport")&&<button role="tab" aria-selected={logTab==="patient"} onClick={()=>setLogTab("patient")} className={`seg-tab ${logTab==="patient"?"seg-tab-on":""}`}>Their report</button>}
+              <button role="tab" aria-selected={logTab==="patterns"} onClick={()=>setLogTab("patterns")} className={`seg-tab ${logTab==="patterns"?"seg-tab-on":""}`}>Patterns</button>
+            </div>
+            {logTab==="mine"&&(<>
+              {can("log-incident")&&<button onClick={()=>setIncidentForm({mode:"add",incident:newIncident()})} className="log-cta">+ Log something now</button>}
+              <p className="hint">Pick what happened and how serious. Everything else is optional — you can add detail later.</p>
+              {getFilteredIncidents().length===0?<div className="contacts-empty"><p>{((data.incidents&&data.incidents.length)||0)===0?"Nothing logged yet.":"No incidents match this filter."}</p></div>:(<>
+                <div className="cc-group" style={{margin:"16px 0"}}><span className="cc-label">Filter:</span>
+                  <button onClick={()=>setIncidentFilter("all")} className={`cc-btn ${incidentFilter==="all"?"cc-active":""}`}>All</button>
+                  {INCIDENT_TYPES.map(t=>(<button key={t.key} onClick={()=>setIncidentFilter(t.key)} className={`cc-btn ${incidentFilter===t.key?"cc-active":""}`}>{t.icon} {t.label}</button>))}
+                </div>
+                <div className="contacts-list">{getFilteredIncidents().map(inc=>{const itype=INCIDENT_TYPES.find(t=>t.key===inc.type);const sev=SEVERITY_LEVELS.find(s=>s.key===inc.severity);return(
+                  <div key={inc.id} className="incident-card" style={{borderLeftColor:(sev&&sev.color)||"var(--color-text-muted)"}}>
+                    <div className="incident-head">
+                      <span className="incident-type">{(itype&&itype.icon)} {(itype&&itype.label)||inc.type}</span>
+                      <span className="o-badge" style={{background:(sev&&sev.bg),color:(sev&&sev.color)}}>{(sev&&sev.label)}</span>
+                      <span className="incident-datetime">{inc.date} {inc.time}</span>
+                      {!isReadOnly&&<button onClick={()=>setIncidentForm({mode:"edit",incident:{...newIncident(),...inc},id:inc.id})} className="edit-icon edit-icon-visible" aria-label="Edit incident">✎</button>}
+                    </div>
+                    {inc.description&&<p className="incident-desc">{inc.description}</p>}
+                    {(()=>{const tr=TRIGGER_OPTIONS.find(t=>t.key===inc.trigger);return tr?<p className="incident-trigger">{tr.icon} Possible trigger: {tr.label}</p>:null})()}
+                    {inc.response&&<p className="incident-response"><strong>Response:</strong> {inc.response}</p>}
+                    <div className="incident-meta">
+                      {inc.injuries&&<span>Injuries: {inc.injuries}</span>}
+                      {inc.providerNotified&&<span>Provider notified: {inc.providerNotified}</span>}
+                    </div>
+                    {(inc.photos||[]).length>0&&<div className="photo-preview-row">{inc.photos.map((p,i)=><MediaThumb key={i} value={p} dek={dekRef.current} altKey={rKeyRef.current}/>)}</div>}
+                  </div>)})}
+                </div>
+              </>)}
+            </>)}
+            {logTab==="patient"&&can("submit-selfreport")&&<p className="hint">Open the full self-report form for the person you care for.<br/><button onClick={()=>{setCurrentHub("log");nav("selfreport")}} className="save-btn" style={{marginTop:12}}>Open self-report →</button></p>}
+            {logTab==="patterns"&&((data.incidents||[]).length<3
+              ?<p className="hint">Patterns appear once at least 3 incidents are logged.</p>
+              :<p className="hint">See trends across every logged incident.<br/><button onClick={()=>{setCurrentHub("log");nav("incident-patterns")}} className="save-btn" style={{marginTop:12}}>Open patterns →</button></p>)}
+          </>)}
+
+          {/* ═══ SOS ═══ Ordered by urgency: script, then card, then plans, then people. */}
+          {view==="sos"&&(<>
+            <a href="tel:911" className="sos-call">📞 Call 911</a>
+            <div className="sos-script">
+              <div className="sos-script-title">Read this to the dispatcher</div>
+              <ol className="sos-script-list">
+                <li>“My address is <strong>{(data.settings&&data.settings.circle&&data.settings.circle.address)||"[add your address in Settings]"}</strong>.”</li>
+                <li>“The person is <strong>{clientDisplayName()||"[name]"}</strong>, age {(data.settings&&data.settings.circle&&data.settings.circle.clientAge)||"[age]"}, and has dementia.”</li>
+                <li>“What happened is …” — say only what you saw.</li>
+                {getEmergencyInfo().codeStatus&&<li>“Code status is <strong>{getEmergencyInfo().codeStatus}</strong>.”</li>}
+                {getEmergencyInfo().allergiesText&&<li>“Allergies: <strong>{getEmergencyInfo().allergiesText}</strong>.”</li>}
+                <li>“I have a medication list and an info card ready to hand you.”</li>
+              </ol>
+              <p className="sos-script-note">Stay on the line. Unlock the door if you can do it safely.</p>
+            </div>
+            <div className="hub-card" onClick={()=>{setCurrentHub("sos");nav("emergency-card")}}><div className="hub-card-icon" style={{background:"var(--color-background-danger)"}}><span style={{color:"var(--color-text-danger)"}}>🆔</span></div><div className="hub-card-body"><div className="hub-card-title">Emergency info card</div><div className="hub-card-sub">Diagnoses, medications, allergies, code status{getEmergencyInfo().clientPhoto?", photo":""}</div></div><span className="hub-card-arr">›</span></div>
+            <div className="hub-section-label">If this is happening right now</div>
+            {EMERGENCY_SCENARIOS.map(sc=>(
+              <div key={sc.key} className="hub-card" onClick={()=>{setCurrentHub("sos");nav("emergency")}}><div className="hub-card-icon" style={{background:"var(--color-background-warning)"}}><span style={{color:"var(--color-text-warning)"}}>{sc.icon||"🚨"}</span></div><div className="hub-card-body"><div className="hub-card-title">{sc.title}</div></div><span className="hub-card-arr">›</span></div>))}
+            {can("view-contacts")&&<>
+              <div className="hub-section-label">People to call</div>
+              {(()=>{const cats=[{key:"medical",label:"Medical"},{key:"care",label:"Care team"},{key:"family",label:"Family"},{key:"legal",label:"Legal"},{key:"financial",label:"Financial"},{key:"other",label:"Other"}];
+                const all=data.contacts||[];
+                if(all.length===0)return <p className="hint">No contacts saved yet. <button onClick={()=>{setCurrentHub("sos");nav("contacts")}} className="text-btn">Add some →</button></p>;
+                return(<>{cats.map(cat=>{const list=all.filter(c=>c.category===cat.key);if(!list.length)return null;return(
+                  <div key={cat.key} className="sos-contact-group">
+                    <div className="sos-contact-cat">{cat.label}</div>
+                    {list.map(c=>(<div key={c.id} className="sos-contact">
+                      {c.photo?<MediaImg value={c.photo} dek={dekRef.current} altKey={rKeyRef.current} className="sos-contact-photo" alt=""/>
+                              :<div className="sos-contact-photo sos-contact-initial">{(c.name||"?")[0].toUpperCase()}</div>}
+                      <div className="sos-contact-body"><div className="sos-contact-name">{c.name}</div><div className="sos-contact-role">{c.role||c.org||""}</div></div>
+                      {c.phone&&<a href={"tel:"+c.phone} className="sos-contact-call" aria-label={"Call "+c.name}>📞</a>}
+                    </div>))}
+                  </div>)})}
+                  <button onClick={()=>{setCurrentHub("sos");nav("contacts")}} className="text-btn">Manage contacts →</button>
+                </>)})()}
+            </>}
+          </>)}
+
+          {/* ═══ CARE DOMAINS ═══ The foundational work, reachable from Today
+              and from the Care Hub menu. */}
+          {view==="care-domains"&&(<>
+            <p className="page-sub">The long-term work. Progress here moves slowly by design — this is the ground the daily routine stands on.</p>
+            <div className="strat-grid">{DOMAINS.filter(d=>can("view-domain",d.key)).map(d=>{const p=getProgress(d.key);const hc=p.pct>=80&&p.recency>=70?"var(--color-text-success)":p.pct>=40||p.recency>=40?"var(--color-text-warning)":"var(--color-text-danger)";return(
               <div key={d.key} className="strat-card" onClick={()=>nav(d.key)} style={{borderTopColor:d.color}}>
                 <div className="strat-icon">{d.icon}</div>
                 <div className="strat-pct" style={{color:hc}}>{p.pct}%</div>
                 <div className="strat-label">{getDomLabel(d.key).split(" ")[0]}</div>
                 {p.ongoingTotal>0&&<div className="strat-pulse" style={{color:hc}}>Pulse {p.recency}%</div>}
               </div>)})}</div>
-            <div className="hub-section-label">Health domains</div>
-            {DOMAINS.filter(d=>can("view-domain",d.key)&&["physical","cognitive","wellness"].includes(d.key)).map(d=>{const p=getProgress(d.key);const hc=p.pct>=80&&p.recency>=70?"var(--color-background-success)":p.pct>=40||p.recency>=40?"var(--color-background-warning)":"var(--color-background-danger)";const hl=p.pct>=80&&p.recency>=70?"Healthy":p.pct>=40||p.recency>=40?"Fair":"Attention";const hlc=p.pct>=80&&p.recency>=70?"pill-g":p.pct>=40||p.recency>=40?"pill-a":"pill-r";return(
-              <div key={d.key} className="hub-card" onClick={()=>nav(d.key)}><div className="hub-card-icon" style={{background:hc}}><span style={{fontSize:18}}>{d.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{getDomLabel(d.key)} <span className={"pill "+hlc}>{hl}</span></div><div className="hub-card-sub">Foundation {p.pct}%{p.ongoingTotal>0?" · Pulse "+p.recency+"%":""}</div></div><span className="hub-card-arr">›</span></div>)})}
-            {can("view-legal")&&<><div className="hub-section-label">Legal and financial</div>
-              {DOMAINS.filter(d=>["legal","financial"].includes(d.key)).map(d=>{const p=getProgress(d.key);const hlc=p.pct>=80?"pill-g":p.pct>=40?"pill-a":"pill-r";const hl=p.pct>=80?"Healthy":p.pct>=40?"Fair":"Attention";return(
-              <div key={d.key} className="hub-card" onClick={()=>nav(d.key)}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span style={{fontSize:18}}>{d.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{getDomLabel(d.key)} <span className={"pill "+hlc}>{hl}</span></div><div className="hub-card-sub">Foundation {p.pct}%</div></div><span className="hub-card-arr">›</span></div>)})}</>}
-            <div className="hub-section-label">Monitoring</div>
-            <div className="hub-card" onClick={()=>nav("triggers")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📊</span></div><div className="hub-card-body"><div className="hub-card-title">Escalation triggers</div><div className="hub-card-sub">{Object.values(data.transitionTriggers||{}).filter(Boolean).length} active</div></div><span className="hub-card-arr">›</span></div>
-            {can("view-tracking")&&<div className="hub-card" onClick={()=>nav("tracking")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📈</span></div><div className="hub-card-body"><div className="hub-card-title">Longitudinal tracking</div><div className="hub-card-sub">{(data.statusHistory||[]).length} snapshots</div></div><span className="hub-card-arr">›</span></div>}
-            {can("view-visit")&&<div className="hub-card" onClick={()=>nav("visit")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📋</span></div><div className="hub-card-body"><div className="hub-card-title">Visit prep</div><div className="hub-card-sub">Auto-generated summary</div></div><span className="hub-card-arr">›</span></div>}
-            <div className="hub-card" onClick={()=>nav("emergency")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🚨</span></div><div className="hub-card-body"><div className="hub-card-title">Emergency plans</div><div className="hub-card-sub">6 scenario cards</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-section-label">Documentation</div>
-            <div className="hub-card" onClick={()=>nav("poa-decisions")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>⚖</span></div><div className="hub-card-body"><div className="hub-card-title">POA decisions <span className="pill pill-b">{(data.poaDecisions||[]).length}</span></div><div className="hub-card-sub">Document decisions made under power of attorney</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-card" onClick={()=>nav("capacity")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📝</span></div><div className="hub-card-body"><div className="hub-card-title">Capacity observations <span className="pill pill-b">{(data.capacityLog||[]).length}</span></div><div className="hub-card-sub">Structured ability assessments for legal and clinical use</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-card" onClick={()=>nav("binder")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📖</span></div><div className="hub-card-body"><div className="hub-card-title">Care plan binder</div><div className="hub-card-sub">Printable comprehensive care document</div></div><span className="hub-card-arr">›</span></div>
-            {can("view-postdeath")&&<div className="hub-card" onClick={()=>nav("postdeath")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🕊</span></div><div className="hub-card-body"><div className="hub-card-title">End-of-life planning</div><div className="hub-card-sub">Administrative checklist</div></div><span className="hub-card-arr">›</span></div>}
+            {DOMAINS.filter(d=>can("view-domain",d.key)).map(d=>{const p=getProgress(d.key);const hc=p.pct>=80&&p.recency>=70?"var(--color-background-success)":p.pct>=40||p.recency>=40?"var(--color-background-warning)":"var(--color-background-danger)";const hl=p.pct>=80&&p.recency>=70?"Healthy":p.pct>=40||p.recency>=40?"Fair":"Attention";const hlc=p.pct>=80&&p.recency>=70?"pill-g":p.pct>=40||p.recency>=40?"pill-a":"pill-r";return(
+              <div key={d.key} className="hub-card" onClick={()=>nav(d.key)}><div className="hub-card-icon" style={{background:hc}}><span style={{fontSize:"1.3333rem"}}>{d.icon}</span></div><div className="hub-card-body"><div className="hub-card-title">{getDomLabel(d.key)} <span className={"pill "+hlc}>{hl}</span></div><div className="hub-card-sub">{p.pct}% complete</div></div><span className="hub-card-arr">›</span></div>)})}
           </>)}
 
-          {/* ═══ RECORDS HUB ═══ */}
-          {view==="records-hub"&&(<>
-            <div className="hub-card" onClick={()=>nav("incidents")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>⚠</span></div><div className="hub-card-body"><div className="hub-card-title">Incidents <span className="pill pill-b">{(data.incidents||[]).length}</span></div><div className="hub-card-sub">Falls, behaviors, medication errors</div></div><span className="hub-card-arr">›</span></div>
-            {(data.incidents||[]).length>=3&&<div className="hub-card" onClick={()=>nav("incident-patterns")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📊</span></div><div className="hub-card-body"><div className="hub-card-title">Incident patterns</div><div className="hub-card-sub">Time-of-day, type trends, weekly view</div></div><span className="hub-card-arr">›</span></div>}
-            <div className="hub-card" onClick={()=>nav("medadmin")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>💊</span></div><div className="hub-card-body"><div className="hub-card-title">Medication admin</div><div className="hub-card-sub">Daily med grid · {getMedSchedule().medications.length} meds</div></div><span className="hub-card-arr">›</span></div>
-            {can("view-expenses")&&<div className="hub-card" onClick={()=>nav("expenses")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>$</span></div><div className="hub-card-body"><div className="hub-card-title">Expenses <span className="pill pill-b">{(data.expenses||[]).length}</span></div><div className="hub-card-sub">Care costs · CSV export</div></div><span className="hub-card-arr">›</span></div>}
-            {can("view-documents")&&<div className="hub-card" onClick={()=>nav("documents")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>📄</span></div><div className="hub-card-body"><div className="hub-card-title">Documents <span className="pill pill-b">{(data.savedDocs||[]).length}</span></div><div className="hub-card-sub">Scanner · Library</div></div><span className="hub-card-arr">›</span></div>}
-            {can("view-contacts")&&<div className="hub-card" onClick={()=>nav("contacts")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>☷</span></div><div className="hub-card-body"><div className="hub-card-title">Contacts <span className="pill pill-b">{(data.contacts||[]).length}</span></div><div className="hub-card-sub">Medical, legal, family</div></div><span className="hub-card-arr">›</span></div>}
-            <div className="hub-card" onClick={()=>nav("calendar")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>▦</span></div><div className="hub-card-body"><div className="hub-card-title">Calendar</div><div className="hub-card-sub">Month view · Appointments</div></div><span className="hub-card-arr">›</span></div>
-            {can("view-shifts")&&<div className="hub-card" onClick={()=>nav("schedule")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🗓</span></div><div className="hub-card-body"><div className="hub-card-title">Care schedule <span className="pill pill-b">{(data.careShifts||[]).filter(s=>new Date(s.date)>=new Date(new Date().toDateString())).length}</span></div><div className="hub-card-sub">Shifts, open shifts, swaps, visit logging</div></div><span className="hub-card-arr">›</span></div>}
+          {/* ═══ BACKUPS ═══ One file, one passcode, and the restore path named
+              here rather than only on a screen people hope never to see. */}
+          {view==="backups"&&(<>
+            {!can("export-data")?<p className="page-sub">Backups are managed by the people who can export data.</p>:(<>
+            <p className="page-sub">One encrypted file holds everything. Keep your Recovery Key somewhere safe — the file and that key together are a full recovery.</p>
+
+            {(()=>{const rk=getRecoveryKey();const pcWrap=!!caregiverPasscodeForWrap();return(<>
+              <div className="section">
+                <h3 className="sec-title">🔑 Your Recovery Key</h3>
+                {rk?(<>
+                  <p className="hint" style={{marginTop:0}}>Save this somewhere away from this device — printed, in a password manager, or with your important papers. It opens your backup files{pcWrap?", and it's the backstop if you forget your passcode":""}.</p>
+                  <div className="recovery-code-box">{rk}</div>
+                  <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:10}}>
+                    <button className="mini-btn" onClick={()=>{try{navigator.clipboard.writeText(rk);flash("Recovery Key copied.")}catch{flash("Couldn't copy — write it down from the screen.")}}}>Copy</button>
+                    <button className="mini-btn" onClick={()=>window.print()}>Print</button>
+                  </div>
+                  <p className="hint" style={{marginTop:10}}>{pcWrap
+                    ? "Your backups can also be opened with your caregiver passcode, because it's long enough to hold up if the file is ever copied."
+                    : `Your backups open with this key only. Your caregiver passcode is shorter than ${BACKUP_PW_MIN} characters, and a short passcode on a file someone could copy is not enough to rely on.`}</p>
+                </>):(<>
+                  <p className="hint" style={{marginTop:0}}>You don't have one yet. It's generated for you — nothing to invent or remember, just to keep.</p>
+                  <button className="save-btn" onClick={()=>{ensureRecoveryKey();flash("Recovery Key created. Save it somewhere safe.")}}>Create my Recovery Key</button>
+                </>)}
+              </div>
+
+              {!rk&&<p className="hint" style={{marginTop:16}}>Automatic backup needs your Recovery Key first — it's what locks the file. Create it above, then pick where copies should go.</p>}
+
+              {cloudProvidersReady().length>0&&(<div className="section">
+                <h3 className="sec-title">☁️ Automatic backup to your cloud account</h3>
+                {cloudBkStatus==="active"?(<>
+                  <div className="backup-status backup-active">
+                    <span className="backup-dot"></span>
+                    <div className="backup-status-body"><strong>On</strong> — saving automatically to <code>{(cloudBkProvider()||{}).label||"your cloud account"}</code>{cloudBkLastAt&&<span className="backup-when">last saved {new Date(cloudBkLastAt).toLocaleTimeString()}</span>}</div>
+                    <button onClick={cloudBackupDisconnect} className="backup-link">Turn off</button>
+                  </div>
+                  {cloudBkFail&&cloudBkFail!=="auth"&&(<div className="backup-status backup-paused">
+                    <span className="backup-dot"></span>
+                    <div className="backup-status-body"><strong>{storageFailUI(cloudBkFail).title}</strong> — {storageFailUI(cloudBkFail).body}</div>
+                  </div>)}
+                  <p className="hint" style={{marginTop:8}}>Your provider only ever holds the encrypted file. It looks the same to them as it does to anyone else who doesn't have your Recovery Key: unreadable.</p>
+                </>):cloudBkStatus==="reconnect"?(<>
+                  <div className="backup-status backup-paused">
+                    <span className="backup-dot"></span>
+                    <div className="backup-status-body"><strong>{storageFailUI("auth").title}</strong> — {storageFailUI("auth").body}</div>
+                    <button onClick={cloudBackupReconnect} className="backup-btn" disabled={cloudBkBusy}>Reconnect</button>
+                  </div>
+                  <button onClick={cloudBackupDisconnect} className="backup-link" style={{marginTop:8}}>Turn off cloud backup</button>
+                </>):(<>
+                  <p className="hint" style={{marginTop:0}}>Saves an encrypted copy to your own cloud account every time something changes — on any browser, with nothing to plug in and nothing to remember. Care Guardian can only see the one file it puts there.</p>
+                  <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:12}}>
+                    {cloudProvidersReady().map(pr=>(
+                      <button key={pr.id} onClick={()=>cloudBackupConnect(pr.id)} className="save-btn" style={{marginTop:0}} disabled={cloudBkBusy||!rk}>{pr.icon} Connect {pr.label}</button>
+                    ))}
+                  </div>
+                  <p className="hint" style={{marginTop:8}}>Signing in stays open for as long as this session lasts. If it expires, Care Guardian keeps recording on this device and tells you to reconnect — nothing is lost in between.</p>
+                </>)}
+              </div>)}
+
+              <div className="section">
+                <h3 className="sec-title">🛟 Automatic backup to a file on this device</h3>
+                {!hasFileSystemAccess?(
+                  <p className="hint" style={{marginTop:0}}>This browser can't save automatically. Chrome, Edge and Brave can. On this browser, use <strong>Save a copy now</strong> below — it does the same job, you just press it yourself.</p>
+                ):(<>
+                  <p className="hint" style={{marginTop:0}}>Saves an encrypted copy every time something changes, so a browser clearing its storage never costs you your records.</p>
+                  {backupStatus==="active"&&(<div className="backup-status backup-active">
+                    <span className="backup-dot"></span>
+                    <div className="backup-status-body"><strong>On</strong> — saving automatically to <code>{backupFileName||"your backup file"}</code>{lastAutoBackupAt&&<span className="backup-when">last saved {new Date(lastAutoBackupAt).toLocaleTimeString()}</span>}</div>
+                    <button onClick={disableContinuousBackup} className="backup-link">Turn off</button>
+                  </div>)}
+                  {backupStatus==="paused"&&(<div className="backup-status backup-paused">
+                    <span className="backup-dot"></span>
+                    <div className="backup-status-body"><strong>Paused</strong> — your browser asks permission again each time you reopen the app. One tap restarts it.</div>
+                    <button onClick={resumeBackup} className="backup-btn" disabled={backupBusy}>Resume</button>
+                  </div>)}
+                  {backupStatus==="off"&&(<button onClick={setupContinuousBackup} className="save-btn" disabled={backupBusy||!rk}>🛟 Turn on automatic backup</button>)}
+                </>)}
+              </div>
+
+              <div className="section">
+                <h3 className="sec-title">Save a copy now</h3>
+                <p className="hint" style={{marginTop:0}}>Downloads the same encrypted file, whenever you want one — before a trip, or to keep a copy off this device. The file is fully encrypted, so storing it in iCloud, Google Drive or Dropbox is safe.</p>
+                <button onClick={handleEncryptedExport} className="save-btn" disabled={!rk}>↓ Save a copy now</button>
+                {(data.settings&&data.settings.lastBackupAt)&&<p className="hint" style={{marginTop:8}}>Last backup: {new Date(data.settings.lastBackupAt).toLocaleString()}</p>}
+              </div>
+
+              <div className="section">
+                <h3 className="sec-title">If this device is lost or wiped</h3>
+                <ol className="sos-script-list">
+                  <li>Open Care Guardian on the new device.</li>
+                  <li>On the first screen, tap <strong>“Already have a backup file? Restore it”</strong>.</li>
+                  <li>Pick your <code>.care</code> file and enter your <strong>Recovery Key</strong>{pcWrap?" — or your caregiver passcode, either works":""}.</li>
+                  <li>Set new sign-in passcodes, and you're back.</li>
+                </ol>
+                <p className="hint">Without that file, erased records can't be recovered — no one, including us, can read or reset your data.</p>
+              </div>
+
+              <div className="section">
+                <h3 className="sec-title">Share progress without health details</h3>
+                <p className="hint" style={{marginTop:0}}>Exports domain names, status and progress only — no contacts, notes, medications or health information. For a funder, a supervisor, or anyone who needs the shape of things without the record.</p>
+                <button onClick={handleNonSensitiveExport} className="edit-btn" style={{marginTop:0}}>↓ Export summary (no health info)</button>
+              </div>
+            </>)})()}
+            </>)}
           </>)}
 
-          {/* ═══ TEAM HUB ═══ */}
-          {view==="team-hub"&&(<>
-            <div className="hub-card" onClick={()=>nav("messages")}><div className="hub-card-icon" style={{background:"var(--color-background-success)"}}><span style={{color:"var(--color-text-success)"}}>✉</span></div><div className="hub-card-body"><div className="hub-card-title">Messages</div><div className="hub-card-sub">Team chat</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-card" onClick={()=>nav("sync")}><div className="hub-card-icon" style={{background:"var(--color-background-info)"}}><span style={{color:"var(--color-text-info)"}}>📡</span></div><div className="hub-card-body"><div className="hub-card-title">Sync</div><div className="hub-card-sub">{(data._sync&&data._sync.lastSync)?"Last: "+new Date(data._sync.lastSync).toLocaleString():"Not yet synced"}</div></div><span className="hub-card-arr">›</span></div>
-            <div className="hub-card" onClick={()=>nav("selfreport")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>🗣</span></div><div className="hub-card-body"><div className="hub-card-title">Self-reports <span className="pill pill-b">{(data.selfReports||[]).length}</span></div><div className="hub-card-sub">Client wellness updates</div></div><span className="hub-card-arr">›</span></div>
-            {can("manage-settings")&&<div className="hub-card" onClick={()=>nav("settings")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>⚙</span></div><div className="hub-card-body"><div className="hub-card-title">Settings</div><div className="hub-card-sub">Passcodes, state, export</div></div><span className="hub-card-arr">›</span></div>}
-            <div className="hub-card" onClick={()=>nav("help")}><div className="hub-card-icon" style={{background:"var(--color-background-secondary)"}}><span>?</span></div><div className="hub-card-body"><div className="hub-card-title">Help</div><div className="hub-card-sub">Feature guide</div></div><span className="hub-card-arr">›</span></div>
+          {/* ═══ DISPLAY SETTINGS ═══ */}
+          {view==="display"&&(<>
+            <p className="page-sub">Make the app easier to read. Changes apply everywhere, immediately.</p>
+            <div className="section">
+              <h3 className="sec-title">Text size</h3>
+              <p className="hint" style={{marginTop:0}}>Buttons and tap targets grow with the text — nothing shrinks below a comfortable size.</p>
+              <div className="tap-select" style={{marginTop:12}}>{TEXT_SIZES.map(t=>{
+                const current=((data.settings&&data.settings.textSize)||"standard")===t.key;
+                return(<button key={t.key} onClick={()=>setData(p=>({...p,settings:{...p.settings,textSize:t.key}}))} aria-pressed={current} className={`tap-opt ${current?"tap-opt-on":""}`}>
+                  <span style={{fontSize:t.key==="standard"?15:t.key==="large"?18:22}}>{t.label}</span></button>)})}
+              </div>
+              <p className="hint" style={{marginTop:12}}>Currently: <strong>{(TEXT_SIZES.find(t=>t.key===((data.settings&&data.settings.textSize)||"standard"))||TEXT_SIZES[0]).label}</strong></p>
+            </div>
+            <div className="section">
+              <h3 className="sec-title">Medication reminders</h3>
+              <p className="hint" style={{marginTop:0}}>Let your browser notify you when a dose is due, even when Care Guardian isn't the window you're looking at. Nothing leaves the device — the reminder is generated here.</p>
+              {(typeof window!=="undefined"&&!("Notification" in window))
+                ? <p className="hint">This browser doesn't support notifications.</p>
+                : <button onClick={requestNotifications} className="save-btn">Turn on reminders</button>}
+            </div>
+            <div className="section">
+              <h3 className="sec-title">Contrast &amp; theme</h3>
+              <p className="hint" style={{marginTop:0}}>Care Guardian follows your device's light or dark setting automatically. Change it in your device's display settings and the app follows.</p>
+            </div>
           </>)}
 
           {/* ═══ SHIFT HANDOFF ═══ */}
@@ -3968,25 +5272,39 @@ export default function App() {
             <p className="page-sub">Print this card or copy it. Post on the refrigerator, keep in wallet, hand to paramedics.</p>
             <div className="ecard">
               <div className="ecard-header">EMERGENCY MEDICAL INFORMATION</div>
-              <div className="ecard-row"><span className="ecard-label">Name:</span><span>{(data.settings&&data.settings.team&&data.settings.team.clientName)||"[Set in Sync > Team]"}</span></div>
+              <div className="ecard-id-row">
+                {getEmergencyInfo().clientPhoto&&<MediaImg value={getEmergencyInfo().clientPhoto} dek={dekRef.current} altKey={rKeyRef.current} className="ecard-photo" alt="Photo of the person this card describes"/>}
+                <div style={{flex:1}}>
+                  <div className="ecard-row"><span className="ecard-label">Name:</span><span>{(data.settings&&data.settings.circle&&data.settings.circle.clientName)||"[Set in Sync > Circle]"}</span></div>
+                </div>
+              </div>
               <div className="ecard-section">DIAGNOSES</div>
               <div className="ecard-body">{(()=>{const notes=[];DOMAINS.filter(d=>d.key==="physical"||d.key==="cognitive").forEach(d=>{if((data.domains[d.key]&&data.domains[d.key].notes)){notes.push(data.domains[d.key].notes)}});return notes.length>0?notes.join("; "):"[Add in domain notes]"})()}</div>
               <div className="ecard-section">CURRENT MEDICATIONS</div>
               <div className="ecard-body">{getMedSchedule().medications.length>0?getMedSchedule().medications.map(m=>m.name+(m.dosage?" "+m.dosage:"")).join(", "):"[Add in Medication Admin]"}</div>
               <div className="ecard-section">ALLERGIES</div>
-              <div className="ecard-body">[Add allergy information in Physical Health domain notes]</div>
+              <div className="ecard-body">{getEmergencyInfo().allergiesText||"[None recorded — tap Edit to add]"}</div>
+              {getEmergencyInfo().codeStatus&&<><div className="ecard-section">CODE STATUS</div>
+              <div className="ecard-body ecard-code-status">{getEmergencyInfo().codeStatus}</div></>}
+              {(()=>{const flagged=getMedSchedule().medications.filter(m=>m.isRedFlag);return flagged.length>0?(<>
+                <div className="ecard-section">⚑ ALERT MEDICATIONS</div>
+                <div className="ecard-body ecard-redflag">{flagged.map(m=>m.name+(m.dosage?" "+m.dosage:"")).join(", ")}</div>
+              </>):null})()}
+              {getEmergencyInfo().baselineNote&&<><div className="ecard-section">WHAT'S NORMAL FOR THIS PERSON</div>
+              <div className="ecard-body">{getEmergencyInfo().baselineNote}</div></>}
               <div className="ecard-section">EMERGENCY CONTACTS</div>
               <div className="ecard-body">{(data.contacts||[]).filter(c=>c.category==="medical"||c.category==="family").slice(0,4).map(c=>c.name+(c.phone?" — "+c.phone:"")).join(" | ")||"[Add in Contacts]"}</div>
               <div className="ecard-section">ADVANCE DIRECTIVE</div>
               <div className="ecard-body">{(data.domains.legal&&data.domains.legal.goals&&data.domains.legal.goals[1]&&data.domains.legal.goals[1].done)?"Advance directive on file":"[Status unknown — check Legal Safety domain]"}</div>
             </div>
-            <div style={{display:"flex",gap:8,marginTop:16}}><button onClick={()=>{const el=document.querySelector(".ecard");if(el){try{navigator.clipboard.writeText(el.innerText);flash("Card copied to clipboard.")}catch{}}}} className="save-btn">📋 Copy</button><button onClick={()=>window.print()} className="save-btn" style={{background:"#6b6560"}}>🖨 Print</button></div>
+            {can("edit-emergency")&&<button onClick={()=>setEcardForm(getEmergencyInfo())} className="edit-btn" style={{marginTop:16}}>✎ Edit emergency info</button>}
+            <div style={{display:"flex",gap:8,marginTop:16}}><button onClick={()=>{const el=document.querySelector(".ecard");if(el){try{navigator.clipboard.writeText(el.innerText);flash("Card copied to clipboard.")}catch{}}}} className="save-btn">📋 Copy</button><button onClick={()=>window.print()} className="save-btn" style={{background:"var(--color-text-secondary)"}}>🖨 Print</button></div>
           </>)}
 
           {/* ═══ CAREGIVER WELLNESS ═══ */}
-          {view==="caregiver-wellness"&&!isClient&&(<>
+          {view==="caregiver-wellness"&&!isReadOnly&&(<>
             <h1 className="page-title">💛 Caregiver Check-in</h1>
-            <p className="page-sub">You matter too. Track your wellbeing so your team can support each other.</p>
+            <p className="page-sub">You matter too. Track your wellbeing so your circle can support each other.</p>
             <div className="section">
               <h3 className="sec-title">How are you doing?</h3>
               <label className="cf-label">Stress level</label>
@@ -3998,7 +5316,7 @@ export default function App() {
               <button onClick={submitCaregiverCheckin} className="save-btn" style={{marginTop:12}}>Submit check-in</button>
             </div>
             {(data.caregiverWellness||[]).length>0&&<div className="section"><h3 className="sec-title">History</h3>
-              {(()=>{const d=daysSinceRespite();if(d===null||d<7)return null;return(<p className="hint" style={{color:d>=14?"#b56576":"#bc6c25",fontWeight:600}}>{d>=14?"⚠":"⏰"} {d} days since your last day off. Please schedule respite.</p>)})()}
+              {(()=>{const d=daysSinceRespite();if(d===null||d<7)return null;return(<p className="hint" style={{color:d>=14?"var(--color-text-danger)":"var(--color-text-warning)",fontWeight:600}}>{d>=14?"⚠":"⏰"} {d} days since your last day off. Please schedule respite.</p>)})()}
               {(data.caregiverWellness||[]).slice(0,10).map(e=>(<div key={e.id} className="hub-card" style={{cursor:"default"}}><div className="hub-card-body"><div className="hub-card-title">{e.stress} · {e.sleep}{e.hoursOfCare>0?" · "+e.hoursOfCare+"h":""}</div><div className="hub-card-sub">{e.timestamp}{e.notes?" — "+e.notes:""}{e.caregiver?" ("+e.caregiver+")":""}</div></div></div>))}
             </div>}
           </>)}
@@ -4013,6 +5331,10 @@ export default function App() {
               const maxType=Math.max(...Object.values(types));
               // Severity distribution
               const sevs={};incs.forEach(i=>{sevs[i.severity]=(sevs[i.severity]||0)+1});
+              // Trigger distribution — only over incidents that recorded one, so
+              // the older un-triggered records don't read as a "none" majority.
+              const trigs={};let trigTotal=0;incs.forEach(i=>{if(i.trigger){trigs[i.trigger]=(trigs[i.trigger]||0)+1;trigTotal++}});
+              const maxTrig=trigTotal?Math.max(...Object.values(trigs)):0;
               // Time of day (from timestamp)
               const hours=new Array(24).fill(0);
               incs.forEach(i=>{const t=i.timestamp||"";const m=t.match(/(\d+):(\d+)\s*(AM|PM)/i);if(m){let h=parseInt(m[1]);if(m[3].toUpperCase()==="PM"&&h!==12)h+=12;if(m[3].toUpperCase()==="AM"&&h===12)h=0;hours[h]++}});
@@ -4024,17 +5346,25 @@ export default function App() {
               const peakLabel=maxHour>0?(peakHour>12?(peakHour-12)+"pm":peakHour+"am"):null;
               return(<>
                 <div className="section"><h3 className="sec-title">By type</h3>
-                  <div className="pattern-bars">{Object.entries(types).sort((a,b)=>b[1]-a[1]).map(([t,c])=>(<div key={t} className="pattern-bar-row"><span className="pattern-bar-label">{t}</span><div className="pattern-bar-track"><div className="pattern-bar-fill" style={{width:(c/maxType*100)+"%",background:"#b56576"}}/></div><span className="pattern-bar-val">{c}</span></div>))}</div>
+                  <div className="pattern-bars">{Object.entries(types).sort((a,b)=>b[1]-a[1]).map(([t,c])=>(<div key={t} className="pattern-bar-row"><span className="pattern-bar-label">{t}</span><div className="pattern-bar-track"><div className="pattern-bar-fill" style={{width:(c/maxType*100)+"%",background:"var(--color-text-danger)"}}/></div><span className="pattern-bar-val">{c}</span></div>))}</div>
                 </div>
+                {trigTotal>0&&<div className="section"><h3 className="sec-title">By trigger</h3>
+                  <p className="hint" style={{marginTop:0}}>Across the {trigTotal} of {incs.length} incidents where a trigger was recorded.</p>
+                  <div className="pattern-bars">{Object.entries(trigs).sort((a,b)=>b[1]-a[1]).map(([t,c])=>{const to=TRIGGER_OPTIONS.find(x=>x.key===t);return(
+                    <div key={t} className="pattern-bar-row"><span className="pattern-bar-label">{to?to.icon+" "+to.label:t}</span>
+                      <div className="pattern-bar-track"><div className="pattern-bar-fill" style={{width:(c/maxTrig*100)+"%"}}/></div>
+                      <span className="pattern-bar-count">{c}</span></div>)})}
+                  </div>
+                </div>}
                 <div className="section"><h3 className="sec-title">By severity</h3>
-                  <div className="pattern-bars">{Object.entries(sevs).sort((a,b)=>b[1]-a[1]).map(([s,c])=>(<div key={s} className="pattern-bar-row"><span className="pattern-bar-label">{s}</span><div className="pattern-bar-track"><div className="pattern-bar-fill" style={{width:(c/maxType*100)+"%",background:s==="Severe"?"#b56576":s==="Moderate"?"#bc6c25":"#718355"}}/></div><span className="pattern-bar-val">{c}</span></div>))}</div>
+                  <div className="pattern-bars">{Object.entries(sevs).sort((a,b)=>b[1]-a[1]).map(([s,c])=>(<div key={s} className="pattern-bar-row"><span className="pattern-bar-label">{s}</span><div className="pattern-bar-track"><div className="pattern-bar-fill" style={{width:(c/maxType*100)+"%",background:s==="Severe"?"var(--color-text-danger)":s==="Moderate"?"var(--color-text-warning)":"var(--color-text-success)"}}/></div><span className="pattern-bar-val">{c}</span></div>))}</div>
                 </div>
                 <div className="section"><h3 className="sec-title">By time of day</h3>
                   <div className="hour-chart">{hours.map((c,h)=>(<div key={h} className="hour-col"><div className="hour-bar" style={{height:maxHour>0?(c/maxHour*80)+"px":"0"}}/><span className="hour-label">{h%6===0?h+"h":""}</span></div>))}</div>
                   {peakLabel&&<p className="hint">Peak incident hour: {peakLabel}</p>}
                 </div>
                 <div className="section"><h3 className="sec-title">Weekly trend</h3>
-                  <div className="pattern-bars">{weeks.map(w=>(<div key={w.label} className="pattern-bar-row"><span className="pattern-bar-label">{w.label}</span><div className="pattern-bar-track"><div className="pattern-bar-fill" style={{width:maxWeek>0?(w.count/maxWeek*100)+"%":"0",background:"#457b9d"}}/></div><span className="pattern-bar-val">{w.count}</span></div>))}</div>
+                  <div className="pattern-bars">{weeks.map(w=>(<div key={w.label} className="pattern-bar-row"><span className="pattern-bar-label">{w.label}</span><div className="pattern-bar-track"><div className="pattern-bar-fill" style={{width:maxWeek>0?(w.count/maxWeek*100)+"%":"0",background:"var(--color-action-primary)"}}/></div><span className="pattern-bar-val">{w.count}</span></div>))}</div>
                 </div>
               </>)})()}
           </>)}
@@ -4054,7 +5384,7 @@ export default function App() {
               <h3 className="sec-title">New Shift</h3>
               <div className="cf-grid">
                 <label className="cf-label">Date<input type="date" value={shiftForm.date} onChange={e=>setShiftForm(p=>({...p,date:e.target.value}))} className="cf-input"/></label>
-                <label className="cf-label">Assign to<select value={shiftForm.assignedTo} onChange={e=>setShiftForm(p=>({...p,assignedTo:e.target.value}))} className="cf-input"><option value="">— Leave open —</option>{teamMembers().map(m=>(<option key={m.deviceId} value={m.deviceId}>{m.name} ({m.role})</option>))}</select></label>
+                <label className="cf-label">Assign to<select value={shiftForm.assignedTo} onChange={e=>setShiftForm(p=>({...p,assignedTo:e.target.value}))} className="cf-input"><option value="">— Leave open —</option>{circleMembers().map(m=>(<option key={m.deviceId} value={m.deviceId}>{m.name} ({m.role})</option>))}</select></label>
               </div>
               <div className="cf-grid">
                 <label className="cf-label">Start<input type="time" value={shiftForm.startTime} onChange={e=>setShiftForm(p=>({...p,startTime:e.target.value}))} className="cf-input"/></label>
@@ -4080,15 +5410,15 @@ export default function App() {
                   <div className="shift-head"><span className="shift-date">{s.date} · {s.startTime}–{s.endTime}</span><span className="pill pill-a">{s.status==="claim-requested"?"Claim":"Swap"}</span></div>
                   {s.status==="claim-requested"&&<div className="shift-approvals">
                     <p className="hint">Caregivers requesting this open shift:</p>
-                    {(s.claimRequests||[]).map(c=>(<div key={c.deviceId} className="shift-approval-row"><span>{c.name}</span><div style={{display:"flex",gap:6}}><button onClick={()=>approveClaim(s.id,c.deviceId)} className="edit-btn" style={{marginTop:0,fontSize:11,background:"#718355",color:"#fff",borderColor:"#718355"}}>Approve</button><button onClick={()=>denyClaim(s.id,c.deviceId)} className="edit-btn" style={{marginTop:0,fontSize:11}}>Deny</button></div></div>))}
+                    {(s.claimRequests||[]).map(c=>(<div key={c.deviceId} className="shift-approval-row"><span>{c.name}</span><div style={{display:"flex",gap:6}}><button onClick={()=>approveClaim(s.id,c.deviceId)} className="edit-btn" style={{marginTop:0,fontSize:"0.8148rem",background:"var(--color-text-success)",color:"var(--color-text-on-fill)",borderColor:"var(--color-text-success)"}}>Approve</button><button onClick={()=>denyClaim(s.id,c.deviceId)} className="edit-btn" style={{marginTop:0,fontSize:"0.8148rem"}}>Deny</button></div></div>))}
                   </div>}
                   {s.status==="swap-requested"&&s.swapRequest&&<div className="shift-approvals">
                     <p className="hint">{s.swapRequest.fromName} wants to give up this shift{s.swapRequest.reason?": "+s.swapRequest.reason:"."}</p>
                     <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
                       <span className="hint">Reassign to:</span>
-                      <select className="cf-input" style={{width:"auto",padding:"4px 8px"}} onChange={e=>{if(e.target.value)approveSwap(s.id,e.target.value)}} defaultValue=""><option value="">Open for claiming</option>{teamMembers().filter(m=>m.deviceId!==s.swapRequest.fromDevice).map(m=>(<option key={m.deviceId} value={m.deviceId}>{m.name}</option>))}</select>
-                      <button onClick={()=>approveSwap(s.id,null)} className="edit-btn" style={{marginTop:0,fontSize:11,background:"#718355",color:"#fff",borderColor:"#718355"}}>Open it</button>
-                      <button onClick={()=>denySwap(s.id)} className="edit-btn" style={{marginTop:0,fontSize:11}}>Deny</button>
+                      <select className="cf-input" style={{width:"auto",padding:"4px 8px"}} onChange={e=>{if(e.target.value)approveSwap(s.id,e.target.value)}} defaultValue=""><option value="">Open for claiming</option>{circleMembers().filter(m=>m.deviceId!==s.swapRequest.fromDevice).map(m=>(<option key={m.deviceId} value={m.deviceId}>{m.name}</option>))}</select>
+                      <button onClick={()=>approveSwap(s.id,null)} className="edit-btn" style={{marginTop:0,fontSize:"0.8148rem",background:"var(--color-text-success)",color:"var(--color-text-on-fill)",borderColor:"var(--color-text-success)"}}>Open it</button>
+                      <button onClick={()=>denySwap(s.id)} className="edit-btn" style={{marginTop:0,fontSize:"0.8148rem"}}>Deny</button>
                     </div>
                   </div>}
                 </div>))}
@@ -4098,7 +5428,7 @@ export default function App() {
             {(()=>{const open=(data.careShifts||[]).filter(s=>s.status==="open"&&new Date(s.date)>=new Date(new Date().toDateString())).sort((a,b)=>a.date.localeCompare(b.date));if(open.length===0)return null;return(
               <div className="section"><h3 className="sec-title">🟢 Open shifts ({open.length})</h3>
                 {open.map(s=>(<div key={s.id} className="shift-card shift-open">
-                  <div className="shift-head"><span className="shift-date">{s.date} · {s.startTime}–{s.endTime}</span>{can("claim-shift")&&!isAdmin&&<button onClick={()=>requestClaim(s.id)} className="edit-btn" style={{marginTop:0,fontSize:11,background:"#457b9d",color:"#fff",borderColor:"#457b9d"}}>Request to claim</button>}{can("manage-schedule")&&<button onClick={()=>deleteShift(s.id)} className="remove-sub">×</button>}</div>
+                  <div className="shift-head"><span className="shift-date">{s.date} · {s.startTime}–{s.endTime}</span>{can("claim-shift")&&!isAdmin&&<button onClick={()=>requestClaim(s.id)} className="edit-btn" style={{marginTop:0,fontSize:"0.8148rem",background:"var(--color-action-primary)",color:"var(--color-text-on-fill)",borderColor:"var(--color-action-primary)"}}>Request to claim</button>}{can("manage-schedule")&&<button onClick={()=>deleteShift(s.id)} className="remove-sub">×</button>}</div>
                   {s.carePlan&&<div className="shift-careplan">{s.carePlan}</div>}
                   {(s.tasks||[]).length>0&&<div className="hint">{s.tasks.length} task(s)</div>}
                 </div>))}
@@ -4114,17 +5444,17 @@ export default function App() {
                 {s.carePlan&&<div className="shift-careplan"><strong>Care plan:</strong> {s.carePlan}</div>}
                 {(s.tasks||[]).length>0&&<div className="shift-tasks">{s.tasks.map(t=>(<div key={t.id} className="shift-task-check" onClick={()=>{if(isMine&&can("log-visit"))toggleShiftTask(s.id,t.id)}} style={{cursor:isMine?"pointer":"default",opacity:t.done?.6:1}}><span>{t.done?"☑":"☐"}</span> <span style={{textDecoration:t.done?"line-through":"none"}}>{t.text}</span></div>))}</div>}
                 {isMine&&can("log-visit")&&<div className="shift-visit">
-                  {!s.visitStarted&&<button onClick={()=>startVisit(s.id)} className="edit-btn" style={{marginTop:0,fontSize:11,background:"#718355",color:"#fff",borderColor:"#718355"}}>▶ Start visit</button>}
-                  {s.visitStarted&&!s.visitEnded&&<><span className="hint">Started {new Date(s.visitStarted).toLocaleTimeString()}</span> <button onClick={()=>endVisit(s.id)} className="edit-btn" style={{marginTop:0,fontSize:11,background:"#b56576",color:"#fff",borderColor:"#b56576"}}>■ End visit</button></>}
-                  {s.visitStarted&&s.visitEnded&&<span className="hint" style={{color:"#718355"}}>✓ Visit logged: {new Date(s.visitStarted).toLocaleTimeString()}–{new Date(s.visitEnded).toLocaleTimeString()}</span>}
+                  {!s.visitStarted&&<button onClick={()=>startVisit(s.id)} className="edit-btn" style={{marginTop:0,fontSize:"0.8148rem",background:"var(--color-text-success)",color:"var(--color-text-on-fill)",borderColor:"var(--color-text-success)"}}>▶ Start visit</button>}
+                  {s.visitStarted&&!s.visitEnded&&<><span className="hint">Started {new Date(s.visitStarted).toLocaleTimeString()}</span> <button onClick={()=>endVisit(s.id)} className="edit-btn" style={{marginTop:0,fontSize:"0.8148rem",background:"var(--color-text-danger)",color:"var(--color-text-on-fill)",borderColor:"var(--color-text-danger)"}}>■ End visit</button></>}
+                  {s.visitStarted&&s.visitEnded&&<span className="hint" style={{color:"var(--color-text-success)"}}>✓ Visit logged: {new Date(s.visitStarted).toLocaleTimeString()}–{new Date(s.visitEnded).toLocaleTimeString()}</span>}
                 </div>}
                 {isMine&&can("log-visit")&&<><label className="cf-label" style={{marginTop:8}}>Visit notes</label><textarea defaultValue={s.visitNotes} onBlur={e=>setVisitNotes(s.id,e.target.value)} className="notes-ta" rows={2} placeholder="What happened during this visit?"/></>}
                 {!isMine&&s.visitNotes&&<div className="shift-careplan"><strong>Visit notes:</strong> {s.visitNotes}</div>}
-                {isMine&&s.status==="assigned"&&can("claim-shift")&&<button onClick={()=>setSwapModal(s.id)} className="edit-btn" style={{marginTop:8,fontSize:11}}>⇄ Request swap</button>}
+                {isMine&&s.status==="assigned"&&can("claim-shift")&&<button onClick={()=>setSwapModal(s.id)} className="edit-btn" style={{marginTop:8,fontSize:"0.8148rem"}}>⇄ Request swap</button>}
               </div>);
               return(<>
                 <div className="section"><h3 className="sec-title">My shifts ({mine.length})</h3>{mine.length>0?mine.map(s=>renderShift(s,true)):<p className="hint">No upcoming shifts assigned to you.</p>}</div>
-                {others.length>0&&!isCarePro&&<div className="section"><h3 className="sec-title">Team shifts ({others.length})</h3>{others.map(s=>renderShift(s,false))}</div>}
+                {others.length>0&&!isCarePro&&<div className="section"><h3 className="sec-title">Circle shifts ({others.length})</h3>{others.map(s=>renderShift(s,false))}</div>}
               </>)})()}
 
             {/* Swap request modal */}
@@ -4142,7 +5472,7 @@ export default function App() {
           {/* ═══ AVAILABILITY ═══ */}
           {view==="availability"&&(<>
             <h1 className="page-title">📅 My Availability</h1>
-            <p className="page-sub">Set when you're available so the admin can schedule you appropriately. Visible to the care team.</p>
+            <p className="page-sub">Set when you're available so the admin can schedule you appropriately. Visible to the care circle.</p>
             {(()=>{
               const days=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
               const slots=["Morning","Afternoon","Evening","Overnight"];
@@ -4162,7 +5492,7 @@ export default function App() {
 
             {/* Admin view of everyone's availability */}
             {can("manage-schedule")&&(()=>{const all=data.availability||{};const devs=Object.keys(all);if(devs.length===0)return null;return(
-              <div className="section"><h3 className="sec-title">Team availability</h3>
+              <div className="section"><h3 className="sec-title">Circle availability</h3>
                 {devs.map(dev=>{const a=all[dev];return(<div key={dev} className="avail-summary"><strong>{a.name}</strong>: {Object.entries(a.days||{}).filter(([d,s])=>s.length>0).map(([d,s])=>d+" ("+s.join(", ")+")").join("; ")||"none set"}</div>)})}
               </div>)})()}
           </>)}
@@ -4199,7 +5529,7 @@ export default function App() {
             </div>)}
 
             {(data.poaDecisions||[]).length>0&&(<div className="section"><h3 className="sec-title">Decision History ({(data.poaDecisions||[]).length})</h3>
-              {can("export-data")&&<div style={{marginBottom:12}}><button onClick={()=>{const lines=(data.poaDecisions||[]).map(d=>{const t=POA_DECISION_TYPES.find(x=>x.key===d.type);return d.date+" | "+(t&&t.label||d.type)+" | "+d.description+(d.reasoning?" | Reasoning: "+d.reasoning:"")+(d.knownWishes?" | Wishes: "+d.knownWishes:"")+(d.consulted?" | Consulted: "+d.consulted:"")+(d.outcome?" | Outcome: "+d.outcome:"")+" | Agent: "+d.agent});try{navigator.clipboard.writeText("POA DECISION LOG\n"+lines.join("\n"));flash("Decision log copied to clipboard.")}catch{}}} className="edit-btn" style={{fontSize:12,marginTop:0}}>📋 Export log</button></div>}
+              {can("export-data")&&<div style={{marginBottom:12}}><button onClick={()=>{const lines=(data.poaDecisions||[]).map(d=>{const t=POA_DECISION_TYPES.find(x=>x.key===d.type);return d.date+" | "+(t&&t.label||d.type)+" | "+d.description+(d.reasoning?" | Reasoning: "+d.reasoning:"")+(d.knownWishes?" | Wishes: "+d.knownWishes:"")+(d.consulted?" | Consulted: "+d.consulted:"")+(d.outcome?" | Outcome: "+d.outcome:"")+" | Agent: "+d.agent});try{navigator.clipboard.writeText("POA DECISION LOG\n"+lines.join("\n"));flash("Decision log copied to clipboard.")}catch{}}} className="edit-btn" style={{fontSize:"0.8889rem",marginTop:0}}>📋 Export log</button></div>}
               {(data.poaDecisions||[]).map(d=>{const t=POA_DECISION_TYPES.find(x=>x.key===d.type);return(
                 <div key={d.id} className="poa-entry">
                   <div className="poa-entry-head">
@@ -4218,7 +5548,7 @@ export default function App() {
           </>)}
 
           {/* ═══ CAPACITY DOCUMENTATION ═══ */}
-          {view==="capacity"&&!isClient&&(<>
+          {view==="capacity"&&!isReadOnly&&(<>
             <h1 className="page-title">📝 Capacity Observations</h1>
             <p className="page-sub">Document remaining abilities over time. Critical for legal proceedings, care planning, and provider visits.</p>
             <div className="section">
@@ -4233,7 +5563,7 @@ export default function App() {
             {(data.capacityLog||[]).length>0&&<div className="section"><h3 className="sec-title">History ({(data.capacityLog||[]).length})</h3>
               {(data.capacityLog||[]).map(e=>(<div key={e.id} className="cap-entry">
                 <div className="cap-entry-head"><strong>{e.timestamp}</strong>{e.assessor&&<span className="cap-assessor"> — {e.assessor}</span>}</div>
-                <div className="cap-entry-grid">{Object.entries(e.assessments||{}).filter(([k,v])=>v&&v!=="Not assessed").map(([k,v])=>{const area=CAPACITY_AREAS.find(a=>a.key===k);const color=v==="Independent"?"#718355":v==="Needs prompting"?"#bc6c25":v==="Needs assistance"?"#b56576":"#8d99ae";return(
+                <div className="cap-entry-grid">{Object.entries(e.assessments||{}).filter(([k,v])=>v&&v!=="Not assessed").map(([k,v])=>{const area=CAPACITY_AREAS.find(a=>a.key===k);const color=v==="Independent"?"var(--color-text-success)":v==="Needs prompting"?"var(--color-text-warning)":v==="Needs assistance"?"var(--color-text-danger)":"var(--color-text-muted)";return(
                   <div key={k} className="cap-entry-item"><span className="cap-entry-area">{(area&&area.label)||k}</span><span className="pill" style={{background:color+"20",color,marginLeft:0}}>{v}</span></div>)})}</div>
                 {e.notes&&<p className="cap-entry-notes">{e.notes}</p>}
               </div>))}
@@ -4246,7 +5576,7 @@ export default function App() {
             <p className="page-sub">A comprehensive care document compiled from all your dashboard data. Print for facility admission, new aide onboarding, or provider handoff.</p>
             <div style={{display:"flex",gap:8,marginBottom:16}}>
               <button onClick={()=>{try{navigator.clipboard.writeText(generateCarePlanBinder());flash("Binder copied to clipboard.")}catch{}}} className="save-btn">📋 Copy</button>
-              <button onClick={()=>window.print()} className="save-btn" style={{background:"#6b6560"}}>🖨 Print</button>
+              <button onClick={()=>window.print()} className="save-btn" style={{background:"var(--color-text-secondary)"}}>🖨 Print</button>
             </div>
             <pre className="binder-preview">{generateCarePlanBinder()}</pre>
           </>)}
@@ -4254,12 +5584,12 @@ export default function App() {
           {/* ═══ OVERVIEW (legacy, kept for domain card grid) ═══ */}
           {view==="overview"&&(<>
             <h1 className="page-title">Dashboard Overview</h1>
-            <p className="page-sub">{isClient?"You're viewing in read-only mode.":"Tap any domain to see guided steps. Use ✎ to rename categories."}</p>
+            <p className="page-sub">{isReadOnly?"You're viewing in read-only mode.":"Tap any domain to see guided steps. Use ✎ to rename categories."}</p>
             <div className="o-grid">
-              {DOMAINS.filter(d=>can("view-domain",d.key)).map(d=>{const prog=getProgress(d.key);const pulseColor=prog.recency>=75?"#718355":prog.recency>=40?"#bc6c25":"#b56576";const healthColor=prog.pct>=80&&prog.recency>=70?"#718355":prog.pct>=40||prog.recency>=40?"#bc6c25":"#b56576";const healthLabel=prog.pct>=80&&prog.recency>=70?"Healthy":prog.pct>=40||prog.recency>=40?"Fair":"Needs Attention";return(
-                <button key={d.key} onClick={()=>nav(d.key)} className="o-card" style={{borderLeftColor:d.color,background:d.bg}}>
-                  <div className="o-card-head"><span style={{fontSize:24,color:d.color}}>{d.icon}</span><span className="o-badge" style={{background:healthColor+"18",color:healthColor}}>{healthLabel}</span></div>
-                  <div className="o-card-title-row"><h2 className="o-card-title">{getDomLabel(d.key)}</h2>{!isClient&&<span className="edit-icon edit-icon-visible" onClick={e=>{e.stopPropagation();setEditingDomain({key:d.key,label:getDomLabel(d.key),desc:getDomDesc(d.key)})}}>✎</span>}</div>
+              {DOMAINS.filter(d=>can("view-domain",d.key)).map(d=>{const prog=getProgress(d.key);const pulseColor=prog.recency>=75?"var(--color-text-success)":prog.recency>=40?"var(--color-text-warning)":"var(--color-text-danger)";const healthColor=prog.pct>=80&&prog.recency>=70?"var(--color-text-success)":prog.pct>=40||prog.recency>=40?"var(--color-text-warning)":"var(--color-text-danger)";const healthLabel=prog.pct>=80&&prog.recency>=70?"Healthy":prog.pct>=40||prog.recency>=40?"Fair":"Needs Attention";return(
+                <button key={d.key} onClick={()=>nav(d.key)} className="o-card" style={{borderLeftColor:d.color,background:d.color+"1F"}}>
+                  <div className="o-card-head"><span style={{fontSize:"1.7778rem",color:d.color}}>{d.icon}</span><span className="o-badge" style={{background:healthColor+"18",color:healthColor}}>{healthLabel}</span></div>
+                  <div className="o-card-title-row"><h2 className="o-card-title">{getDomLabel(d.key)}</h2>{!isReadOnly&&<span className="edit-icon edit-icon-visible" onClick={e=>{e.stopPropagation();setEditingDomain({key:d.key,label:getDomLabel(d.key),desc:getDomDesc(d.key)})}}>✎</span>}</div>
                   <p className="o-card-desc">{getDomDesc(d.key)}</p>
                   <div className="dual-track">
                     <div className="dual-track-row"><span className="dual-track-label">☐ Foundation</span><div className="prog-track"><div className="prog-fill" style={{width:`${prog.pct}%`,background:d.color}}/></div><span className="prog-label">{prog.done}/{prog.total}</span></div>
@@ -4268,75 +5598,15 @@ export default function App() {
                 </button>)})}
 
               {/* upcoming appointments */}
-              <button onClick={()=>nav("calendar")} className="o-card" style={{borderLeftColor:"#6d6875",background:"#f3f0f5"}}>
-                <div className="o-card-head"><span style={{fontSize:24,color:"#6d6875"}}>▦</span><span className="o-badge" style={{background:"#eef0f3",color:"#8d99ae"}}>{getUpcoming().length} upcoming</span></div>
+              <button onClick={()=>nav("calendar")} className="o-card" style={{borderLeftColor:"var(--color-action-primary)",background:"var(--color-background-secondary)"}}>
+                <div className="o-card-head"><span style={{fontSize:"1.7778rem",color:"var(--color-action-primary)"}}>▦</span><span className="o-badge" style={{background:"var(--color-background-secondary)",color:"var(--color-text-muted)"}}>{getUpcoming().length} upcoming</span></div>
                 <h2 className="o-card-title">Calendar</h2>
                 {getUpcoming().length>0?getUpcoming().slice(0,3).map((a,i)=>(<p key={i} className="o-card-desc" style={{margin:"2px 0"}}>{a.date} {a.time} — {a.title}</p>)):<p className="o-card-desc">No upcoming appointments.</p>}
               </button>
             </div>
             {data.log.length>0&&(<div className="log-wrap"><h3 className="log-title">Recent Activity</h3>
-              {data.log.slice(0,10).map((e,i)=>{const d=DOMAINS.find(x=>x.key===e.domain);return(<div key={i} className="log-row"><span className="log-dot" style={{background:(d&&d.color)||(e.domain==="contacts"?"#457b9d":e.domain==="calendar"?"#6d6875":"#999")}}/><span className="log-text"><strong>{d?getDomLabel(d.key):e.domain==="contacts"?"Contacts":e.domain==="calendar"?"Calendar":""}</strong> — {e.action}</span><span className="log-time">{e.time}</span></div>)})}
+              {data.log.slice(0,10).map((e,i)=>{const d=DOMAINS.find(x=>x.key===e.domain);return(<div key={i} className="log-row"><span className="log-dot" style={{background:(d&&d.color)||(e.domain==="contacts"?"var(--color-action-primary)":e.domain==="calendar"?"var(--color-action-primary)":"var(--color-text-muted)")}}/><span className="log-text"><strong>{d?getDomLabel(d.key):e.domain==="contacts"?"Contacts":e.domain==="calendar"?"Calendar":""}</strong> — {e.action}</span><span className="log-time">{e.time}</span></div>)})}
             </div>)}
-          </>)}
-
-          {/* ═══ INCIDENT LOG ═══ */}
-          {view==="incidents"&&(<>
-            <div className="contacts-header"><div><h1 className="page-title">⚠ Incident Log</h1><p className="page-sub" style={{margin:"4px 0 0"}}>Structured record of falls, wandering, behavioral episodes, and medical events. Bring this to every provider visit.</p></div>
-              {!isClient&&<button onClick={()=>setIncidentForm({mode:"add",incident:{type:"fall",severity:"moderate",date:fmtDate(new Date().getFullYear(),new Date().getMonth(),new Date().getDate()),time:new Date().toTimeString().slice(0,5),description:"",response:"",injuries:"",providerNotified:""}})} className="save-btn">+ Log Incident</button>}
-            </div>
-            <div className="cc-group" style={{marginBottom:20}}><span className="cc-label">Filter:</span>
-              <button onClick={()=>setIncidentFilter("all")} className={`cc-btn ${incidentFilter==="all"?"cc-active":""}`}>All</button>
-              {INCIDENT_TYPES.map(t=>(<button key={t.key} onClick={()=>setIncidentFilter(t.key)} className={`cc-btn ${incidentFilter===t.key?"cc-active":""}`}>{t.icon} {t.label}</button>))}
-            </div>
-            {getFilteredIncidents().length===0?<div className="contacts-empty"><p>{((data.incidents&&data.incidents.length)||0)===0?"No incidents logged yet.":"No incidents match this filter."}</p></div>:
-              <div className="contacts-list">{getFilteredIncidents().map(inc=>{const itype=INCIDENT_TYPES.find(t=>t.key===inc.type);const sev=SEVERITY_LEVELS.find(s=>s.key===inc.severity);return(
-                <div key={inc.id} className="incident-card" style={{borderLeftColor:(sev&&sev.color)||"#8d99ae"}}>
-                  <div className="incident-head">
-                    <span className="incident-type">{(itype&&itype.icon)} {(itype&&itype.label)||inc.type}</span>
-                    <span className="o-badge" style={{background:(sev&&sev.bg),color:(sev&&sev.color)}}>{(sev&&sev.label)}</span>
-                    <span className="incident-datetime">{inc.date} {inc.time}</span>
-                    {!isClient&&<button onClick={()=>setIncidentForm({mode:"edit",incident:{...inc},id:inc.id})} className="edit-icon edit-icon-visible">✎</button>}
-                  </div>
-                  <p className="incident-desc">{inc.description}</p>
-                  {inc.response&&<p className="incident-response"><strong>Response:</strong> {inc.response}</p>}
-                  <div className="incident-meta">
-                    {inc.injuries&&<span>Injuries: {inc.injuries}</span>}
-                    {inc.providerNotified&&<span>Provider notified: {inc.providerNotified}</span>}
-                  </div>
-                  {inc.photos&&inc.photos.length>0&&<div className="photo-preview-row" style={{marginTop:8}}>{inc.photos.map((p,j)=>(<MediaThumb key={j} value={p} dek={dekRef.current} altKey={rKeyRef.current} kind="img"/>))}</div>}
-                </div>)})}</div>}
-          </>)}
-
-          {/* ═══ MED ADMIN LOG ═══ */}
-          {view==="medadmin"&&(<>
-            <div className="contacts-header"><div><h1 className="page-title">💊 Medication Administration Log</h1><p className="page-sub" style={{margin:"4px 0 0"}}>Track daily medication administration. Tap cells to cycle: ✓ given → ✗ missed → ⊘ refused → clear.</p></div>
-              {!isClient&&<button onClick={()=>setMedForm({mode:"add",med:{name:"",dosage:"",timeSlots:["Morning"],notes:""}})} className="save-btn">+ Add Medication</button>}
-            </div>
-            <div className="med-date-nav">
-              <button onClick={()=>{const d=new Date(medAdminDate+"T12:00:00");d.setDate(d.getDate()-1);setMedAdminDate(fmtDate(d.getFullYear(),d.getMonth(),d.getDate()))}} className="cal-nav-btn">‹</button>
-              <input type="date" value={medAdminDate} onChange={e=>setMedAdminDate(e.target.value)} className="cf-input" style={{textAlign:"center",fontWeight:700,maxWidth:180}}/>
-              <button onClick={()=>{const d=new Date(medAdminDate+"T12:00:00");d.setDate(d.getDate()+1);setMedAdminDate(fmtDate(d.getFullYear(),d.getMonth(),d.getDate()))}} className="cal-nav-btn">›</button>
-              <button onClick={()=>setMedAdminDate(fmtDate(new Date().getFullYear(),new Date().getMonth(),new Date().getDate()))} className="cc-btn cc-active" style={{marginLeft:8}}>Today</button>
-            </div>
-            {(()=>{const stats=getMedDayStats(medAdminDate);return stats.total>0?(<div className="med-day-stats">
-              <span className="med-stat med-stat-given">✓ {stats.given}</span>
-              <span className="med-stat med-stat-missed">✗ {stats.missed}</span>
-              <span className="med-stat med-stat-refused">⊘ {stats.refused}</span>
-              <span className="med-stat med-stat-pending">○ {stats.pending} pending</span>
-            </div>):null})()}
-            {getMedSchedule().medications.length===0?<div className="contacts-empty"><p>No medications in schedule. Add medications to start tracking.</p></div>:
-              <div className="doc-table-wrap"><table className="doc-table med-table">
-                <thead><tr><th style={{minWidth:140}}>Medication</th><th>Dosage</th>{MED_TIME_SLOTS.map(s=><th key={s} className="med-slot-th">{s}</th>)}{!isClient&&<th></th>}</tr></thead>
-                <tbody>{getMedSchedule().medications.map(m=>(<tr key={m.id}>
-                  <td><strong>{m.name}</strong>{m.notes&&<div className="med-note">{m.notes}</div>}</td>
-                  <td>{m.dosage}</td>
-                  {MED_TIME_SLOTS.map(s=>{const active=m.timeSlots.includes(s);const status=active?getMedStatus(m.id,s,medAdminDate):null;return(
-                    <td key={s} className="med-cell" onClick={()=>{if(active&&!isClient)toggleMedAdmin(m.id,s,medAdminDate)}} style={{cursor:active&&!isClient?"pointer":"default",background:status==="given"?"#e8f0df":status==="missed"?"#fde2e8":status==="refused"?"#fdf0d5":active?"#faf9f7":"#f6f4f0"}}>
-                      {active?(status==="given"?<span className="med-check given">✓</span>:status==="missed"?<span className="med-check missed">✗</span>:status==="refused"?<span className="med-check refused">⊘</span>:<span className="med-check pending">○</span>):<span className="med-check na">—</span>}
-                    </td>)})}
-                  {!isClient&&<td><button onClick={()=>setMedForm({mode:"edit",med:{...m},id:m.id})} className="edit-icon edit-icon-visible">✎</button></td>}
-                </tr>))}</tbody>
-              </table></div>}
           </>)}
 
           {/* ═══ EXPENSE TRACKER ═══ */}
@@ -4344,7 +5614,7 @@ export default function App() {
             <div className="contacts-header"><div><h1 className="page-title">$ Expense Tracker</h1><p className="page-sub" style={{margin:"4px 0 0"}}>Track care expenses for Medicaid spend-down documentation and POA fiduciary accountability (ORS 127.045).</p></div>
               <div className="contacts-header-actions">
                 {((data.expenses&&data.expenses.length)||0)>0&&can("export-data")&&<><button onClick={exportExpensesCsv} className="edit-btn" style={{marginTop:0}}>📋 CSV</button><button onClick={printExpenses} className="edit-btn" style={{marginTop:0}}>🖨 Print</button></>}
-                {!isClient&&<button onClick={()=>setExpenseForm({mode:"add",expense:{date:fmtDate(new Date().getFullYear(),new Date().getMonth(),new Date().getDate()),amount:"",category:"medical",description:"",payee:"",receipt:""}})} className="save-btn">+ Add Expense</button>}
+                {!isReadOnly&&<button onClick={()=>setExpenseForm({mode:"add",expense:{date:fmtDate(new Date().getFullYear(),new Date().getMonth(),new Date().getDate()),amount:"",category:"medical",description:"",payee:"",receipt:""}})} className="save-btn">+ Add Expense</button>}
               </div>
             </div>
             {/* summary */}
@@ -4365,7 +5635,7 @@ export default function App() {
             </div>
             {getFilteredExpenses().length===0?<div className="contacts-empty"><p>{((data.expenses&&data.expenses.length)||0)===0?"No expenses recorded yet.":"No expenses match these filters."}</p></div>:
               <div className="doc-table-wrap"><table className="doc-table">
-                <thead><tr><th>Date</th><th>Amount</th><th>Category</th><th>Description</th><th>Payee</th><th>Receipt</th>{!isClient&&<th></th>}</tr></thead>
+                <thead><tr><th>Date</th><th>Amount</th><th>Category</th><th>Description</th><th>Payee</th><th>Receipt</th>{!isReadOnly&&<th></th>}</tr></thead>
                 <tbody>{getFilteredExpenses().map(exp=>{const cat=EXPENSE_CATS.find(c=>c.key===exp.category);return(
                   <tr key={exp.id}>
                     <td style={{whiteSpace:"nowrap"}}>{exp.date}</td>
@@ -4373,8 +5643,8 @@ export default function App() {
                     <td>{(cat&&cat.label)||exp.category}</td>
                     <td>{exp.description}</td>
                     <td>{exp.payee}</td>
-                    <td style={{fontSize:12,color:"#8d99ae"}}>{exp.receipt}</td>
-                    {!isClient&&<td><button onClick={()=>setExpenseForm({mode:"edit",expense:{...exp},id:exp.id})} className="edit-icon edit-icon-visible">✎</button></td>}
+                    <td style={{fontSize:"0.8889rem",color:"var(--color-text-muted)"}}>{exp.receipt}</td>
+                    {!isReadOnly&&<td><button onClick={()=>setExpenseForm({mode:"edit",expense:{...exp},id:exp.id})} className="edit-icon edit-icon-visible">✎</button></td>}
                   </tr>)})}</tbody>
               </table></div>}
           </>)}
@@ -4382,7 +5652,7 @@ export default function App() {
           {/* ═══ CALENDAR ═══ */}
           {view==="calendar"&&(<>
             <div className="contacts-header"><div><h1 className="page-title">▦ Calendar</h1><p className="page-sub" style={{margin:"4px 0 0"}}>Track appointments and important dates.</p></div>
-              {!isClient&&<button onClick={()=>setApptForm({mode:"add",appt:{title:"",date:calSelected||fmtDate(calYear,calMonth,new Date().getDate()),time:"09:00",notes:""}})} className="save-btn">+ Appointment</button>}
+              {!isReadOnly&&<button onClick={()=>setApptForm({mode:"add",appt:{title:"",date:calSelected||fmtDate(calYear,calMonth,new Date().getDate()),time:"09:00",notes:""}})} className="save-btn">+ Appointment</button>}
             </div>
             <div className="cal-nav"><button onClick={()=>{if(calMonth===0){setCalMonth(11);setCalYear(y=>y-1)}else setCalMonth(m=>m-1)}} className="cal-nav-btn">‹</button><span className="cal-month">{MONTHS[calMonth]} {calYear}</span><button onClick={()=>{if(calMonth===11){setCalMonth(0);setCalYear(y=>y+1)}else setCalMonth(m=>m+1)}} className="cal-nav-btn">›</button></div>
             <div className="cal-grid"><div className="cal-header">{DAYS.map(d=><div key={d} className="cal-dow">{d}</div>)}</div>
@@ -4400,7 +5670,7 @@ export default function App() {
               {getApptsForDate(calSelected).length===0?<p className="hint">No appointments this day.</p>:
                 getApptsForDate(calSelected).map(a=>(<div key={a.id} className="cal-appt-card">
                   <div className="cal-appt-head"><strong>{a.time||"--:--"}</strong> {a.title}
-                    {!isClient&&<button onClick={()=>setApptForm({mode:"edit",appt:{...a},id:a.id})} className="edit-icon edit-icon-visible">✎</button>}
+                    {!isReadOnly&&<button onClick={()=>setApptForm({mode:"edit",appt:{...a},id:a.id})} className="edit-icon edit-icon-visible">✎</button>}
                   </div>
                   {a.notes&&<p className="cal-appt-notes">{a.notes}</p>}
                 </div>))}
@@ -4416,11 +5686,11 @@ export default function App() {
                 <h3 className="emergency-title">{scenario.icon} {scenario.title}</h3>
                 <ol className="emergency-steps">{plan.steps.map((step,si)=>(
                   <li key={si} className="emergency-step">
-                    {!isClient?<input value={step} onChange={e=>updatePlanStep(pi,si,e.target.value)} className="emergency-step-input"/>:<span>{step}</span>}
-                    {!isClient&&<button onClick={()=>removePlanStep(pi,si)} className="remove-sub" style={{flexShrink:0}}>×</button>}
+                    {!isReadOnly?<input value={step} onChange={e=>updatePlanStep(pi,si,e.target.value)} className="emergency-step-input"/>:<span>{step}</span>}
+                    {!isReadOnly&&<button onClick={()=>removePlanStep(pi,si)} className="remove-sub" style={{flexShrink:0}}>×</button>}
                   </li>))}
                 </ol>
-                {!isClient&&<button onClick={()=>addPlanStep(pi)} className="add-sub-trigger" style={{marginTop:6}}>+ Add step</button>}
+                {!isReadOnly&&<button onClick={()=>addPlanStep(pi)} className="add-sub-trigger" style={{marginTop:6}}>+ Add step</button>}
               </div>)})}</div>
           </>)}
 
@@ -4428,12 +5698,12 @@ export default function App() {
           {view==="triggers"&&(<>
             <h1 className="page-title">📊 Care Escalation Triggers</h1>
             <p className="page-sub">Monitor these indicators. When multiple triggers are active, it may be time to evaluate a higher level of care.</p>
-            {getTriggeredCount()>0&&<div className="trigger-alert" style={{background:getTriggeredCount()>=4?"#fde2e8":getTriggeredCount()>=2?"#fdf0d5":"#e8f0df",color:getTriggeredCount()>=4?"#8b0000":getTriggeredCount()>=2?"#bc6c25":"#718355"}}>
+            {getTriggeredCount()>0&&<div className="trigger-alert" style={{background:getTriggeredCount()>=4?"var(--color-background-danger)":getTriggeredCount()>=2?"var(--color-background-warning)":"var(--color-background-success)",color:getTriggeredCount()>=4?"var(--color-text-danger)":getTriggeredCount()>=2?"var(--color-text-warning)":"var(--color-text-success)"}}>
               {getTriggeredCount()} of {TRANSITION_TRIGGERS.length} triggers active.{getTriggeredCount()>=4?" This strongly suggests evaluating a care level escalation.":getTriggeredCount()>=2?" Consider discussing care level options with the care team.":""}
             </div>}
             <div className="trigger-list">{TRANSITION_TRIGGERS.map(t=>{const active=getTrigger(t.key);return(
               <label key={t.key} className={`trigger-item ${active?"trigger-active":""}`}>
-                {!isClient?<input type="checkbox" checked={active} onChange={()=>toggleTrigger(t.key)} className="goal-check"/>:<span style={{width:20,textAlign:"center",flexShrink:0}}>{active?"⚠":"○"}</span>}
+                {!isReadOnly?<input type="checkbox" checked={active} onChange={()=>toggleTrigger(t.key)} className="goal-check"/>:<span style={{width:20,textAlign:"center",flexShrink:0}}>{active?"⚠":"○"}</span>}
                 <div style={{flex:1}}><div className="trigger-label">{t.label}</div><div className="trigger-desc">{t.desc}</div></div>
               </label>)})}</div>
           </>)}
@@ -4442,14 +5712,14 @@ export default function App() {
           {view==="tracking"&&(<>
             <h1 className="page-title">📈 Longitudinal Tracking</h1>
             <p className="page-sub">Record periodic snapshots of domain status and progress to track changes over time. Useful for provider visits, APD reassessments, and guardianship documentation.</p>
-            {!isClient&&<button onClick={recordStatusSnapshot} className="save-btn" style={{marginBottom:20}}>📸 Record Snapshot Today</button>}
+            {!isReadOnly&&<button onClick={recordStatusSnapshot} className="save-btn" style={{marginBottom:20}}>📸 Record Snapshot Today</button>}
             {(data.statusHistory||[]).length===0?<div className="contacts-empty"><p>No snapshots recorded yet. Take your first snapshot to begin tracking changes over time.</p></div>:
               <div className="doc-table-wrap"><table className="doc-table">
-                <thead><tr><th>Date</th>{DOMAINS.map(d=><th key={d.key} style={{fontSize:11}}>{d.icon} {getDomLabel(d.key).split(" ")[0]}</th>)}<th>Triggers</th><th>Incidents</th></tr></thead>
+                <thead><tr><th>Date</th>{DOMAINS.map(d=><th key={d.key} style={{fontSize:"0.8148rem"}}>{d.icon} {getDomLabel(d.key).split(" ")[0]}</th>)}<th>Triggers</th><th>Incidents</th></tr></thead>
                 <tbody>{[...(data.statusHistory||[])].reverse().map((snap,i)=>(<tr key={i}>
                   <td style={{whiteSpace:"nowrap",fontWeight:600}}>{snap.date}</td>
-                  {DOMAINS.map(d=>{const s=(snap.domains&&snap.domains[d.key]);const pct=(s&&s.pct)||0;const hColor=pct>=80?"#718355":pct>=40?"#bc6c25":"#b56576";return(
-                    <td key={d.key}><span className="o-badge" style={{background:hColor+"18",color:hColor,fontSize:10}}>{pct}%</span></td>)})}
+                  {DOMAINS.map(d=>{const s=(snap.domains&&snap.domains[d.key]);const pct=(s&&s.pct)||0;const hColor=pct>=80?"var(--color-text-success)":pct>=40?"var(--color-text-warning)":"var(--color-text-danger)";return(
+                    <td key={d.key}><span className="o-badge" style={{background:hColor+"18",color:hColor,fontSize:"0.7408rem"}}>{pct}%</span></td>)})}
                   <td>{snap.triggeredCount||0}</td>
                   <td>{snap.incidentCount||0}</td>
                 </tr>))}</tbody>
@@ -4472,9 +5742,9 @@ export default function App() {
               <div key={si} className="section">
                 <h3 className="sec-title">{section.title} <span className="prog-label">({doneCount}/{section.items.length})</span></h3>
                 <div className="goals-wrap">{section.items.map((item,ii)=>{const done=getPostDeathChecked(si,ii);return(
-                  <label key={ii} className="sub-item" style={{background:done?"#f5f9f0":"#faf9f7"}}>
-                    {!isClient?<input type="checkbox" checked={done} onChange={()=>togglePostDeath(si,ii)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:12}}>{done?"✓":"○"}</span>}
-                    <span className="sub-text" style={{textDecoration:done?"line-through":"none",color:done?"#a09a92":"#3d3730"}}>{item}</span>
+                  <label key={ii} className="sub-item" style={{background:done?"var(--color-background-success)":"var(--color-background-secondary)"}}>
+                    {!isReadOnly?<input type="checkbox" checked={done} onChange={()=>togglePostDeath(si,ii)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:"0.8889rem"}}>{done?"✓":"○"}</span>}
+                    <span className="sub-text" style={{textDecoration:done?"line-through":"none",color:done?"var(--color-text-muted)":"var(--color-text-primary)"}}>{item}</span>
                   </label>)})}</div>
               </div>)})}
           </>)}
@@ -4483,7 +5753,7 @@ export default function App() {
           {view==="help"&&(<>
             <h1 className="page-title">? Help & User Guide</h1>
             <p className="page-sub">How to use each feature of the Care Guardian.</p>
-            <div className="help-toc"><strong>Contents:</strong> {["Getting Started","Overview","Care Domains","Incident Log","Medication Log","Expense Tracker","Calendar","Contacts","Document Scanner","Self Report","Emergency Plans","Shift Schedule","Escalation Triggers","Longitudinal Tracking","Visit Prep","After Death Checklist","Messages","Team Sync","Settings & Security","Privacy"].map((t,i)=><span key={i}>{i>0?" · ":""}<a href="#" onClick={e=>{e.preventDefault();(document.getElementById("help-"+i)||{scrollIntoView:()=>{}}).scrollIntoView({behavior:"smooth"})}} className="help-link">{t}</a></span>)}</div>
+            <div className="help-toc"><strong>Contents:</strong> {["Getting Started","Overview","Care Domains","Incident Log","Medication Log","Expense Tracker","Calendar","Contacts","Document Scanner","Self Report","Emergency Plans","Shift Schedule","Escalation Triggers","Longitudinal Tracking","Visit Prep","After Death Checklist","Messages","Circle Sync","Settings & Security","Privacy"].map((t,i)=><span key={i}>{i>0?" · ":""}<a href="#" onClick={e=>{e.preventDefault();(document.getElementById("help-"+i)||{scrollIntoView:()=>{}}).scrollIntoView({behavior:"smooth"})}} className="help-link">{t}</a></span>)}</div>
 
             {[
               {t:"Getting Started",b:"Enter the caregiver passcode (default: 1234) for full access, or the client passcode (default: 0000) for read-only view mode. Change both passcodes in Settings. The dashboard stores everything in your browser's local storage — nothing is ever sent over the internet."},
@@ -4502,17 +5772,17 @@ export default function App() {
               {t:"Longitudinal Tracking",b:"Record periodic snapshots of all domain statuses and progress percentages. The resulting table shows how things are changing over time. Take a snapshot monthly, before major appointments, and before any care level reassessment. This data supports APD priority reassessments, guardianship petitions, and provider conversations."},
               {t:"Visit Prep",b:"Auto-generates a comprehensive summary from your dashboard data: current medications, recent incidents, domain status, active escalation triggers, recent expenses, and physical health notes. Review and print before every provider visit. Includes blank lines for questions to ask the provider."},
               {t:"After Death Checklist",b:"Oregon-specific administrative steps organized by timeframe: immediate (24–48 hours), first week, first month, and months 2–6. Includes Social Security notification, Oregon Medicaid/OSIPM termination, estate recovery under ORS 416.350, probate filing (ORS 113.035), and more. This checklist exists so you don't have to figure this out while grieving."},
-              {t:"Team Sync",b:"One-button sync for your care team. Two connection methods: Cloud Folder (save sync file in shared Google Drive/Dropbox/iCloud/OneDrive — each team member selects same file) or Self-Hosted Server (deploy sync-server.js on your own hardware, enter the URL). Both use the same Sync Now button. Room IDs are derived from your sync passcode via SHA-256 so the server never sees it. Daily use: tap Sync Now at the start and end of each session. Manual options (clipboard, file, URL) are under Advanced."},
+              {t:"Circle Sync",b:"One-button sync for your care circle. Two connection methods: Cloud Folder (save sync file in shared Google Drive/Dropbox/iCloud/OneDrive — each circle member selects same file) or Self-Hosted Server (deploy sync-server.js on your own hardware, enter the URL). Both use the same Sync Now button. Room IDs are derived from your sync passcode via SHA-256 so the server never sees it. Daily use: tap Sync Now at the start and end of each session. Manual options (clipboard, file, URL) are under Advanced."},
               {t:"Messages",b:"A local message board for family care coordination. Enter your name and type a message. Messages sync across devices via the encrypted backup/import cycle in Settings. Read-only in client mode."},
-              {t:"Settings & Security",b:"Set your device name so team members know whose backup is whose. Change caregiver and client passcodes. Export an encrypted backup (AES-256-GCM) and share it with your care team via text, Signal, AirDrop, or a shared Drive folder. When a team member imports your backup, the merge engine adds new items and keeps the most recent version of each changed section. Passcodes and device ID are never overwritten during merge. Import FHIR R4 health record bundles. View data inventory and sync status."},
+              {t:"Settings & Security",b:"Set your device name so circle members know whose backup is whose. Change caregiver and client passcodes. Export an encrypted backup (AES-256-GCM) and share it with your care circle via text, Signal, AirDrop, or a shared Drive folder. When a circle member imports your backup, the merge engine adds new items and keeps the most recent version of each changed section. Passcodes and device ID are never overwritten during merge. Import FHIR R4 health record bundles. View data inventory and sync status."},
               {t:"Privacy",b:"All data is stored on this device and encrypted at rest with AES-256-GCM. Nothing is transmitted to any server, and there is no analytics, tracking, or telemetry. Keys are derived from your passcodes using PBKDF2-HMAC-SHA256 at 600,000 iterations (OWASP-recommended), with older vaults upgraded automatically. Fonts and the PDF text-extraction engine are bundled into the app, so even the document scanner runs entirely offline with no external requests. The encryption passcode for backups is chosen by you and never stored; if it is lost, the backup cannot be recovered."},
             ].map((h,i)=>(<div key={i} id={"help-"+i} className="help-section"><h3 className="sec-title">{h.t}</h3><p className="help-body">{h.b}</p></div>))}
           </>)}
 
           {/* ═══ SELF REPORT ═══ */}
           {view==="selfreport"&&(<>
-            <div className="contacts-header"><div><h1 className="page-title">🗣 Self Report</h1><p className="page-sub" style={{margin:"4px 0 0"}}>{isClient?"Share how you're feeling. Your care team will see these updates.":"Client self-reported health and wellness updates."}</p>
-              {isClient&&srChainStatus&&srChainStatus.status==="ok"&&<p className="page-sub" style={{margin:"4px 0 0",color:"#6F8A5F"}}>🔏 Your updates are permanent — they can't be deleted or changed by anyone.</p>}
+            <div className="contacts-header"><div><h1 className="page-title">🗣 Self Report</h1><p className="page-sub" style={{margin:"4px 0 0"}}>{isReadOnly?"Share how you're feeling. Your care circle will see these updates.":"Client self-reported health and wellness updates."}</p>
+              {isClient&&srChainStatus&&srChainStatus.status==="ok"&&<p className="page-sub" style={{margin:"4px 0 0",color:"var(--color-text-success)"}}>🔏 Your updates are permanent — they can't be deleted or changed by anyone.</p>}
               {/* Deliberately NO client-facing tamper warning: integrity failures surface on the caregiver
                   Security & Integrity panel and in the audit log. A "your words may have been altered" alarm
                   shown to a person with dementia risks feeding paranoid ideation, cannot be acted on by them
@@ -4540,13 +5810,13 @@ export default function App() {
               </div>)}
 
               <div className="photo-attach-row">
-                <button onClick={()=>srPhotoRef.current&&srPhotoRef.current.click()} className="edit-btn" style={{marginTop:0,fontSize:12}}>📷 Add photo{srPhotos.length>0?" ("+srPhotos.length+")":""}</button>
+                <button onClick={()=>srPhotoRef.current&&srPhotoRef.current.click()} className="edit-btn" style={{marginTop:0,fontSize:"0.8889rem"}}>📷 Add photo{srPhotos.length>0?" ("+srPhotos.length+")":""}</button>
                 <input ref={srPhotoRef} type="file" accept="image/*" capture="environment" multiple style={{display:"none"}} onChange={e=>handlePhotoCapture(e,setSrPhotos)}/>
-                {srPhotos.length>0&&<button onClick={()=>setSrPhotos([])} className="cancel-btn" style={{fontSize:11,padding:"4px 10px"}}>Clear photos</button>}
+                {srPhotos.length>0&&<button onClick={()=>setSrPhotos([])} className="cancel-btn" style={{fontSize:"0.8148rem",padding:"4px 10px"}}>Clear photos</button>}
               </div>
               {srPhotos.length>0&&<div className="photo-preview-row">{srPhotos.map((p,i)=>(<div key={i} className="photo-thumb"><img src={p} alt={"Photo "+(i+1)}/><button onClick={()=>setSrPhotos(prev=>prev.filter((_,j)=>j!==i))} className="photo-remove">×</button></div>))}</div>}
               <textarea value={srText} onChange={e=>{setSrText(e.target.value);setSrErr("")}} className="notes-ta" rows={3}
-                placeholder={srType==="mood"?"Add any details about how you're feeling…":srType==="pain"?"Where does it hurt? When did it start?":srType==="sleep"?"How did you sleep? Any nighttime issues?":srType==="concern"?"What's on your mind? Any questions for your care team?":srType==="audio"?"Add a text note to go with your recording (optional)…":"How are you feeling today? Any changes, concerns, or things you want your care team to know?"} />
+                placeholder={srType==="mood"?"Add any details about how you're feeling…":srType==="pain"?"Where does it hurt? When did it start?":srType==="sleep"?"How did you sleep? Any nighttime issues?":srType==="concern"?"What's on your mind? Any questions for your care circle?":srType==="audio"?"Add a text note to go with your recording (optional)…":"How are you feeling today? Any changes, concerns, or things you want your care circle to know?"} />
               {srErr&&<p className="sr-err">{srErr}</p>}
               <button onClick={submitSelfReport} className="save-btn" style={{marginTop:10}}>Submit Update</button>
             </div>
@@ -4573,39 +5843,39 @@ export default function App() {
 
           {/* ═══ SYNC ═══ */}
           {view==="sync"&&(<>
-            <h1 className="page-title">📡 Team Sync</h1>
-            <p className="page-sub">Keep your care team in sync. Set up once, then just press Sync.</p>
+            <h1 className="page-title">📡 Circle Sync</h1>
+            <p className="page-sub">Keep your care circle in sync. Set up once, then just press Sync.</p>
 
             {syncStatus&&<div className={`sync-status sync-status-${syncStatus.type}`}>{syncStatus.type==="success"?"✓":"✗"} {syncStatus.msg}</div>}
 
-            {/* Team */}
+            {/* Circle */}
             <div className="section">
-              <h3 className="sec-title">👥 Care Team</h3>
-              {!hasTeam()?(<>
-                <p className="hint">A care team connects everyone caring for the same person. One person creates the team, then shares an invite code with others.</p>
-                {!teamSetupMode&&(<div className="sync-methods">
-                  <div className="sync-method-card" onClick={()=>setTeamSetupMode("create")}><div className="sync-method-icon">✦</div><div className="sync-method-info"><strong>Create a Team</strong><span>You're the first caregiver setting this up</span></div></div>
-                  <div className="sync-method-card" onClick={()=>setTeamSetupMode("join")}><div className="sync-method-icon">🔗</div><div className="sync-method-info"><strong>Join a Team</strong><span>Someone shared an invite code with you</span></div></div>
+              <h3 className="sec-title">👥 Care Circle</h3>
+              {!hasCircle()?(<>
+                <p className="hint">A care circle connects everyone caring for the same person. One person creates the circle, then shares an invite code with others.</p>
+                {!circleSetupMode&&(<div className="sync-methods">
+                  <div className="sync-method-card" onClick={()=>setCircleSetupMode("create")}><div className="sync-method-icon">✦</div><div className="sync-method-info"><strong>Create a Circle</strong><span>You're the first caregiver setting this up</span></div></div>
+                  <div className="sync-method-card" onClick={()=>setCircleSetupMode("join")}><div className="sync-method-icon">🔗</div><div className="sync-method-info"><strong>Join a Circle</strong><span>Someone shared an invite code with you</span></div></div>
                 </div>)}
-                {teamSetupMode==="create"&&<CreateTeamForm data={data} flash={flash} createTeam={createTeam} setTeamSetupMode={setTeamSetupMode}/>}
-                {teamSetupMode==="join"&&<JoinTeamForm data={data} joinCode={joinCode} setJoinCode={setJoinCode} parseInviteCode={parseInviteCode} flash={flash} joinTeamFromCode={joinTeamFromCode} setTeamSetupMode={setTeamSetupMode}/>}
+                {circleSetupMode==="create"&&<CreateCircleForm data={data} flash={flash} createCircle={createCircle} setCircleSetupMode={setCircleSetupMode}/>}
+                {circleSetupMode==="join"&&<JoinCircleForm data={data} joinCode={joinCode} setJoinCode={setJoinCode} parseInviteCode={parseInviteCode} flash={flash} joinCircleFromCode={joinCircleFromCode} setCircleSetupMode={setCircleSetupMode}/>}
               </>):(<>
-                {/* Team is set up — show roster */}
-                <div className="team-header">
-                  <div className="team-header-info">
-                    <div className="team-name">{getTeam().name}</div>
-                    <div className="team-client">Caring for: <strong>{getTeam().clientName}</strong></div>
+                {/* Circle is set up — show roster */}
+                <div className="circle-header">
+                  <div className="circle-header-info">
+                    <div className="circle-name">{getCircle().name}</div>
+                    <div className="circle-client">Caring for: <strong>{getCircle().clientName}</strong></div>
                   </div>
                 </div>
-                <div className="team-roster">
-                  {(getTeam().members||[]).map((m,i)=>{const rl=ROLES.find(r=>r.key===m.role_key);return(<div key={m.deviceId||i} className={`team-member ${m.deviceId===(data.settings&&data.settings.deviceId)?"team-member-self":""}`}>
-                    <div className="team-member-avatar">{m.name?m.name[0].toUpperCase():"?"}</div>
-                    <div className="team-member-info">
-                      <div className="team-member-name">{m.name}{m.deviceId===(data.settings&&data.settings.deviceId)&&<span className="team-member-you"> (you)</span>}</div>
-                      <div className="team-member-role">{(rl&&rl.icon)||"👤"} {m.role||(rl&&rl.label)||"Member"}</div>
+                <div className="circle-roster">
+                  {(getCircle().members||[]).map((m,i)=>{const rl=ROLES.find(r=>r.key===m.role_key);return(<div key={m.deviceId||i} className={`circle-member ${m.deviceId===(data.settings&&data.settings.deviceId)?"circle-member-self":""}`}>
+                    <div className="circle-member-avatar">{m.name?m.name[0].toUpperCase():"?"}</div>
+                    <div className="circle-member-info">
+                      <div className="circle-member-name">{m.name}{m.deviceId===(data.settings&&data.settings.deviceId)&&<span className="circle-member-you"> (you)</span>}</div>
+                      <div className="circle-member-role">{(rl&&rl.icon)||"👤"} {m.role||(rl&&rl.label)||"Member"}</div>
                     </div>
-                    {isAdmin&&m.deviceId!==(data.settings&&data.settings.deviceId)&&<select value={m.role_key||"family"} onChange={e=>{const newKey=e.target.value;setData(p=>{const team={...p.settings.team,members:p.settings.team.members.map(x=>x.deviceId===m.deviceId?{...x,role_key:newKey}:x)};return{...p,settings:{...p.settings,team}}});flash(`${m.name} is now ${(ROLES.find(r=>r.key===newKey)||{}).label}`)}} className="cf-select" style={{width:"auto",fontSize:12,padding:"4px 8px"}}>{ROLES.filter(r=>!r.key.startsWith("client")).map(r=>(<option key={r.key} value={r.key}>{r.icon} {r.label}</option>))}</select>}
-                    <div className="team-member-sync">{m.lastSync?new Date(m.lastSync).toLocaleDateString():"Not synced"}</div>
+                    {isAdmin&&m.deviceId!==(data.settings&&data.settings.deviceId)&&<select value={m.role_key||"family"} onChange={e=>{const newKey=e.target.value;setData(p=>{const circle={...p.settings.circle,members:p.settings.circle.members.map(x=>x.deviceId===m.deviceId?{...x,role_key:newKey}:x)};return{...p,settings:{...p.settings,circle}}});flash(`${m.name} is now ${(ROLES.find(r=>r.key===newKey)||{}).label}`)}} className="cf-select" style={{width:"auto",fontSize:"0.8889rem",padding:"4px 8px"}}>{ROLES.filter(r=>!r.key.startsWith("client")).map(r=>(<option key={r.key} value={r.key}>{r.icon} {r.label}</option>))}</select>}
+                    <div className="circle-member-sync">{m.lastSync?new Date(m.lastSync).toLocaleDateString():"Not synced"}</div>
                   </div>)})}
                 </div>
 
@@ -4619,23 +5889,51 @@ export default function App() {
                   </div>
                 </div>}
                 {/* Invite code */}
-                <details className="team-invite-details">
-                  <summary className="sync-paste-summary">📨 Invite another team member</summary>
-                  <p className="hint">Share this invite code with new team members. They'll enter it under "Join a Team." Share the sync passcode separately (verbally or via secure message).</p>
-                  <div className="team-invite-code" onClick={()=>{try{navigator.clipboard.writeText(generateInviteCode());flash("Invite code copied to clipboard.")}catch{}}}>{generateInviteCode()}</div>
-                  <p className="hint" style={{marginTop:4}}>Tap to copy. Paste in a text message, email, or Signal chat to your new team member.</p>
+                <details className="circle-invite-details">
+                  <summary className="sync-paste-summary">📨 Invite another circle member</summary>
+                  <p className="hint">Share this invite code with new circle members. They'll enter it under "Join a Circle." Share the sync passcode separately (verbally or via secure message).</p>
+                  <div className="circle-invite-code" onClick={()=>{try{navigator.clipboard.writeText(generateInviteCode());flash("Invite code copied to clipboard.")}catch{}}}>{generateInviteCode()}</div>
+                  <p className="hint" style={{marginTop:4}}>Tap to copy. Paste in a text message, email, or Signal chat to your new circle member.</p>
                 </details>
               </>)}
             </div>
 
-            {/* Sync passcode */}
-            {hasTeam()&&<div className="section">
-              <h3 className="sec-title">🔐 Sync Passcode</h3>
-              <div className="cf-grid" style={{maxWidth:400}}>
-                <label className="cf-label">Team sync passcode<input value={getSyncPasscode()} onChange={e=>saveSyncPasscode(e.target.value)} className="cf-input" type="password" placeholder="Shared with all team members"/></label>
-              </div>
-              <p className="hint">All team members must use the same passcode. Share it once verbally or via secure message — never in the invite code.</p>
+            {/* Device name belongs beside the roster it labels, not in a settings
+                page the people reading the roster can't open. */}
+            <div className="section">
+              <h3 className="sec-title">📱 This device</h3>
+              <p className="hint" style={{marginTop:0}}>Name this device so your circle can tell whose updates are whose.</p>
+              <label className="cf-label" style={{maxWidth:"min(100%,22.22rem)"}}>Device name<input value={(data.settings&&data.settings.deviceName)||""} onChange={e=>setData(p=>({...p,settings:{...p.settings,deviceName:e.target.value}}))} className="cf-input" placeholder="e.g., David's phone, Sarah's laptop"/></label>
+              {(data._sync&&data._sync.lastMerge)&&<p className="hint" style={{marginTop:8}}>Last merge: {new Date(data._sync.lastMerge).toLocaleString()} from {data._sync.mergedFromName||data._sync.mergedFrom||"unknown"}</p>}
+            </div>
+            {/* Merging a circle member's file is a sync job. It used to sit under a
+                heading that said "Backup", which implied it was how you recover. */}
+            {!isReadOnly&&<div className="section">
+              <h3 className="sec-title">📥 Bring in a circle member's updates</h3>
+              <p className="hint" style={{marginTop:0}}>If someone sends you their file instead of syncing, open it here. New items are added and more recent changes win — you'll see exactly what changes before anything is applied.</p>
+              <div className="settings-row"><input value={importPw} onChange={e=>setImportPw(e.target.value)} className="cf-input" placeholder="Their passcode for the file" type="password" style={{maxWidth:"min(100%,13rem)"}}/><button onClick={()=>(importFileRef.current&&importFileRef.current.click)()} className="save-btn">↑ Choose file &amp; preview</button></div>
+              <p className="hint" style={{marginTop:10}}>Recovering your own data after losing a device is a different job — that's on the Backups screen.</p>
             </div>}
+            {/* The circle key — shown, not invented. Nobody memorises it and nobody
+                re-types it; it is transferred once when a member joins. */}
+            {hasCircle()&&(()=>{const t=getCircle();return(<div className="section">
+              <h3 className="sec-title">🔑 Circle key</h3>
+              {t.key?(<>
+                <p className="hint" style={{marginTop:0}}>Every member's device needs this key once, and then never again. It's what keeps your synced records unreadable to Google, Dropbox or anyone else holding the file.</p>
+                <div className="recovery-code-box">{t.key}</div>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:10}}>
+                  <button className="mini-btn" onClick={()=>{try{navigator.clipboard.writeText(t.key);flash("Circle key copied.")}catch{flash("Couldn't copy — read it from the screen.")}}}>Copy key</button>
+                </div>
+                <p className="hint" style={{marginTop:10}}><strong>Send it separately from the invite code</strong> — read it down the phone, or use a different app. Two messages that each carry half are far safer than one that carries both.</p>
+              </>):(<>
+                <p className="hint" style={{marginTop:0}}>This circle was set up before generated keys. Members still have to type a shared sync passcode every session. Switching to a generated key ends that.</p>
+                <div className="cf-grid" style={{maxWidth:"min(100%,22.22rem)"}}>
+                  <label className="cf-label">Current sync passcode<input value={getSyncPasscode()} onChange={e=>setSyncPasscode(e.target.value)} className="cf-input" type="password" placeholder="Shared with all circle members"/></label>
+                </div>
+                <button className="save-btn" style={{marginTop:10}} onClick={adoptCircleKey}>Switch to a generated key</button>
+                <p className="hint" style={{marginTop:8}}>Everyone will need the new key once. Until they have it, they won't sync.</p>
+              </>)}
+            </div>)})()}
 
             {/* Cloud connection */}
             <div className="section">
@@ -4654,7 +5952,7 @@ export default function App() {
                   <div className="cloud-setup-steps">
                     <div className="cloud-step"><span className="cloud-step-num">1</span><span>Create a shared folder in Google Drive, Dropbox, iCloud, or OneDrive</span></div>
                     <div className="cloud-step"><span className="cloud-step-num">2</span><span>Tap below — save the sync file into that shared folder</span></div>
-                    <div className="cloud-step"><span className="cloud-step-num">3</span><span>Each team member selects the same file on their device</span></div>
+                    <div className="cloud-step"><span className="cloud-step-num">3</span><span>Each circle member selects the same file on their device</span></div>
                   </div>
                   <button onClick={cloudConnect} className="save-btn" style={{marginTop:12}}>{hasFileSystemAccess?"📁 Connect Cloud Folder":"⚠ Browser Not Supported (use Chrome/Edge)"}</button>
                 </>):(<div className="cloud-connected-info">
@@ -4670,17 +5968,17 @@ export default function App() {
                 <div className="cloud-setup-steps">
                   <div className="cloud-step"><span className="cloud-step-num">1</span><span>Deploy the sync server on your own hardware (see sync-server.js)</span></div>
                   <div className="cloud-step"><span className="cloud-step-num">2</span><span>Enter the server URL and API key below</span></div>
-                  <div className="cloud-step"><span className="cloud-step-num">3</span><span>All team members use the same URL, API key, and sync passcode</span></div>
+                  <div className="cloud-step"><span className="cloud-step-num">3</span><span>All circle members use the same URL, API key, and sync passcode</span></div>
                 </div>
-                <div className="cf-grid" style={{maxWidth:500,marginTop:12}}>
+                <div className="cf-grid" style={{maxWidth:"min(100%,27.78rem)",marginTop:12}}>
                   <label className="cf-label">Server URL<input value={getServerUrl()} onChange={e=>setServerConfig(e.target.value,getServerApiKey())} className="cf-input" placeholder="https://your-server.example.com"/></label>
                   <label className="cf-label">API key (if required)<input value={getServerApiKey()} onChange={e=>setServerConfig(getServerUrl(),e.target.value)} className="cf-input" type="password" placeholder="Leave blank if none"/></label>
                 </div>
-                {getServerUrl()&&<div className="cloud-connected-info" style={{marginTop:12,background:getServerUrl().startsWith("https://")?"#e8f0df":"#fdf0d5",borderColor:getServerUrl().startsWith("https://")?"#b8d4a0":"#f0d5a0"}}>
+                {getServerUrl()&&<div className="cloud-connected-info" style={{marginTop:12,background:getServerUrl().startsWith("https://")?"var(--color-background-success)":"var(--color-background-warning)",borderColor:getServerUrl().startsWith("https://")?"var(--color-border-success)":"var(--color-border-warning)"}}>
                   <div className="cloud-connected-icon">🖥</div>
                   <div className="cloud-connected-details">
                     <div className="cloud-connected-file">{getServerUrl()}</div>
-                    <div className="cloud-connected-meta">{!getServerUrl().startsWith("https://")&&<span style={{color:"#bc6c25"}}>⚠ HTTPS recommended for production</span>}{(data._sync&&data._sync.lastSync)&&<span>{getServerUrl().startsWith("https://")?"":"  · "}Last sync: {new Date(data._sync.lastSync).toLocaleString()}</span>}</div>
+                    <div className="cloud-connected-meta">{!getServerUrl().startsWith("https://")&&<span style={{color:"var(--color-text-warning)"}}>⚠ HTTPS recommended for production</span>}{(data._sync&&data._sync.lastSync)&&<span>{getServerUrl().startsWith("https://")?"":"  · "}Last sync: {new Date(data._sync.lastSync).toLocaleString()}</span>}</div>
                   </div>
                   <button onClick={()=>setServerConfig("","")} className="cancel-btn" style={{flexShrink:0}}>Remove</button>
                 </div>}
@@ -4690,9 +5988,9 @@ export default function App() {
             {/* THE SYNC BUTTON — works with whichever method is configured */}
             {(cloudConnected||getServerUrl())&&(<div className="sync-main-action">
               <button onClick={syncNow} disabled={cloudSyncing||!getSyncPasscode()} className="cloud-sync-btn">
-                {cloudSyncing?<><span className="doc-spinner" style={{borderTopColor:"#fff",borderColor:"rgba(255,255,255,.3)",width:18,height:18}}/>Syncing...</>:"📡 Sync Now"}
+                {cloudSyncing?<><span className="doc-spinner" style={{borderTopColor:"var(--color-text-warning)",borderColor:"rgba(255,255,255,.3)",width:18,height:18}}/>Syncing...</>:"📡 Sync Now"}
               </button>
-              <p className="hint" style={{textAlign:"center",marginTop:8}}>Pulls team changes, merges, and pushes your updates — all in one tap.</p>
+              <p className="hint" style={{textAlign:"center",marginTop:8}}>Pulls circle changes, merges, and pushes your updates — all in one tap.</p>
             </div>)}
 
             {/* Advanced / Manual Options */}
@@ -4728,7 +6026,7 @@ export default function App() {
                 </div>
                 <details className="sync-paste-details" style={{marginTop:12}}>
                   <summary className="sync-paste-summary">Manual paste fallback</summary>
-                  <textarea value={syncPullText} onChange={e=>setSyncPullText(e.target.value)} className="notes-ta" rows={3} placeholder='Paste encrypted sync data here...' style={{fontFamily:"monospace",fontSize:11}}/>
+                  <textarea value={syncPullText} onChange={e=>setSyncPullText(e.target.value)} className="notes-ta" rows={3} placeholder='Paste encrypted sync data here...' style={{fontFamily:"monospace",fontSize:"0.8148rem"}}/>
                   <button onClick={()=>{if(syncPullText.trim())syncPullFromText(syncPullText.trim())}} className="save-btn" style={{marginTop:8}} disabled={!syncPullText.trim()}>Decrypt & Merge</button>
                 </details>
               </div>
@@ -4737,28 +6035,28 @@ export default function App() {
 
           {/* ═══ MESSAGES ═══ */}
           {view==="messages"&&(()=>{
-            const team=data.settings&&data.settings.team;
-            const members=(team&&team.members)||[];
+            const circle=data.settings&&data.settings.circle;
+            const members=(circle&&circle.members)||[];
             const did=data.settings&&data.settings.deviceId;
             const myMember=members.find(m=>m.deviceId===did);
             const myName=(data.settings&&data.settings.deviceName)||(myMember&&myMember.name)||"";
             const myRole=(myMember&&myMember.role)||"";
-            const teamMembers=members;
-            const getMemberInfo=(name)=>teamMembers.find(m=>m.name===name)||null;
+            const circleMembers=members;
+            const getMemberInfo=(name)=>circleMembers.find(m=>m.name===name)||null;
             return(<>
-            <h1 className="page-title">✉ Care Team Messages</h1>
-            <p className="page-sub">{hasTeam()?`${getTeam().name} — caring for ${getTeam().clientName}`:"A shared message board for care team coordination. Syncs via encrypted backup or team sync."}</p>
-            {!isClient&&<div className="msg-compose">
-              {hasTeam()?(<div className="msg-sender"><div className="team-member-avatar" style={{width:28,height:28,fontSize:13}}>{myName?myName[0].toUpperCase():"?"}</div><span className="msg-sender-name">{myName}{myRole&&<span className="msg-sender-role"> · {myRole}</span>}</span></div>
+            <h1 className="page-title">✉ Care Circle Messages</h1>
+            <p className="page-sub">{hasCircle()?`${getCircle().name} — caring for ${getCircle().clientName}`:"A shared message board for care circle coordination. Syncs via encrypted backup or circle sync."}</p>
+            {!isReadOnly&&<div className="msg-compose">
+              {hasCircle()?(<div className="msg-sender"><div className="circle-member-avatar" style={{width:28,height:28,fontSize:"0.963rem"}}>{myName?myName[0].toUpperCase():"?"}</div><span className="msg-sender-name">{myName}{myRole&&<span className="msg-sender-role"> · {myRole}</span>}</span></div>
               ):(<input value={msgFrom} onChange={e=>setMsgFrom(e.target.value)} placeholder="Your name" className="cf-input" style={{width:160}}/>)}
-              <input value={msgText} onChange={e=>setMsgText(e.target.value)} onKeyDown={e=>e.key==="Enter"&&(hasTeam()?myName:msgFrom.trim())&&msgText.trim()&&sendMessage()} placeholder="Type a message…" className="cf-input" style={{flex:1}}/>
-              <button onClick={()=>{if(hasTeam()&&myName){setMsgFrom(myName)}sendMessage()}} disabled={!msgText.trim()||!(hasTeam()?myName:msgFrom.trim())} className="save-btn" style={{opacity:msgText.trim()&&(hasTeam()?myName:msgFrom.trim())?1:.4}}>Send</button>
+              <input value={msgText} onChange={e=>setMsgText(e.target.value)} onKeyDown={e=>e.key==="Enter"&&(hasCircle()?myName:msgFrom.trim())&&msgText.trim()&&sendMessage()} placeholder="Type a message…" className="cf-input" style={{flex:1}}/>
+              <button onClick={()=>{if(hasCircle()&&myName){setMsgFrom(myName)}sendMessage()}} disabled={!msgText.trim()||!(hasCircle()?myName:msgFrom.trim())} className="save-btn" style={{opacity:msgText.trim()&&(hasCircle()?myName:msgFrom.trim())?1:.4}}>Send</button>
             </div>}
             <div className="msg-list">
-              {(data.messages||[]).length===0?<p className="contacts-empty">No messages yet.{!hasTeam()?" Set up a care team in the Sync tab to get started.":""}</p>:
+              {(data.messages||[]).length===0?<p className="contacts-empty">No messages yet.{!hasCircle()?" Set up a care circle in the Sync tab to get started.":""}</p>:
                 [...(data.messages||[])].reverse().map(m=>{const member=getMemberInfo(m.from);const isMe=m.from===myName;return(<div key={m.id} className={`msg-bubble ${isMe?"msg-self":""}`}>
                   <div className="msg-meta">
-                    {member&&<div className="team-member-avatar" style={{width:24,height:24,fontSize:11,background:isMe?"#457b9d":"#8d99ae"}}>{m.from[0].toUpperCase()}</div>}
+                    {member&&<div className="circle-member-avatar" style={{width:24,height:24,fontSize:"0.8148rem",background:isMe?"var(--color-action-primary)":"var(--color-text-muted)"}}>{m.from[0].toUpperCase()}</div>}
                     <strong>{m.from}</strong>{member&&<span className="msg-role">{member.role}</span>}
                     <span className="msg-time">{m.timestamp}</span>
                   </div>
@@ -4770,8 +6068,8 @@ export default function App() {
           {/* ═══ SETTINGS ═══ */}
           {view==="settings"&&(<>
             <h1 className="page-title">⚙ Settings</h1>
-            {isClient?<p className="page-sub">Settings are only available to caregivers.</p>:(<>
-              <p className="page-sub">Manage passcodes, export backups, and import health records.</p>
+            {!can("manage-settings")?<p className="page-sub">Settings are managed by your circle's admin. Backups are on the Backups screen, in the Care Hub menu.</p>:(<>
+              <p className="page-sub">Passcodes, region, and the security record for this install.</p>
               <div className="section"><h3 className="sec-title">🗺 State / Region</h3>
                 <p className="hint">Choose your state for localized Medicaid thresholds, legal citations, program names, and resources. Generic mode provides universal guidance with no state-specific details.</p>
                 <div className="state-selector">
@@ -4780,20 +6078,13 @@ export default function App() {
                 <p className="hint" style={{marginTop:8}}>Current mode: <strong>{(data.settings&&data.settings.stateCode)?(AVAILABLE_STATES.find(s=>s.code===(data.settings&&data.settings.stateCode))||{}).name:"Generic"}</strong>{(data.settings&&data.settings.stateCode)?" — state-specific goals, citations, and thresholds are active.":" — universal guidance, no state-specific information."}</p>
               </div>
               {can("change-passcodes")&&<div className="section"><h3 className="sec-title">Passcodes</h3>
-                <div className="cf-grid" style={{maxWidth:400}}>
+                <div className="cf-grid" style={{maxWidth:"min(100%,22.22rem)"}}>
                   <label className="cf-label">Caregiver passcode<input value={newCaregiverPw} onChange={e=>setNewCaregiverPw(e.target.value)} className="cf-input" placeholder="New caregiver passcode"/></label>
                   <label className="cf-label">Client (read-only) passcode<input value={newClientPw} onChange={e=>setNewClientPw(e.target.value)} className="cf-input" placeholder="New client passcode"/></label>
                 </div>
                 <button onClick={updatePasscodes} className="save-btn" style={{marginTop:12}}>Update Passcodes</button>
               </div>
-              }<div className="section"><h3 className="sec-title">📡 Device Identity & Sync</h3>
-                <p className="hint">Each device has a unique ID used during sync. Set a name so team members know whose backup is whose.</p>
-                <div className="cf-grid" style={{maxWidth:400}}>
-                  <label className="cf-label">Device name<input value={(data.settings&&data.settings.deviceName)||""} onChange={e=>setData(p=>({...p,settings:{...p.settings,deviceName:e.target.value}}))} className="cf-input" placeholder="e.g., David's phone, Sarah's laptop"/></label>
-                  <label className="cf-label">Device ID<input value={(data.settings&&data.settings.deviceId)||""} readOnly className="cf-input" style={{color:"#a09a92",fontSize:12}}/></label>
-                </div>
-                {(data._sync&&data._sync.lastMerge)&&<p className="hint" style={{marginTop:8}}>Last merge: {new Date(data._sync.lastMerge).toLocaleString()} from {data._sync.mergedFromName||data._sync.mergedFrom||"unknown"}</p>}
-              </div>
+              }
               <div className="section"><h3 className="sec-title">🔒 Security &amp; Integrity</h3>
                 <div className="integrity-row">
                   <span className="integrity-label">Audit log integrity</span>
@@ -4843,50 +6134,19 @@ export default function App() {
                   </>)
                 ):<p className="hint" style={{marginTop:2}}>Multi-factor sign-in is available for professional roles (Admin, Care Professional).</p>}
               </div>
-              <div className="section"><h3 className="sec-title">🛟 Continuous Backup</h3>
-                <p className="hint">Automatically save an encrypted copy to a file on your device or cloud folder every time your data changes — so a browser clearing its storage never costs you your records. {hasFileSystemAccess?"":"(Requires Chrome, Edge, or Brave. On this browser, use manual backup below.)"}</p>
-                {backupStatus==="active"&&(<div className="backup-status backup-active">
-                  <span className="backup-dot"></span>
-                  <div className="backup-status-body"><strong>Active</strong> — saving automatically to <code>{backupFileName||"your backup file"}</code>{lastAutoBackupAt&&<span className="backup-when">last saved {new Date(lastAutoBackupAt).toLocaleTimeString()}</span>}</div>
-                  <button onClick={disableContinuousBackup} className="backup-link">Turn off</button>
-                </div>)}
-                {backupStatus==="paused"&&(<div className="backup-status backup-paused">
-                  <span className="backup-dot"></span>
-                  <div className="backup-status-body"><strong>Paused</strong> — your browser cleared this session's permission to write the backup file. This is expected each time you reopen the app.</div>
-                  <button onClick={resumeBackup} className="backup-btn" disabled={backupBusy}>Resume</button>
-                </div>)}
-                {backupStatus==="off"&&hasFileSystemAccess&&can("export-data")&&(<div className="settings-row">
-                  <input value={backupPw} onChange={e=>setBackupPw(e.target.value)} className="cf-input" placeholder="Choose a backup passcode (min 6)" type="password" style={{width:240}}/>
-                  <button onClick={setupContinuousBackup} className="save-btn" disabled={backupBusy} style={{background:"#457b9d"}}>🛟 Set up continuous backup</button>
-                </div>)}
-                {backupStatus==="off"&&<p className="hint" style={{marginTop:8,fontStyle:"italic"}}>Remember your backup passcode — it's what restores your data if the browser clears it. The backup file is fully encrypted, so storing it in iCloud, Google Drive, or Dropbox is safe.</p>}
-                {backupStatus!=="off"&&<p className="hint" style={{marginTop:8,fontStyle:"italic"}}>Note: browser security requires you to re-authorize file access each session — the unlock is one click when you see "Resume." Your manual backup below always works as a fallback.</p>}
-              </div>
-              <div className="section"><h3 className="sec-title">Encrypted Backup & Sync</h3>
-                <p className="hint">Export your data with AES-256-GCM encryption. Import merges intelligently — new items are added, more recent changes win. Your passcodes and device ID are never overwritten.</p>
-                <div className="settings-row"><input value={exportPw} onChange={e=>setExportPw(e.target.value)} className="cf-input" placeholder="Export passcode" type="password" style={{width:200}}/><button onClick={handleEncryptedExport} className="save-btn">↓ Export Encrypted</button></div>
-                <div className="settings-row" style={{marginTop:12}}><input value={importPw} onChange={e=>setImportPw(e.target.value)} className="cf-input" placeholder="Import passcode" type="password" style={{width:200}}/><button onClick={()=>(importFileRef.current&&importFileRef.current.click)()} className="save-btn" style={{background:"#457b9d"}}>↑ Import & Merge</button></div>
-                <p className="hint" style={{marginTop:12}}>Workflow: team member exports → shares file via text/Signal/AirDrop/Drive → you import → merge preview shows changes → you confirm.</p>
-              </div>
-              <div className="section"><h3 className="sec-title">Summary Export (No PHI)</h3>
-                <p className="hint">Exports domain names, status, and progress only. No contacts, notes, or health information.</p>
-                <button onClick={handleNonSensitiveExport} className="edit-btn" style={{marginTop:0}}>↓ Export Summary</button>
-              </div>
-              <div className="section"><h3 className="sec-title">Import Health Records (FHIR R4)</h3>
-                <p className="hint">Import a FHIR R4 JSON Bundle to extract practitioners, conditions, and medications.</p>
-                <button onClick={()=>(fhirFileRef.current&&fhirFileRef.current.click)()} className="edit-btn" style={{marginTop:0}}>↑ Import FHIR Bundle</button>
-              </div>
-              <div className="section"><h3 className="sec-title">Data</h3>
-                <p className="hint">Storage key: {SKEY} · Device: {(data.settings&&data.settings.deviceName)||(data.settings&&data.settings.deviceId)||"unnamed"} · Contacts: {(data.contacts&&data.contacts.length)||0} · Appointments: {(data.appointments&&data.appointments.length)||0} · Messages: {(data.messages&&data.messages.length)||0} · Incidents: {(data.incidents&&data.incidents.length)||0} · Expenses: {(data.expenses&&data.expenses.length)||0} · Meds: {getMedSchedule().medications.length} · Self-reports: {(data.selfReports&&data.selfReports.length)||0} · Docs: {(data.savedDocs&&data.savedDocs.length)||0}</p>
-              </div>
             </>)}
           </>)}
 
           {/* ═══ DOCUMENTS ═══ */}
           {view==="documents"&&(<>
             <div className="contacts-header"><div><h1 className="page-title">📄 Document Scanner</h1><p className="page-sub" style={{margin:"4px 0 0"}}>Upload PDFs or text files. Medications and lab results are extracted automatically — no data leaves your device.</p></div>
-              {!isClient&&<button onClick={()=>(docFileRef.current&&docFileRef.current.click)()} className="save-btn" disabled={docProcessing}>{docProcessing?"Processing…":"↑ Upload Document"}</button>}
+              {!isReadOnly&&<button onClick={()=>(docFileRef.current&&docFileRef.current.click)()} className="save-btn" disabled={docProcessing}>{docProcessing?"Processing…":"↑ Upload Document"}</button>}
             </div>
+            {!isReadOnly&&<div className="section" style={{marginBottom:16}}>
+              <h3 className="sec-title">Import health records (FHIR R4)</h3>
+              <p className="hint" style={{marginTop:0}}>If your clinic or portal exports a FHIR R4 bundle, open it here to pull in practitioners, conditions and medications.</p>
+              <button onClick={()=>(fhirFileRef.current&&fhirFileRef.current.click)()} className="edit-btn" style={{marginTop:0}}>↑ Import FHIR bundle</button>
+            </div>}
 
             {/* saved documents library */}
             {((data.savedDocs&&data.savedDocs.length)||0)>0&&!docResult&&!viewingDoc&&(<div className="section">
@@ -4897,12 +6157,12 @@ export default function App() {
               </div>
               <div className="contacts-list">{getFilteredDocs().map(doc=>{const cat=DOC_CATEGORIES.find(c=>c.key===doc.category);return(
                 <div key={doc.id} className="contact-row" style={{cursor:"pointer"}} onClick={()=>setViewingDoc(doc.id)}>
-                  <span style={{fontSize:20}}>{(cat&&cat.icon)||"📄"}</span>
+                  <span style={{fontSize:"1.4814rem"}}>{(cat&&cat.icon)||"📄"}</span>
                   <div className="contact-info">
                     <div className="contact-name">{doc.fileName}</div>
                     <div className="contact-role">{(cat&&cat.label)||doc.category} · {doc.date}{doc.medCount?` · ${doc.medCount} meds`:""}{doc.labCount?` · ${doc.labCount} labs`:""}</div>
                   </div>
-                  {!isClient&&<button onClick={e=>{e.stopPropagation();deleteDoc(doc.id)}} className="remove-sub">×</button>}
+                  {!isReadOnly&&<button onClick={e=>{e.stopPropagation();deleteDoc(doc.id)}} className="remove-sub">×</button>}
                 </div>)})}</div>
             </div>)}
 
@@ -4949,11 +6209,11 @@ export default function App() {
               {/* detected type + category selector + save to library */}
               <div className="doc-type-row">
                 <div className="doc-type-badge">{docResult.docType.icon} Detected: <strong>{docResult.docType.label}</strong> · {docResult.fileName}</div>
-                {!isClient&&<div className="doc-save-row">
-                  <select value={docSaveCategory} onChange={e=>setDocSaveCategory(e.target.value)} className="cf-input" style={{width:180,fontSize:13}}>
+                {!isReadOnly&&<div className="doc-save-row">
+                  <select value={docSaveCategory} onChange={e=>setDocSaveCategory(e.target.value)} className="cf-input" style={{width:180,fontSize:"0.963rem"}}>
                     {DOC_CATEGORIES.filter(c=>c.key!=="all").map(c=><option key={c.key} value={c.key}>{c.icon} {c.label}</option>)}
                   </select>
-                  <button onClick={()=>saveDocToLibrary()} className="save-btn" style={{fontSize:13,padding:"7px 14px"}}>Save to Library</button>
+                  <button onClick={()=>saveDocToLibrary()} className="save-btn" style={{fontSize:"0.963rem",padding:"7px 14px"}}>Save to Library</button>
                 </div>}
               </div>
 
@@ -4962,17 +6222,17 @@ export default function App() {
                 <h3 className="sec-title">💊 Extracted Medications ({docMeds.length})</h3>
                 <p className="hint">Review and edit the table below, then save to your care notes.</p>
                 <div className="doc-table-wrap"><table className="doc-table">
-                  <thead><tr><th>Medication</th><th>Dosage</th><th>Frequency</th><th>Route</th><th>Notes</th>{!isClient&&<th></th>}</tr></thead>
+                  <thead><tr><th>Medication</th><th>Dosage</th><th>Frequency</th><th>Route</th><th>Notes</th>{!isReadOnly&&<th></th>}</tr></thead>
                   <tbody>{docMeds.map(m=>(<tr key={m.id}>
-                    <td>{isClient?m.name:<input value={m.name} onChange={e=>updateDocMed(m.id,"name",e.target.value)} className="doc-cell-input"/>}</td>
-                    <td>{isClient?m.dosage:<input value={m.dosage} onChange={e=>updateDocMed(m.id,"dosage",e.target.value)} className="doc-cell-input doc-cell-sm"/>}</td>
-                    <td>{isClient?m.frequency:<input value={m.frequency} onChange={e=>updateDocMed(m.id,"frequency",e.target.value)} className="doc-cell-input"/>}</td>
-                    <td>{isClient?m.route:<input value={m.route} onChange={e=>updateDocMed(m.id,"route",e.target.value)} className="doc-cell-input doc-cell-sm"/>}</td>
-                    <td>{isClient?m.notes:<input value={m.notes} onChange={e=>updateDocMed(m.id,"notes",e.target.value)} className="doc-cell-input" placeholder="Add note…"/>}</td>
-                    {!isClient&&<td><button onClick={()=>removeDocMed(m.id)} className="remove-sub">×</button></td>}
+                    <td>{isReadOnly?m.name:<input value={m.name} onChange={e=>updateDocMed(m.id,"name",e.target.value)} className="doc-cell-input"/>}</td>
+                    <td>{isReadOnly?m.dosage:<input value={m.dosage} onChange={e=>updateDocMed(m.id,"dosage",e.target.value)} className="doc-cell-input doc-cell-sm"/>}</td>
+                    <td>{isReadOnly?m.frequency:<input value={m.frequency} onChange={e=>updateDocMed(m.id,"frequency",e.target.value)} className="doc-cell-input"/>}</td>
+                    <td>{isReadOnly?m.route:<input value={m.route} onChange={e=>updateDocMed(m.id,"route",e.target.value)} className="doc-cell-input doc-cell-sm"/>}</td>
+                    <td>{isReadOnly?m.notes:<input value={m.notes} onChange={e=>updateDocMed(m.id,"notes",e.target.value)} className="doc-cell-input" placeholder="Add note…"/>}</td>
+                    {!isReadOnly&&<td><button onClick={()=>removeDocMed(m.id)} className="remove-sub">×</button></td>}
                   </tr>))}</tbody>
                 </table></div>
-                {!isClient&&<div className="doc-table-actions">
+                {!isReadOnly&&<div className="doc-table-actions">
                   <button onClick={addDocMed} className="add-sub-trigger" style={{width:"auto",display:"inline-block",padding:"6px 14px"}}>+ Add Row</button>
                   <button onClick={saveMedsToNotes} className="save-btn">Save Medications to {getDomLabel("physical")}</button>
                 </div>}
@@ -4983,18 +6243,18 @@ export default function App() {
                 <h3 className="sec-title">🔬 Extracted Lab Results ({docLabs.length})</h3>
                 <p className="hint">Review values, flags, and reference ranges. Save to care notes when ready.</p>
                 <div className="doc-table-wrap"><table className="doc-table">
-                  <thead><tr><th>Test</th><th>Value</th><th>Unit</th><th>Reference Range</th><th>Flag</th><th>Notes</th>{!isClient&&<th></th>}</tr></thead>
+                  <thead><tr><th>Test</th><th>Value</th><th>Unit</th><th>Reference Range</th><th>Flag</th><th>Notes</th>{!isReadOnly&&<th></th>}</tr></thead>
                   <tbody>{docLabs.map(l=>(<tr key={l.id} className={l.flag?"doc-flagged":""}>
-                    <td>{isClient?l.test:<input value={l.test} onChange={e=>updateDocLab(l.id,"test",e.target.value)} className="doc-cell-input"/>}</td>
-                    <td>{isClient?l.value:<input value={l.value} onChange={e=>updateDocLab(l.id,"value",e.target.value)} className="doc-cell-input doc-cell-sm"/>}</td>
-                    <td>{isClient?l.unit:<input value={l.unit} onChange={e=>updateDocLab(l.id,"unit",e.target.value)} className="doc-cell-input doc-cell-xs"/>}</td>
-                    <td>{isClient?l.range:<input value={l.range} onChange={e=>updateDocLab(l.id,"range",e.target.value)} className="doc-cell-input doc-cell-sm"/>}</td>
-                    <td>{isClient?l.flag:<input value={l.flag} onChange={e=>updateDocLab(l.id,"flag",e.target.value)} className="doc-cell-input doc-cell-xs"/>}</td>
-                    <td>{isClient?l.notes:<input value={l.notes} onChange={e=>updateDocLab(l.id,"notes",e.target.value)} className="doc-cell-input" placeholder="Note…"/>}</td>
-                    {!isClient&&<td><button onClick={()=>removeDocLab(l.id)} className="remove-sub">×</button></td>}
+                    <td>{isReadOnly?l.test:<input value={l.test} onChange={e=>updateDocLab(l.id,"test",e.target.value)} className="doc-cell-input"/>}</td>
+                    <td>{isReadOnly?l.value:<input value={l.value} onChange={e=>updateDocLab(l.id,"value",e.target.value)} className="doc-cell-input doc-cell-sm"/>}</td>
+                    <td>{isReadOnly?l.unit:<input value={l.unit} onChange={e=>updateDocLab(l.id,"unit",e.target.value)} className="doc-cell-input doc-cell-xs"/>}</td>
+                    <td>{isReadOnly?l.range:<input value={l.range} onChange={e=>updateDocLab(l.id,"range",e.target.value)} className="doc-cell-input doc-cell-sm"/>}</td>
+                    <td>{isReadOnly?l.flag:<input value={l.flag} onChange={e=>updateDocLab(l.id,"flag",e.target.value)} className="doc-cell-input doc-cell-xs"/>}</td>
+                    <td>{isReadOnly?l.notes:<input value={l.notes} onChange={e=>updateDocLab(l.id,"notes",e.target.value)} className="doc-cell-input" placeholder="Note…"/>}</td>
+                    {!isReadOnly&&<td><button onClick={()=>removeDocLab(l.id)} className="remove-sub">×</button></td>}
                   </tr>))}</tbody>
                 </table></div>
-                {!isClient&&<div className="doc-table-actions">
+                {!isReadOnly&&<div className="doc-table-actions">
                   <button onClick={saveLabsToNotes} className="save-btn">Save Lab Results to {getDomLabel("physical")}</button>
                 </div>}
               </div>)}
@@ -5003,7 +6263,7 @@ export default function App() {
               {(docResult.sections&&docResult.sections.length)>0&&docResult.docType.key==="clinical"&&(<div className="section">
                 <h3 className="sec-title">📋 Clinical Note Sections</h3>
                 {docResult.sections.map((s,i)=>(<div key={i} className="doc-section-card"><h4 className="doc-section-title">{s.title}</h4><p className="doc-section-body">{s.body}</p></div>))}
-                {!isClient&&<div className="doc-table-actions"><label className="cf-label" style={{flexDirection:"row",alignItems:"center",gap:8}}>Save full text to:
+                {!isReadOnly&&<div className="doc-table-actions"><label className="cf-label" style={{flexDirection:"row",alignItems:"center",gap:8}}>Save full text to:
                   <select className="cf-input" style={{width:180}} onChange={e=>{if(e.target.value)saveRawTextToNotes(e.target.value);e.target.value=""}}><option value="">Select domain…</option>{DOMAINS.map(d=><option key={d.key} value={d.key}>{d.icon} {getDomLabel(d.key)}</option>)}</select>
                 </label></div>}
               </div>)}
@@ -5014,7 +6274,7 @@ export default function App() {
                   <h3 className="sec-title">Raw Extracted Text</h3>
                   <p className="hint">No structured medications or lab results were detected. You can save the raw text to a care domain.</p>
                   <pre className="doc-raw-text">{docResult.rawText.slice(0,3000)}{docResult.rawText.length>3000?"…(truncated)":""}</pre>
-                  {!isClient&&<div className="doc-table-actions"><label className="cf-label" style={{flexDirection:"row",alignItems:"center",gap:8}}>Save to:
+                  {!isReadOnly&&<div className="doc-table-actions"><label className="cf-label" style={{flexDirection:"row",alignItems:"center",gap:8}}>Save to:
                     <select className="cf-input" style={{width:180}} onChange={e=>{if(e.target.value)saveRawTextToNotes(e.target.value);e.target.value=""}}><option value="">Select domain…</option>{DOMAINS.map(d=><option key={d.key} value={d.key}>{d.icon} {getDomLabel(d.key)}</option>)}</select>
                   </label></div>}
                 </div>
@@ -5023,75 +6283,75 @@ export default function App() {
               {/* always show raw text toggle */}
               {(docMeds.length>0||docLabs.length>0)&&(<details className="doc-raw-details"><summary className="doc-raw-summary">View raw extracted text</summary>
                 <pre className="doc-raw-text">{docResult.rawText.slice(0,3000)}{docResult.rawText.length>3000?"…(truncated)":""}</pre>
-                {!isClient&&<div className="doc-table-actions" style={{marginTop:8}}><label className="cf-label" style={{flexDirection:"row",alignItems:"center",gap:8}}>Save raw text to:
+                {!isReadOnly&&<div className="doc-table-actions" style={{marginTop:8}}><label className="cf-label" style={{flexDirection:"row",alignItems:"center",gap:8}}>Save raw text to:
                   <select className="cf-input" style={{width:180}} onChange={e=>{if(e.target.value)saveRawTextToNotes(e.target.value);e.target.value=""}}><option value="">Select domain…</option>{DOMAINS.map(d=><option key={d.key} value={d.key}>{d.icon} {getDomLabel(d.key)}</option>)}</select>
                 </label></div>}
               </details>)}
             </>)}
 
             {!docResult&&!docProcessing&&(<div className="contacts-empty">
-              <p style={{fontSize:16,marginBottom:8}}>📄 Upload a PDF or text file to get started.</p>
+              <p style={{fontSize:"1.1852rem",marginBottom:8}}>📄 Upload a PDF or text file to get started.</p>
               <p>Supported: medication lists, lab results, clinical notes, and general documents.</p>
-              <p style={{marginTop:12,fontSize:12.5,color:"#a09a92"}}>Text-based PDFs are extracted automatically. Scanned documents may require manual entry.<br/>All processing happens locally in your browser — nothing is uploaded or sent anywhere.</p>
+              <p style={{marginTop:12,fontSize:"0.9259rem",color:"var(--color-text-muted)"}}>Text-based PDFs are extracted automatically. Scanned documents may require manual entry.<br/>All processing happens locally in your browser — nothing is uploaded or sent anywhere.</p>
             </div>)}
           </>)}
 
           {/* ═══ CONTACTS (list) ═══ */}
           {view==="contacts"&&!contactDetail&&(<>
             <div className="contacts-header"><div><h1 className="page-title">☷ Care Team Contacts</h1></div>
-              {!isClient&&<div className="contacts-header-actions"><button onClick={()=>(fileRef.current&&fileRef.current.click)()} className="edit-btn" style={{marginTop:0}}>↑ Import vCard</button><button onClick={()=>setContactForm({mode:"add",contact:{...EMPTY_CONTACT}})} className="save-btn">+ Add</button></div>}
+              {!isReadOnly&&<div className="contacts-header-actions"><button onClick={()=>(fileRef.current&&fileRef.current.click)()} className="edit-btn" style={{marginTop:0}}>↑ Import vCard</button><button onClick={()=>setContactForm({mode:"add",contact:{...EMPTY_CONTACT}})} className="save-btn">+ Add</button></div>}
             </div>
             <div className="contacts-controls">
               <div className="cc-group"><span className="cc-label">Sort:</span><button onClick={()=>setContactSort("category")} className={`cc-btn ${contactSort==="category"?"cc-active":""}`}>Category</button><button onClick={()=>setContactSort("alpha")} className={`cc-btn ${contactSort==="alpha"?"cc-active":""}`}>A → Z</button></div>
               <div className="cc-group"><span className="cc-label">Filter:</span><button onClick={()=>setContactFilter("all")} className={`cc-btn ${contactFilter==="all"?"cc-active":""}`}>All</button>{CONTACT_CATS.map(c=>(<button key={c.key} onClick={()=>setContactFilter(c.key)} className={`cc-btn ${contactFilter===c.key?"cc-active":""}`}>{c.icon} {c.label}</button>))}</div>
             </div>
             {getSortedContacts().length===0?<div className="contacts-empty"><p>{((data.contacts&&data.contacts.length)||0)===0?"No contacts yet.":"No contacts match this filter."}</p></div>:
-              <div className="contacts-list">{contactSort==="category"&&contactFilter==="all"?CONTACT_CATS.map(cat=>{const items=getSortedContacts().filter(c=>c.category===cat.key);if(!items.length)return null;return(<div key={cat.key} className="contact-group"><h3 className="contact-group-title" style={{color:cat.color}}>{cat.icon} {cat.label}</h3>{items.map(c=>(<button key={c.id} className="contact-row" onClick={()=>setContactDetail(c.id)}><div className="contact-avatar" style={{background:cat.color}}>{c.name.charAt(0).toUpperCase()}</div><div className="contact-info"><div className="contact-name">{c.name}</div><div className="contact-role">{[c.role,c.org].filter(Boolean).join(" · ")||"—"}</div></div><span className="contact-arrow">›</span></button>))}</div>)}):getSortedContacts().map(c=>{const cat=CONTACT_CATS.find(x=>x.key===c.category);return(<button key={c.id} className="contact-row" onClick={()=>setContactDetail(c.id)}><div className="contact-avatar" style={{background:(cat&&cat.color)||"#8d99ae"}}>{c.name.charAt(0).toUpperCase()}</div><div className="contact-info"><div className="contact-name">{c.name}</div><div className="contact-role">{[c.role,c.org].filter(Boolean).join(" · ")||(cat&&cat.label)}</div></div><span className="contact-arrow">›</span></button>)})}</div>}
+              <div className="contacts-list">{contactSort==="category"&&contactFilter==="all"?CONTACT_CATS.map(cat=>{const items=getSortedContacts().filter(c=>c.category===cat.key);if(!items.length)return null;return(<div key={cat.key} className="contact-group"><h3 className="contact-group-title" style={{color:cat.color}}>{cat.icon} {cat.label}</h3>{items.map(c=>(<button key={c.id} className="contact-row" onClick={()=>setContactDetail(c.id)}><div className="contact-avatar" style={{background:cat.color}}>{c.name.charAt(0).toUpperCase()}</div><div className="contact-info"><div className="contact-name">{c.name}</div><div className="contact-role">{[c.role,c.org].filter(Boolean).join(" · ")||"—"}</div></div><span className="contact-arrow">›</span></button>))}</div>)}):getSortedContacts().map(c=>{const cat=CONTACT_CATS.find(x=>x.key===c.category);return(<button key={c.id} className="contact-row" onClick={()=>setContactDetail(c.id)}><div className="contact-avatar" style={{background:(cat&&cat.color)||"var(--color-text-muted)"}}>{c.name.charAt(0).toUpperCase()}</div><div className="contact-info"><div className="contact-name">{c.name}</div><div className="contact-role">{[c.role,c.org].filter(Boolean).join(" · ")||(cat&&cat.label)}</div></div><span className="contact-arrow">›</span></button>)})}</div>}
           </>)}
 
           {/* ═══ CONTACT DETAIL ═══ */}
           {view==="contacts"&&contactDetail&&detailContact&&(<>
             <button onClick={()=>setContactDetail(null)} className="back-link">← All Contacts</button>
-            <div className="cd-header" style={{borderLeftColor:(detailCat&&detailCat.color)||"#8d99ae"}}><div className="contact-avatar cd-avatar" style={{background:(detailCat&&detailCat.color)||"#8d99ae"}}>{detailContact.name.charAt(0).toUpperCase()}</div>
-              <div style={{flex:1}}><h1 className="page-title" style={{margin:0}}>{detailContact.name}</h1><p className="cd-meta">{[detailContact.role,detailContact.org].filter(Boolean).join(" · ")}</p><span className="o-badge" style={{background:((detailCat&&detailCat.color)||"#8d99ae")+"18",color:(detailCat&&detailCat.color)}}>{(detailCat&&detailCat.icon)} {(detailCat&&detailCat.label)}</span></div>
+            <div className="cd-header" style={{borderLeftColor:(detailCat&&detailCat.color)||"var(--color-text-muted)"}}>{detailContact.photo?<MediaImg value={detailContact.photo} dek={dekRef.current} altKey={rKeyRef.current} className="contact-avatar cd-avatar" alt=""/>:<div className="contact-avatar cd-avatar" style={{background:(detailCat&&detailCat.color)||"var(--color-text-muted)"}}>{detailContact.name.charAt(0).toUpperCase()}</div>}
+              <div style={{flex:1}}><h1 className="page-title" style={{margin:0}}>{detailContact.name}</h1><p className="cd-meta">{[detailContact.role,detailContact.org].filter(Boolean).join(" · ")}</p><span className="o-badge" style={{background:((detailCat&&detailCat.color)||"var(--color-text-muted)")+"18",color:(detailCat&&detailCat.color)}}>{(detailCat&&detailCat.icon)} {(detailCat&&detailCat.label)}</span></div>
             </div>
             <div className="cd-info-grid">
               {detailContact.phone&&<div className="cd-info-item"><span className="cd-info-label">Phone</span><span className="cd-info-value">{detailContact.phone}</span></div>}
               {detailContact.email&&<div className="cd-info-item"><span className="cd-info-label">Email</span><span className="cd-info-value">{detailContact.email}</span></div>}
               {(detailContact.customFields||[]).map((cf,i)=>(<div key={i} className="cd-info-item"><span className="cd-info-label">{cf.label}</span><span className="cd-info-value">{cf.value||"—"}</span></div>))}
             </div>
-            {!isClient&&<div className="cd-actions"><button onClick={()=>setContactForm({mode:"edit",contact:{...detailContact,customFields:[...(detailContact.customFields||[])]},id:detailContact.id})} className="edit-btn" style={{marginTop:0}}>✎ Edit</button><button onClick={()=>{if(window.confirm(`Remove ${detailContact.name}?`))deleteContact(detailContact.id)}} className="cd-delete-btn">Remove</button></div>}
+            {!isReadOnly&&<div className="cd-actions"><button onClick={()=>setContactForm({mode:"edit",contact:{...detailContact,customFields:[...(detailContact.customFields||[])]},id:detailContact.id})} className="edit-btn" style={{marginTop:0}}>✎ Edit</button><button onClick={()=>{if(window.confirm(`Remove ${detailContact.name}?`))deleteContact(detailContact.id)}} className="cd-delete-btn">Remove</button></div>}
             <div className="section"><h3 className="sec-title">Notes Received</h3>
-              {!isClient&&<div className="cd-note-add"><textarea value={contactNoteText} onChange={e=>setContactNoteText(e.target.value)} className="notes-ta" rows={2} placeholder="Note from this contact…"/><button onClick={()=>addContactNote(detailContact.id,contactNoteText)} disabled={!contactNoteText.trim()} className="save-btn" style={{marginTop:8,opacity:contactNoteText.trim()?1:.4}}>Save Note</button></div>}
-              {(detailContact.notes&&detailContact.notes.length)>0?<div className="cd-notes-list">{detailContact.notes.map((n,i)=>(<div key={i} className="cd-note-card"><div className="cd-note-top"><span className="cd-note-date">{n.date}</span>{!isClient&&<button onClick={()=>deleteContactNote(detailContact.id,i)} className="remove-sub">×</button>}</div><p className="cd-note-text">{n.text}</p></div>))}</div>:<p className="contacts-empty" style={{marginTop:12}}>No notes yet.</p>}
+              {!isReadOnly&&<div className="cd-note-add"><textarea value={contactNoteText} onChange={e=>setContactNoteText(e.target.value)} className="notes-ta" rows={2} placeholder="Note from this contact…"/><button onClick={()=>addContactNote(detailContact.id,contactNoteText)} disabled={!contactNoteText.trim()} className="save-btn" style={{marginTop:8,opacity:contactNoteText.trim()?1:.4}}>Save Note</button></div>}
+              {(detailContact.notes&&detailContact.notes.length)>0?<div className="cd-notes-list">{detailContact.notes.map((n,i)=>(<div key={i} className="cd-note-card"><div className="cd-note-top"><span className="cd-note-date">{n.date}</span>{!isReadOnly&&<button onClick={()=>deleteContactNote(detailContact.id,i)} className="remove-sub">×</button>}</div><p className="cd-note-text">{n.text}</p></div>))}</div>:<p className="contacts-empty" style={{marginTop:12}}>No notes yet.</p>}
             </div>
           </>)}
 
           {/* ═══ DOMAIN DETAIL ═══ */}
-          {activeDom&&activeData&&(()=>{const prog=getProgress(activeDom.key);const pulseColor=prog.recency>=75?"#718355":prog.recency>=40?"#bc6c25":"#b56576";return(<>
-            <div className="domain-header" style={{borderLeftColor:activeDom.color,background:activeDom.bg}}>
+          {activeDom&&activeData&&(()=>{const prog=getProgress(activeDom.key);const pulseColor=prog.recency>=75?"var(--color-text-success)":prog.recency>=40?"var(--color-text-warning)":"var(--color-text-danger)";return(<>
+            <div className="domain-header" style={{borderLeftColor:activeDom.color,background:activeDom.color+"1F"}}>
               <div className="domain-header-top"><div>
-                <div className="domain-title-row"><h1 className="page-title" style={{margin:0}}>{activeDom.icon} {getDomLabel(activeDom.key)}</h1>{!isClient&&<button className="edit-icon edit-icon-visible" onClick={()=>setEditingDomain({key:activeDom.key,label:getDomLabel(activeDom.key),desc:getDomDesc(activeDom.key)})}>✎</button>}</div>
+                <div className="domain-title-row"><h1 className="page-title" style={{margin:0}}>{activeDom.icon} {getDomLabel(activeDom.key)}</h1>{!isReadOnly&&<button className="edit-icon edit-icon-visible" onClick={()=>setEditingDomain({key:activeDom.key,label:getDomLabel(activeDom.key),desc:getDomDesc(activeDom.key)})}>✎</button>}</div>
                 <p className="page-sub" style={{margin:"6px 0 0"}}>{getDomDesc(activeDom.key)}</p>
               </div><div className="domain-pct" style={{color:activeDom.color}}>{prog.pct}%</div></div>
               <div className="dual-track" style={{marginTop:14}}>
                 <div className="dual-track-row"><span className="dual-track-label">☐ Foundation</span><div className="prog-track"><div className="prog-fill" style={{width:`${prog.pct}%`,background:activeDom.color}}/></div><span className="prog-label">{prog.done}/{prog.total} one-time</span></div>
                 {prog.ongoingTotal>0&&<div className="dual-track-row"><span className="dual-track-label" style={{color:pulseColor}}>↻ Care Pulse</span><div className="prog-track"><div className="prog-fill" style={{width:`${prog.recency}%`,background:pulseColor}}/></div><span className="prog-label" style={{color:pulseColor}}>{prog.ongoingOk}/{prog.ongoingTotal} current</span></div>}
               </div>
-              <div className="type-legend"><span className="type-legend-item"><span style={{color:"#457b9d"}}>☐</span> One-time</span><span className="type-legend-item"><span style={{color:"#bc6c25"}}>↻</span> Recurring</span><span className="type-legend-item"><span style={{color:"#718355"}}>◉</span> Monitoring</span></div>
+              <div className="type-legend"><span className="type-legend-item"><span style={{color:"var(--color-action-primary)"}}>☐</span> One-time</span><span className="type-legend-item"><span style={{color:"var(--color-text-warning)"}}>↻</span> Recurring</span><span className="type-legend-item"><span style={{color:"var(--color-text-success)"}}>◉</span> Monitoring</span></div>
             </div>
 
             <div className="section"><h3 className="sec-title">Guided Steps</h3>
               <div className="goals-wrap">{activeDom.goals.map((goal,gi)=>{const gd=activeData.goals[gi];const sp=getSubProgress(activeDom.key,gi);const isOpen=expanded[gi];return(
-                <div key={gi} className="goal-card" style={{borderLeftColor:gd.done?"#718355":activeDom.color,background:gd.done?"#f9fcf6":"#fff"}}>
+                <div key={gi} className="goal-card" style={{borderLeftColor:gd.done?"var(--color-text-success)":activeDom.color,background:gd.done?"var(--color-background-success)":"var(--color-surface)"}}>
                   <div className="goal-head" onClick={()=>toggle(gi)}>
-                    {!isClient&&<input type="checkbox" checked={gd.done} onChange={e=>{e.stopPropagation();toggleGoal(activeDom.key,gi)}} className="goal-check"/>}
-                    {isClient&&<span style={{width:20,textAlign:"center",flexShrink:0}}>{gd.done?"✓":"○"}</span>}
+                    {!isReadOnly&&<input type="checkbox" checked={gd.done} onChange={e=>{e.stopPropagation();toggleGoal(activeDom.key,gi)}} className="goal-check"/>}
+                    {isReadOnly&&<span style={{width:20,textAlign:"center",flexShrink:0}}>{gd.done?"✓":"○"}</span>}
                     <div style={{flex:1,minWidth:0}}>
-                      {!isClient&&(editing&&editing.type)==="goal"&&editing.gi===gi?(
+                      {!isReadOnly&&(editing&&editing.type)==="goal"&&editing.gi===gi?(
                         <div className="inline-edit" onClick={e=>e.stopPropagation()}><input ref={editRef} value={editText} onChange={e=>setEditText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveEdit();if(e.key==="Escape")cancelEdit()}} className="inline-edit-input"/><button onClick={saveEdit} className="inline-edit-save">✓</button><button onClick={cancelEdit} className="inline-edit-cancel">✕</button></div>
-                      ):(<div className="goal-title-row"><div className="goal-title" style={{textDecoration:gd.done?"line-through":"none",color:gd.done?"#8d99ae":"#3d3730"}}>{getGoalTitle(activeDom.key,gi)}</div>{!isClient&&<button className="edit-icon" onClick={e=>{e.stopPropagation();startEdit("goal",gi,null,getGoalTitle(activeDom.key,gi))}}>✎</button>}</div>)}
-                      <div className="sub-prog-row"><div className="sub-prog-track"><div className="sub-prog-fill" style={{width:`${sp.pct}%`,background:gd.done?"#718355":activeDom.color}}/></div><span className="sub-prog-label">{sp.done}/{sp.total}</span></div>
+                      ):(<div className="goal-title-row"><div className="goal-title" style={{textDecoration:gd.done?"line-through":"none",color:gd.done?"var(--color-text-muted)":"var(--color-text-primary)"}}>{getGoalTitle(activeDom.key,gi)}</div>{!isReadOnly&&<button className="edit-icon" onClick={e=>{e.stopPropagation();startEdit("goal",gi,null,getGoalTitle(activeDom.key,gi))}}>✎</button>}</div>)}
+                      <div className="sub-prog-row"><div className="sub-prog-track"><div className="sub-prog-fill" style={{width:`${sp.pct}%`,background:gd.done?"var(--color-text-success)":activeDom.color}}/></div><span className="sub-prog-label">{sp.done}/{sp.total}</span></div>
                     </div><span className="chevron" style={{transform:isOpen?"rotate(180deg)":"rotate(0)"}}>▾</span>
                   </div>
                   {isOpen&&<div className="subs-wrap">
@@ -5099,15 +6359,15 @@ export default function App() {
                       return(<div key={si} className={`sub-item sub-typed ${isDone?"sub-done":""} ${isOverdue||isStale?"sub-overdue":""}`}>
                         <div className="sub-type-badge" style={{color:tt.color}} title={`${tt.label}${interval?" — every "+interval+" days":""}`}>{tt.icon}</div>
                         {type==="O"?(
-                          !isClient?<input type="checkbox" checked={st.done} onChange={()=>toggleSub(activeDom.key,gi,si)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:12}}>{st.done?"✓":"○"}</span>
+                          !isReadOnly?<input type="checkbox" checked={st.done} onChange={()=>toggleSub(activeDom.key,gi,si)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:"0.8889rem"}}>{st.done?"✓":"○"}</span>
                         ):(
-                          !isClient?<button onClick={()=>toggleSub(activeDom.key,gi,si)} className="sub-attend-btn" title="Mark as attended today" style={{background:age!==null&&age<7?"#e8f0df":"transparent",borderColor:age!==null&&age<7?"#718355":"#e5e1db"}}>✓</button>
-                          :<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:12}}>{age!==null&&age<7?"✓":"○"}</span>
+                          !isReadOnly?<button onClick={()=>toggleSub(activeDom.key,gi,si)} className="sub-attend-btn" title="Mark as attended today" style={{background:age!==null&&age<7?"var(--color-background-success)":"transparent",borderColor:age!==null&&age<7?"var(--color-text-success)":"var(--color-border-subtle)"}}>✓</button>
+                          :<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:"0.8889rem"}}>{age!==null&&age<7?"✓":"○"}</span>
                         )}
                         <div style={{flex:1,minWidth:0}}>
-                          {!isClient&&(editing&&editing.type)==="sub"&&editing.gi===gi&&editing.si===si?(<div className="inline-edit" onClick={e=>e.preventDefault()}><input ref={editRef} value={editText} onChange={e=>setEditText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveEdit();if(e.key==="Escape")cancelEdit()}} className="inline-edit-input"/><button onClick={e=>{e.preventDefault();saveEdit()}} className="inline-edit-save">✓</button><button onClick={e=>{e.preventDefault();cancelEdit()}} className="inline-edit-cancel">✕</button></div>
-                          ):(<span className="sub-text" style={{textDecoration:isDone?"line-through":"none",color:isDone?"#a09a92":"#3d3730"}}>{getSubText(activeDom.key,gi,si)}</span>)}
-                          {type!=="O"&&<div className="sub-recency" style={{color:age!==null?getRecencyColor(age,interval):"#c5c0b8"}}>{getRecencyLabel(age)}{type==="R"&&interval?` (every ${interval}d)`:""}
+                          {!isReadOnly&&(editing&&editing.type)==="sub"&&editing.gi===gi&&editing.si===si?(<div className="inline-edit" onClick={e=>e.preventDefault()}><input ref={editRef} value={editText} onChange={e=>setEditText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")saveEdit();if(e.key==="Escape")cancelEdit()}} className="inline-edit-input"/><button onClick={e=>{e.preventDefault();saveEdit()}} className="inline-edit-save">✓</button><button onClick={e=>{e.preventDefault();cancelEdit()}} className="inline-edit-cancel">✕</button></div>
+                          ):(<span className="sub-text" style={{textDecoration:isDone?"line-through":"none",color:isDone?"var(--color-text-muted)":"var(--color-text-primary)"}}>{getSubText(activeDom.key,gi,si)}</span>)}
+                          {type!=="O"&&<div className="sub-recency" style={{color:age!==null?getRecencyColor(age,interval):"var(--color-text-muted)"}}>{getRecencyLabel(age)}{type==="R"&&interval?` (every ${interval}d)`:""}
                           </div>}
                         </div>
                         {can("edit-subtask")&&<select value={type} onChange={e=>changeSubType(activeDom.key,gi,si,e.target.value)} className="sub-type-select" title="Change task type"><option value="O">☐ One-time</option><option value="R">↻ Recurring</option><option value="M">◉ Monitoring</option></select>}
@@ -5115,10 +6375,10 @@ export default function App() {
                         {can("remove-subtask")&&<button onClick={()=>removeSub(activeDom.key,gi,si)} className="remove-sub" title="Remove this sub-task">×</button>}
                       </div>)})}
                     {/* Show removed subs count with restore option */}
-                    {(()=>{const removedCount=goal.subs.filter((_,si)=>getSubState(activeDom.key,gi,si).removed).length;return removedCount>0&&!isClient?(<details className="removed-subs-details"><summary className="removed-subs-summary">{removedCount} removed sub-task{removedCount>1?"s":""}</summary><div className="removed-subs-list">{goal.subs.map((subDef,si)=>{const st=getSubState(activeDom.key,gi,si);if(!st.removed)return null;return(<div key={si} className="sub-item sub-removed"><span className="sub-text" style={{color:"#c5c0b8",flex:1}}>{getSubText(activeDom.key,gi,si)}</span><button onClick={()=>restoreSub(activeDom.key,gi,si)} className="edit-btn" style={{marginTop:0,fontSize:11,padding:"3px 10px"}}>Restore</button></div>)})}</div></details>):null})()}                    {gd.customSubs.map((cs,ci)=>(<label key={`c${ci}`} className="sub-item sub-custom" style={{background:cs.done?"#f5f9f0":"#faf9f7"}}>
-                      {!isClient?<input type="checkbox" checked={cs.done} onChange={()=>toggleCustomSub(activeDom.key,gi,ci)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:12}}>{cs.done?"✓":"○"}</span>}
-                      <span className="sub-text" style={{flex:1,textDecoration:cs.done?"line-through":"none",color:cs.done?"#a09a92":"#3d3730"}}>{cs.text}</span>
-                      {!isClient&&<button onClick={e=>{e.preventDefault();removeCustomSub(activeDom.key,gi,ci)}} className="remove-sub">×</button>}
+                    {(()=>{const removedCount=goal.subs.filter((_,si)=>getSubState(activeDom.key,gi,si).removed).length;return removedCount>0&&!isReadOnly?(<details className="removed-subs-details"><summary className="removed-subs-summary">{removedCount} removed sub-task{removedCount>1?"s":""}</summary><div className="removed-subs-list">{goal.subs.map((subDef,si)=>{const st=getSubState(activeDom.key,gi,si);if(!st.removed)return null;return(<div key={si} className="sub-item sub-removed"><span className="sub-text" style={{color:"var(--color-text-muted)",flex:1}}>{getSubText(activeDom.key,gi,si)}</span><button onClick={()=>restoreSub(activeDom.key,gi,si)} className="edit-btn" style={{marginTop:0,fontSize:"0.8148rem",padding:"3px 10px"}}>Restore</button></div>)})}</div></details>):null})()}                    {gd.customSubs.map((cs,ci)=>(<label key={`c${ci}`} className="sub-item sub-custom" style={{background:cs.done?"var(--color-background-success)":"var(--color-background-secondary)"}}>
+                      {!isReadOnly?<input type="checkbox" checked={cs.done} onChange={()=>toggleCustomSub(activeDom.key,gi,ci)} className="sub-check"/>:<span style={{width:16,textAlign:"center",flexShrink:0,fontSize:"0.8889rem"}}>{cs.done?"✓":"○"}</span>}
+                      <span className="sub-text" style={{flex:1,textDecoration:cs.done?"line-through":"none",color:cs.done?"var(--color-text-muted)":"var(--color-text-primary)"}}>{cs.text}</span>
+                      {!isReadOnly&&<button onClick={e=>{e.preventDefault();removeCustomSub(activeDom.key,gi,ci)}} className="remove-sub">×</button>}
                     </label>))}
                     {can("add-custom-sub")&&(addSubFor===gi?(<div className="add-sub-row"><input ref={subRef} value={newSubText} onChange={e=>setNewSubText(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addCustomSub(activeDom.key,gi,newSubText)} placeholder="Sub-task…" className="add-sub-input"/><button onClick={()=>addCustomSub(activeDom.key,gi,newSubText)} className="add-sub-btn">Add</button><button onClick={()=>{setAddSubFor(null);setNewSubText("")}} className="add-sub-cancel">Cancel</button></div>):(<button onClick={()=>{setAddSubFor(gi);setNewSubText("")}} className="add-sub-trigger">+ Add sub-task</button>))}
                   </div>}
@@ -5126,8 +6386,8 @@ export default function App() {
             </div>
 
             <div className="section"><h3 className="sec-title">Caregiver Notes</h3>
-              {!isClient&&editNotes?(<div><textarea ref={notesRef} value={notesDraft} onChange={e=>setNotesDraft(e.target.value)} className="notes-ta" rows={4}/><div className="notes-actions"><button onClick={()=>saveNotesData(activeDom.key,notesDraft)} className="save-btn">Save</button><button onClick={()=>setEditNotes(false)} className="cancel-btn">Cancel</button></div></div>
-              ):(<div><p className="notes-display">{activeData.notes||"No notes yet."}</p>{!isClient&&<button onClick={()=>{setNotesDraft(activeData.notes);setEditNotes(true)}} className="edit-btn">Edit Notes</button>}</div>)}
+              {!isReadOnly&&editNotes?(<div><textarea ref={notesRef} value={notesDraft} onChange={e=>setNotesDraft(e.target.value)} className="notes-ta" rows={4}/><div className="notes-actions"><button onClick={()=>saveNotesData(activeDom.key,notesDraft)} className="save-btn">Save</button><button onClick={()=>setEditNotes(false)} className="cancel-btn">Cancel</button></div></div>
+              ):(<div><p className="notes-display">{activeData.notes||"No notes yet."}</p>{!isReadOnly&&<button onClick={()=>{setNotesDraft(activeData.notes);setEditNotes(true)}} className="edit-btn">Edit Notes</button>}</div>)}
             </div>
             {activeData.lastUpdated&&<p className="last-up">Last updated: {activeData.lastUpdated}</p>}
 
@@ -5137,577 +6397,877 @@ export default function App() {
                   :(<button onClick={()=>nav("overview")} className="pn-btn pn-btn-next"><span className="pn-arrow">⊞</span><span className="pn-dir">Back to</span><span className="pn-name">Overview</span></button>)}
               </div>)})()}
           </>)})()}
+          </ViewErrorBoundary>
         </div>
       </main>
-      <nav className="hub-bar">
-        <button onClick={()=>navHub("today")} className={`hub-btn ${currentHub==="today"?"hub-active":""}`}><span className="hub-btn-icon">☀</span><span className="hub-btn-label">Today</span></button>
-        <button onClick={()=>navHub("care")} className={`hub-btn ${currentHub==="care"?"hub-active":""}`}><span className="hub-btn-icon">♥</span><span className="hub-btn-label">Care plan</span></button>
-        <button onClick={()=>navHub("records")} className={`hub-btn ${currentHub==="records"?"hub-active":""}`}><span className="hub-btn-icon">📁</span><span className="hub-btn-label">Records</span></button>
-        <button onClick={()=>navHub("team")} className={`hub-btn ${currentHub==="team"?"hub-active":""}`}><span className="hub-btn-icon">👥</span><span className="hub-btn-label">Team</span></button>
-      </nav>
+      {/* ═══ CARE HUB MENU ═══ Everything administrative or infrequent. Grouped
+          rather than listed flat, because the volume makes a flat list unusable.
+          Every item keeps the can() gate it had before the container changed. */}
+      {careMenuOpen&&(<>
+        <div className="overlay" onClick={()=>setCareMenuOpen(false)}/>
+        <aside className="care-menu" role="dialog" aria-modal="true" aria-label="Care Hub menu">
+          <div className="care-menu-head">
+            <span className="care-menu-title">Care Hub</span>
+            <button onClick={()=>setCareMenuOpen(false)} className="search-close" aria-label="Close menu">×</button>
+          </div>
+          <div className="care-menu-scroll">
+            {(()=>{
+              const go=(v)=>{setCareMenuOpen(false);setCurrentHub("care");nav(v)};
+              const groups=[
+                {label:"Care domains", items:[
+                  ...DOMAINS.filter(d=>can("view-domain",d.key)&&["physical","cognitive","wellness"].includes(d.key)).map(d=>({icon:d.icon,label:getDomLabel(d.key),view:d.key})),
+                  ...(can("view-legal")?[{icon:"⚖",label:getDomLabel("legal"),view:"legal"}]:[]),
+                  ...(can("view-financial")?[{icon:"◈",label:getDomLabel("financial"),view:"financial"}]:[]),
+                ]},
+                {label:"Administration", items:[
+                  ...(can("manage-circle")?[{icon:"👥",label:"Circle members & roles",view:"settings",sub:"Invite, assign roles, remove"}]:[]),
+                  ...(can("view-expenses")?[{icon:"$",label:"Daily expenses",view:"expenses"}]:[]),
+                  ...(can("export-data")?[{icon:"🛟",label:"Backups",view:"backups",sub:"Save and restore your records"}]:[]),
+                  ...(can("manage-sync")?[{icon:"📡",label:"Circle sync",view:"sync"}]:[]),
+                  {icon:"🅰",label:"Display settings",view:"display",sub:"Text size, contrast"},
+                  ...(can("manage-settings")?[{icon:"⚙",label:"All settings",view:"settings",sub:"Passcodes, state, export & import"}]:[]),
+                ]},
+                {label:"Monitoring", items:[
+                  {icon:"📊",label:"Escalation triggers",view:"triggers"},
+                  ...(can("view-tracking")?[{icon:"📈",label:"Longitudinal tracking",view:"tracking"}]:[]),
+                  ...(can("view-visit")?[{icon:"📋",label:"Visit prep",view:"visit"}]:[]),
+                ]},
+                {label:"Documentation", items:[
+                  {icon:"⚖",label:"POA decisions",view:"poa-decisions"},
+                  {icon:"📝",label:"Capacity observations",view:"capacity"},
+                  {icon:"📖",label:"Care plan binder",view:"binder"},
+                  ...(can("view-postdeath")?[{icon:"🕊",label:"End-of-life planning",view:"postdeath"}]:[]),
+                  ...(can("view-documents")?[{icon:"📄",label:"Medical records & documents",view:"documents",sub:"Import, upload, export"}]:[]),
+                  ...(can("view-shifts")?[{icon:"🗓",label:"Care schedule",view:"schedule"}]:[]),
+                ]},
+                {label:"Other", items:[
+                  {icon:"🗣",label:"Self-reports",view:"selfreport"},
+                  {icon:"?",label:"Help",view:"help",sub:"Feature guide"},
+                ]},
+              ];
+              return groups.filter(g=>g.items.length>0).map(g=>(
+                <div key={g.label} className="care-menu-group">
+                  <div className="care-menu-label">{g.label}</div>
+                  {g.items.map((it,i)=>(
+                    <button key={it.view+i} onClick={()=>go(it.view)} className="care-menu-item">
+                      <span className="care-menu-icon">{it.icon}</span>
+                      <span className="care-menu-body"><span className="care-menu-item-label">{it.label}</span>
+                        {it.sub&&<span className="care-menu-item-sub">{it.sub}</span>}</span>
+                      <span className="hub-card-arr">›</span>
+                    </button>))}
+                </div>));
+            })()}
+          </div>
+        </aside>
+      </>)}
     </div>
+    <nav className="hub-bar" aria-label="Primary">
+        <button onClick={()=>navRoot("today")} aria-current={currentHub==="today"?"page":undefined} className={`hub-btn ${currentHub==="today"?"hub-active":""}`}><span className="hub-btn-icon">☀</span><span className="hub-btn-label">Today</span></button>
+        <button onClick={()=>navRoot("meds")} aria-current={currentHub==="meds"?"page":undefined} className={`hub-btn ${currentHub==="meds"?"hub-active":""}`}><span className="hub-btn-icon">💊</span><span className="hub-btn-label">Meds</span></button>
+        <button onClick={()=>navRoot("log")} aria-current={currentHub==="log"?"page":undefined} className={`hub-btn ${currentHub==="log"?"hub-active":""}`}><span className="hub-btn-icon">✎</span><span className="hub-btn-label">Log</span></button>
+        <button onClick={()=>navRoot("sos")} aria-current={currentHub==="sos"?"page":undefined} className={`hub-btn hub-btn-sos ${currentHub==="sos"?"hub-active":""}`}><span className="hub-btn-icon">🚨</span><span className="hub-btn-label">SOS</span></button>
+      </nav>
   </>);
 }
 
 /* ═══════════════ CSS ═══════════════ */
 const CSS=`
-:root,*{color-scheme:light}
-/* Fonts (Libre Baskerville, Source Sans 3) are bundled locally via @fontsource — no external requests. */
-*{box-sizing:border-box;margin:0;color:inherit}body{margin:0;background:#f6f4f0;color:#3d3730}button{cursor:pointer;color:inherit;background:transparent;border:none}button:hover{opacity:.92}
-.auth-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(150deg,#faf9f7,#ede8df);font-family:'Libre Baskerville',Georgia,serif;padding:20px}
-.auth-card{background:#fff;border-radius:16px;padding:44px 36px;max-width:360px;width:100%;text-align:center;box-shadow:0 6px 30px rgba(0,0,0,.06)}
-.auth-title{font-size:24px;font-weight:700;color:#3d3730;margin:0 0 10px}.auth-sub{font-size:14px;color:#6b6560;line-height:1.6;margin:0 0 22px}.auth-note{font-size:12.5px;color:#a09a92;font-style:italic}
-.auth-input{width:100%;padding:13px 16px;font-size:20px;border-radius:10px;border:2px solid #d5d0c8;outline:none;text-align:center;letter-spacing:8px;font-family:monospace;margin-bottom:12px}
-.auth-input-err{border-color:#b56576!important}.auth-error{color:#b56576;font-size:13px;margin:0 0 8px}
-.auth-btn{width:100%;padding:13px;font-size:15px;font-weight:700;border-radius:10px;border:none;background:#6d6875;color:#fff;font-family:'Libre Baskerville',serif}
-.auth-footer{font-size:11.5px;color:#b5b0a8;margin-top:14px}
-.recovery-box{background:#f6f4f0;border:1px solid #e4e0d8;border-radius:10px;padding:16px;margin-top:16px}
-.save-pill{position:fixed;bottom:16px;left:16px;z-index:900;font-size:12px;font-weight:600;padding:7px 13px;border-radius:20px;box-shadow:0 2px 10px rgba(0,0,0,.15);max-width:300px}
-.save-saving{background:#eef4f8;color:#2c4654;border:1px solid #cfe0ea}
-.save-error{background:#fbeaea;color:#8a2b2b;border:1px solid #e3b8b8}
-.recovery-label{font-size:13px;font-weight:700;color:#3d3730;margin:0 0 10px;text-align:left}
-.recovery-banner{background:#e8f0df;border:1px solid #a9c08f;border-radius:8px;padding:10px 12px;font-size:12.5px;color:#4a5d3a;margin-bottom:12px;line-height:1.4}
-.onb-card{max-width:400px}
-.onb-emoji{font-size:46px;margin-bottom:14px;line-height:1}
-.onb-body{font-size:15px;color:#5a554e;line-height:1.55;margin:0 0 22px;text-align:left}
+:root{color-scheme:light dark}
+/* Fonts (Atkinson Hyperlegible, Libre Baskerville, Source Sans 3) are bundled locally via @fontsource — no external requests. */
+/* ═══ Design tokens (v3) ═══
+   Semantic names are the contract; raw values live only here. Dark mode
+   re-points the same names, so components never need a second ruleset. */
+:root{
+  /* Type */
+  --font-ui:'Atkinson Hyperlegible','Source Sans 3',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --font-document:'Libre Baskerville',Georgia,'Times New Roman',serif;
+
+  /* Sizing — Standard tier is 18px. Large/Larger scale via --ui-scale-pct. */
+  --ui-scale-pct:100;
+  --font-size-base:calc(18px * var(--ui-scale-pct) / 100);
+  --tap-target-min:calc(56px * var(--ui-scale-pct) / 100);
+  /* The bottom nav is fixed, so the column above it has to reserve its height.
+     Derived from the tap target so it grows with the Large/Larger text tiers. */
+  --nav-height:calc(var(--tap-target-min) + 14px + env(safe-area-inset-bottom, 0px));
+
+  /* Spacing scale */
+  --space-xs:8px;--space-sm:16px;--space-md:24px;--space-lg:32px;--space-xl:48px;
+
+  /* Shape */
+  --radius-button:8px;--radius-card:12px;--radius-input:8px;
+  --border-input:2px;
+
+  /* Neutrals */
+  --color-background:#F9FAFB;
+  --color-background-secondary:#F3F4F6;
+  --color-surface:#FFFFFF;
+  --color-surface-raised:#FFFFFF;
+  --color-text-primary:#111827;
+  --color-text-secondary:#4B5563;
+  --color-text-muted:#6B7280;
+  --color-border:#D1D5DB;
+  --color-border-subtle:#E5E7EB;
+
+  /* Action */
+  --color-action-primary:#0F4C81;
+  --color-action-primary-hover:#0C3D68;
+  --color-action-primary-text:#FFFFFF;
+  --color-text-on-fill:#FFFFFF;
+  --color-focus-ring:#3B82F6;
+
+  /* Status — background/text pairs, each pair AA or better */
+  --color-background-success:#E7F5EF;--color-text-success:#046C4E;--color-border-success:#8FCFB6;
+  --color-background-warning:#FDF1E3;--color-text-warning:#B45309;--color-border-warning:#EBC08A;
+  --color-background-danger:#FCEAEA;--color-text-danger:#C81E1E;--color-border-danger:#EFA9A9;
+  /* Danger *fill* is its own token, not the danger text colour. The status text
+     colours invert to light tints in dark mode so they stay legible as text —
+     correct for text, wrong for a fill whose whole job is to look urgent. This
+     one stays saturated in both themes, so its label stays white in both. */
+  --color-fill-danger:#C81E1E;--color-text-on-fill-danger:#FFFFFF;
+  --color-background-info:#E8F0F7;--color-text-info:#0F4C81;--color-border-info:#A9C6DF;
+
+  /* Elevation */
+  --shadow-card:0 1px 3px rgba(17,24,39,.08),0 1px 2px rgba(17,24,39,.04);
+  --shadow-modal:0 16px 48px rgba(17,24,39,.18);
+}
+
+/* Dark mode — authored fresh against the cool light palette above, not
+   inverted from the old warm theme. Surfaces step up as they come forward. */
+@media(prefers-color-scheme:dark){:root{
+  --color-background:#0D1117;
+  --color-background-secondary:#1C222B;
+  --color-surface:#161B22;
+  --color-surface-raised:#212936;
+  --color-text-primary:#F3F4F6;
+  --color-text-secondary:#B6BEC9;
+  --color-text-muted:#8B95A3;
+  --color-border:#364152;
+  --color-border-subtle:#262E3A;
+
+  --color-action-primary:#5CA0DA;
+  --color-action-primary-hover:#7CB6E6;
+  --color-action-primary-text:#0B1622;
+  --color-text-on-fill:#0B1622;
+  --color-focus-ring:#7CB6E6;
+
+  --color-background-success:#0D2A21;--color-text-success:#5FD3A8;--color-border-success:#1F5F4A;
+  --color-background-warning:#33230D;--color-text-warning:#F0B45E;--color-border-warning:#6B4A18;
+  --color-background-danger:#3A1517;--color-text-danger:#F58A8A;--color-border-danger:#7A2B2E;
+  /* Brighter than the light-mode fill so it still reads as alarming against a
+     near-black ground rather than sinking into it. White label holds 4.8:1. */
+  --color-fill-danger:#DC2626;--color-text-on-fill-danger:#FFFFFF;
+  --color-background-info:#12283C;--color-text-info:#7CB6E6;--color-border-info:#2A5375;
+
+  --shadow-card:0 1px 3px rgba(0,0,0,.5),0 1px 2px rgba(0,0,0,.35);
+  --shadow-modal:0 16px 48px rgba(0,0,0,.6);
+}}
+
+/* Focus is never removed, only restyled — keyboard and switch users depend on it. */
+:where(button,a,input,select,textarea,[tabindex]):focus-visible{
+  outline:3px solid var(--color-focus-ring);outline-offset:2px;border-radius:var(--radius-button);
+}
+/* Every interactive control clears the tap-target floor. Height is a floor,
+   never a cap, so text-size settings can grow it but not shrink it. */
+button,.cc-btn,.mini-btn,.save-btn,.cancel-btn,.edit-btn,.hub-btn,.sr-mood-btn{
+  min-height:var(--tap-target-min);
+}
+/* Opt-outs: dense inline affordances inside rows, where a 56px box would
+   break the layout it sits in. These stay reachable via their parent row. */
+.edit-icon,.remove-sub,.photo-remove,.nudge-x,.search-close,.cal-nav-btn,.sub-type-select,.med-cell button{
+  min-height:0;
+}
+
+*{box-sizing:border-box;margin:0;color:inherit}
+html{font-size:var(--font-size-base)}
+body{margin:0;background:var(--color-background);color:var(--color-text-primary);font-family:var(--font-ui)}
+button{cursor:pointer;color:inherit;background:transparent;border:none;font-family:inherit}button:hover{opacity:.92}
+.auth-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(150deg,var(--color-background),var(--color-background-secondary));font-family:var(--font-document);padding:20px}
+.auth-card{background:var(--color-surface);border-radius:16px;padding:44px 36px;max-width:min(100%,20.0rem);width:100%;text-align:center;box-shadow:0 6px 30px rgba(0,0,0,.06)}
+.auth-title{font-size:1.7778rem;font-weight:700;color:var(--color-text-primary);margin:0 0 10px}.auth-sub{font-size:1.037rem;color:var(--color-text-secondary);line-height:1.6;margin:0 0 22px}.auth-note{font-size:0.9259rem;color:var(--color-text-muted);font-style:italic}
+.auth-input{width:100%;padding:13px 16px;font-size:1.4814rem;border-radius:10px;border:2px solid var(--color-border);outline:none;text-align:center;letter-spacing:8px;font-family:monospace;margin-bottom:12px}
+.auth-input-err{border-color:var(--color-text-danger)!important}.auth-error{color:var(--color-text-danger);font-size:0.963rem;margin:0 0 8px}
+.auth-btn{width:100%;padding:13px;font-size:1.1111rem;font-weight:700;border-radius:10px;border:none;background:var(--color-action-primary);color:var(--color-text-on-fill);font-family:var(--font-ui)}
+.auth-footer{font-size:0.8519rem;color:var(--color-text-muted);margin-top:14px}
+.recovery-box{background:var(--color-background);border:1px solid var(--color-border-subtle);border-radius:10px;padding:16px;margin-top:16px}
+.save-pill{position:fixed;bottom:16px;left:16px;z-index:900;font-size:0.8889rem;font-weight:600;padding:7px 13px;border-radius:20px;box-shadow:0 2px 10px rgba(0,0,0,.15);max-width:min(100%,16.67rem)}
+.save-saving{background:var(--color-background-info);color:var(--color-text-info);border:1px solid var(--color-border-info)}
+.save-error{background:var(--color-background-danger);color:var(--color-text-danger);border:1px solid var(--color-border-danger)}
+.recovery-label{font-size:0.963rem;font-weight:700;color:var(--color-text-primary);margin:0 0 10px;text-align:left}
+.recovery-banner{background:var(--color-background-success);border:1px solid var(--color-border-success);border-radius:8px;padding:10px 12px;font-size:0.9259rem;color:var(--color-text-success);margin-bottom:12px;line-height:1.4}
+.onb-card{max-width:min(100%,22.22rem)}
+.onb-emoji{font-size:3.4074rem;margin-bottom:14px;line-height:1}
+.onb-body{font-size:1.1111rem;color:var(--color-text-secondary);line-height:1.55;margin:0 0 22px;text-align:left}
 .onb-dots{display:flex;gap:8px;justify-content:center;margin-top:20px}
-.onb-dot{width:8px;height:8px;border-radius:50%;background:#dcd7cf;transition:all .2s}
-.onb-dot-on{background:#457b9d;transform:scale(1.25)}
-.onb-dot-done{background:#a9c08f}
-.onb-install{text-align:left;background:#f6f4f0;border:1px solid #e4e0d8;border-radius:10px;padding:16px;margin-bottom:18px}
-.onb-step{display:flex;align-items:flex-start;gap:10px;font-size:13.5px;color:#3d3730;line-height:1.45;margin:10px 0}
-.onb-num{flex-shrink:0;width:22px;height:22px;border-radius:50%;background:#457b9d;color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center}
-.onb-share{display:flex;align-items:center;gap:10px;justify-content:center;color:#457b9d;background:#eef4f8;border-radius:8px;padding:10px;margin:6px 0}
-.onb-share-label{font-size:12px;color:#6b6560;font-style:italic}
+.onb-dot{width:8px;height:8px;border-radius:50%;background:var(--color-border);transition:all .2s}
+.onb-dot-on{background:var(--color-action-primary);transform:scale(1.25)}
+.onb-dot-done{background:var(--color-border-success)}
+.onb-install{text-align:left;background:var(--color-background);border:1px solid var(--color-border-subtle);border-radius:10px;padding:16px;margin-bottom:18px}
+.onb-step{display:flex;align-items:flex-start;gap:10px;font-size:1rem;color:var(--color-text-primary);line-height:1.45;margin:10px 0}
+.onb-num{flex-shrink:0;width:22px;height:22px;border-radius:50%;background:var(--color-action-primary);color:var(--color-text-on-fill);font-size:0.8889rem;font-weight:700;display:flex;align-items:center;justify-content:center}
+.onb-share{display:flex;align-items:center;gap:10px;justify-content:center;color:var(--color-action-primary);background:var(--color-background-info);border-radius:8px;padding:10px;margin:6px 0}
+.onb-share-label{font-size:0.8889rem;color:var(--color-text-secondary);font-style:italic}
 .onb-nav{display:flex;flex-direction:column;gap:4px}
-.onb-field-label{display:block;text-align:left;font-size:12.5px;font-weight:600;color:#3d3730;margin-bottom:5px}
-.onb-hint-inline{font-weight:400;color:#9a948c}
-.onb-input{font-size:17px;padding:13px 14px}
-.onb-optional{text-align:left;font-size:13px;color:#6b6560}
-.onb-optional summary{cursor:pointer;padding:6px 0;color:#457b9d}
-.text-btn{background:none;border:none;color:#457b9d;font-size:12.5px;cursor:pointer;margin-top:10px;text-decoration:underline;font-family:inherit}
-.nudge-banner{display:flex;align-items:flex-start;gap:10px;padding:11px 14px;font-size:13px;line-height:1.4;border-bottom:1px solid rgba(0,0,0,.08)}
-.nudge-install{background:#eef4f7;color:#2c4654}
-.nudge-backup{background:#fbf2e6;color:#6b4d28}
-.nudge-risk{background:#fbeaea;color:#7a2e2e}
+.onb-field-label{display:block;text-align:left;font-size:0.9259rem;font-weight:600;color:var(--color-text-primary);margin-bottom:5px}
+.onb-hint-inline{font-weight:400;color:var(--color-text-muted)}
+.onb-input{font-size:1.2592rem;padding:13px 14px}
+.onb-optional{text-align:left;font-size:0.963rem;color:var(--color-text-secondary)}
+.onb-optional summary{cursor:pointer;padding:6px 0;color:var(--color-action-primary)}
+.text-btn{background:none;border:none;color:var(--color-action-primary);font-size:0.9259rem;cursor:pointer;margin-top:10px;text-decoration:underline;font-family:inherit}
+.nudge-banner{display:flex;align-items:flex-start;gap:10px;padding:11px 14px;font-size:0.963rem;line-height:1.4;border-bottom:1px solid rgba(0,0,0,.08)}
+.nudge-install{background:var(--color-background-info);color:var(--color-text-info)}
+.nudge-backup{background:var(--color-background-warning);color:var(--color-text-warning)}
+.nudge-risk{background:var(--color-background-danger);color:var(--color-text-danger)}
 .integrity-row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
-.integrity-label{font-size:13px;font-weight:600;color:#3d3730}
-.integrity-val{font-size:12.5px;font-weight:600}
-.integrity-val.ok{color:#5e8a4e}
-.integrity-val.bad{color:#b04434}
-.integrity-val.muted{color:#9a948c}
-.recovery-code-box{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:18px;font-weight:700;letter-spacing:1px;text-align:center;background:#f3efe8;border:2px dashed #c9bfa9;border-radius:10px;padding:16px 10px;margin-top:10px;color:#3d3730;word-break:break-all}
-.mini-btn{font-size:12.5px;font-weight:600;padding:6px 12px;border:1px solid #d8d2c6;border-radius:8px;background:#fff;color:#5a544c;cursor:pointer}
-.mini-btn:hover{background:#f3efe8}.mini-btn:disabled{opacity:.5;cursor:not-allowed}
-.link-btn{color:#3d7d9c;cursor:pointer;text-decoration:underline}
-.confirm-check{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px;color:#5a544c;cursor:pointer}.confirm-check input{width:16px;height:16px}
-.nudge-icon{font-size:23px;flex-shrink:0;line-height:1.2}
-.nudge-body{flex:1}
-.nudge-x{background:none;border:none;font-size:20px;line-height:1;cursor:pointer;color:inherit;opacity:.55;padding:0 2px;flex-shrink:0}
+.integrity-label{font-size:0.963rem;font-weight:600;color:var(--color-text-primary)}
+.integrity-val{font-size:0.9259rem;font-weight:600}
+.integrity-val.ok{color:var(--color-text-success)}
+.integrity-val.bad{color:var(--color-text-danger)}
+.integrity-val.muted{color:var(--color-text-muted)}
+.recovery-code-box{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:1.3333rem;font-weight:700;letter-spacing:1px;text-align:center;background:var(--color-background-secondary);border:2px dashed var(--color-border);border-radius:10px;padding:16px 10px;margin-top:10px;color:var(--color-text-primary);word-break:break-all}
+.mini-btn{font-size:0.9259rem;font-weight:600;padding:6px 12px;border:1px solid var(--color-border);border-radius:8px;background:var(--color-surface);color:var(--color-text-secondary);cursor:pointer}
+.mini-btn:hover{background:var(--color-background-secondary)}.mini-btn:disabled{opacity:.5;cursor:not-allowed}
+.link-btn{color:var(--color-action-primary);cursor:pointer;text-decoration:underline}
+.confirm-check{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:0.963rem;color:var(--color-text-secondary);cursor:pointer}.confirm-check input{width:16px;height:16px}
+.nudge-icon{font-size:1.7037rem;flex-shrink:0;line-height:1.2}
+.nudge-body{flex:1;min-width:0}
+.nudge-x{background:none;border:none;font-size:1.4814rem;line-height:1;cursor:pointer;color:inherit;opacity:.55;padding:0 2px;flex-shrink:0}
 .nudge-x:hover{opacity:1}
-.nudge-act{background:#bc6c25;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;flex-shrink:0;font-family:inherit}
-.backup-status{display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:8px;margin-top:10px;font-size:13px}
-.backup-active{background:#eef5ee;border:1px solid #c2d6bd}
-.backup-paused{background:#fbf2e6;border:1px solid #e6d3b3}
-.backup-status-body{flex:1;color:#3d3730;line-height:1.4}
-.backup-status-body code{background:rgba(0,0,0,.06);padding:1px 5px;border-radius:4px;font-size:12px}
-.backup-when{display:block;font-size:11px;color:#8a847c;margin-top:2px}
+.nudge-act{background:var(--color-text-warning);color:var(--color-text-on-fill);border:none;border-radius:6px;padding:6px 12px;font-size:0.8889rem;font-weight:600;cursor:pointer;flex-shrink:0;font-family:inherit}
+.backup-status{display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:8px;margin-top:10px;font-size:0.963rem}
+.backup-active{background:var(--color-background-success);border:1px solid var(--color-border-success)}
+.backup-paused{background:var(--color-background-warning);border:1px solid var(--color-border-warning)}
+.backup-status-body{flex:1;color:var(--color-text-primary);line-height:1.4}
+.backup-status-body code{background:rgba(0,0,0,.06);padding:1px 5px;border-radius:4px;font-size:0.8889rem}
+.backup-when{display:block;font-size:0.8148rem;color:var(--color-text-muted);margin-top:2px}
 .backup-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
-.backup-active .backup-dot{background:#5e8a4e;box-shadow:0 0 0 3px rgba(94,138,78,.2)}
-.backup-paused .backup-dot{background:#bc6c25;box-shadow:0 0 0 3px rgba(188,108,37,.2)}
-.backup-btn{background:#bc6c25;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;flex-shrink:0;font-family:inherit}
-.backup-link{background:none;border:none;color:#8a847c;font-size:12px;cursor:pointer;text-decoration:underline;flex-shrink:0;font-family:inherit}
-.shell{display:flex;min-height:100vh;font-family:'Source Sans 3',sans-serif;color:#3d3730;background:#f6f4f0;color-scheme:light dark}
+.backup-active .backup-dot{background:var(--color-text-success);box-shadow:0 0 0 3px rgba(94,138,78,.2)}
+.backup-paused .backup-dot{background:var(--color-text-warning);box-shadow:0 0 0 3px rgba(188,108,37,.2)}
+.backup-btn{background:var(--color-text-warning);color:var(--color-text-on-fill);border:none;border-radius:6px;padding:6px 14px;font-size:0.8889rem;font-weight:600;cursor:pointer;flex-shrink:0;font-family:inherit}
+.backup-link{background:none;border:none;color:var(--color-text-muted);font-size:0.8889rem;cursor:pointer;text-decoration:underline;flex-shrink:0;font-family:inherit}
+.shell{display:flex;min-height:100vh;font-family:var(--font-ui);color:var(--color-text-primary);background:var(--color-background);color-scheme:light dark}
 button,input,select,textarea{color:inherit;font-family:inherit}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.25);z-index:90}
-.client-badge{font-size:11px;font-weight:600;background:#fdf0d5;color:#bc6c25;padding:2px 8px;border-radius:8px;white-space:nowrap}
+.client-badge{font-size:0.8148rem;font-weight:600;background:var(--color-background-warning);color:var(--color-text-warning);padding:2px 8px;border-radius:8px;white-space:nowrap}
 
 /* universal search */
-.search-btn{background:none;border:none;font-size:16px;cursor:pointer;padding:4px 8px;color:#8d99ae}
+.search-btn{background:none;border:none;font-size:1.1852rem;cursor:pointer;padding:4px 8px;color:var(--color-text-muted)}
 .search-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:100;display:flex;align-items:flex-start;justify-content:center;padding:60px 16px 16px}
-.search-modal{background:#fff;border-radius:16px;width:100%;max-width:520px;max-height:70vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 16px 48px rgba(0,0,0,.2)}
-.search-input-row{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid #e8e4de}
-.search-icon{font-size:23px;color:#8d99ae}
-.search-input{flex:1;border:none;outline:none;font-size:15px;font-family:inherit;color:#3d3730;background:transparent}
-.search-input::placeholder{color:#c5c0b8}
-.search-close{background:none;border:none;font-size:22px;color:#8d99ae;cursor:pointer;padding:0 4px}
+.search-modal{background:var(--color-surface);border-radius:16px;width:100%;max-width:min(100%,28.89rem);max-height:70vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 16px 48px rgba(0,0,0,.2)}
+.search-input-row{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--color-border-subtle)}
+.search-icon{font-size:1.7037rem;color:var(--color-text-muted)}
+.search-input{flex:1;border:none;outline:none;font-size:1.1111rem;font-family:inherit;color:var(--color-text-primary);background:transparent}
+.search-input::placeholder{color:var(--color-text-muted)}
+.search-close{background:none;border:none;font-size:1.6297rem;color:var(--color-text-muted);cursor:pointer;padding:0 4px}
 .search-results{overflow-y:auto;padding:8px 0}
-.search-cat{font-size:10px;font-weight:600;color:#8d99ae;text-transform:uppercase;letter-spacing:.4px;padding:10px 16px 4px}
-.search-result{display:flex;align-items:center;gap:10px;width:100%;padding:10px 16px;border:none;background:none;cursor:pointer;text-align:left;font-family:inherit;color:#3d3730;transition:background .1s}
-.search-result:hover{background:#f6f4f0}
-.search-result-icon{font-size:21px;width:31px;text-align:center;flex-shrink:0}
+.search-cat{font-size:0.7408rem;font-weight:600;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.4px;padding:10px 16px 4px}
+.search-result{display:flex;align-items:center;gap:10px;width:100%;padding:10px 16px;border:none;background:none;cursor:pointer;text-align:left;font-family:inherit;color:var(--color-text-primary);transition:background .1s}
+.search-result:hover{background:var(--color-background)}
+.search-result-icon{font-size:1.5556rem;width:31px;text-align:center;flex-shrink:0}
 .search-result-body{flex:1;min-width:0;display:flex;flex-direction:column}
-.search-result-text{font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.search-result-sub{font-size:11px;color:#8d99ae;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.search-result-date{font-size:10px;color:#a09a92;flex-shrink:0;margin-left:auto}
-.search-result-arrow{color:#c5c0b8;font-size:16px;flex-shrink:0;margin-left:4px}
-.search-empty{padding:24px 16px;text-align:center;color:#8d99ae;font-size:13px}
-.search-hint{padding:24px 16px;text-align:center;color:#c5c0b8;font-size:13px}
+.search-result-text{font-size:0.963rem;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.search-result-sub{font-size:0.8148rem;color:var(--color-text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.search-result-date{font-size:0.7408rem;color:var(--color-text-muted);flex-shrink:0;margin-left:auto}
+.search-result-arrow{color:var(--color-text-muted);font-size:1.1852rem;flex-shrink:0;margin-left:4px}
+.search-empty{padding:24px 16px;text-align:center;color:var(--color-text-muted);font-size:0.963rem}
+.search-hint{padding:24px 16px;text-align:center;color:var(--color-text-muted);font-size:0.963rem}
 .content{flex:1;padding:28px 32px 40px;max-width:960px}
 
 /* hub navigation v2 */
-.main-area-v2{flex:1;min-height:100vh;display:flex;flex-direction:column}
-.content-v2{padding:16px 20px 100px;max-width:960px;margin:0 auto;width:100%;flex:1;color:#3d3730;background:#f6f4f0}
-.hub-topbar{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid #e8e4de;background:#fff;position:sticky;top:0;z-index:10;color:#3d3730}
-.hub-back{background:none;border:none;cursor:pointer;font-size:18px;color:#457b9d;padding:4px 8px 4px 0;display:flex;align-items:center}
-.hub-topbar-text{flex:1}
-.hub-topbar-title{font-size:16px;font-weight:700;font-family:'Libre Baskerville',serif;color:#3d3730}
-.hub-topbar-crumb{font-size:11px;color:#8d99ae;display:block}
-.hub-bar{display:flex;position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid #e8e4de;z-index:20;padding-bottom:env(safe-area-inset-bottom)}
-.hub-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 4px 6px;border:none;background:transparent;cursor:pointer;color:#a09a92;font-size:10px;transition:color .12s}
-.hub-btn-icon{font-size:26px;line-height:1;color:inherit}
+/* padding-bottom, not margin: with border-box the 100vh floor then describes the
+   area above the nav. Without it .content-v2 (flex:1) stretches past the
+   viewport and its box sits under the fixed nav — at a 1920px-wide window the
+   centred 960px column lands exactly over the middle two nav buttons, leaving
+   only z-index paint order to decide whether taps reach them. Firefox resolved
+   that the other way and the middle two buttons did nothing. */
+.main-area-v2{flex:1;min-width:0;min-height:100vh;display:flex;flex-direction:column;padding-bottom:var(--nav-height)}
+.content-v2{padding:16px 20px var(--space-lg);max-width:min(100%,54rem);margin:0 auto;width:100%;flex:1;color:var(--color-text-primary);background:var(--color-background)}
+.hub-topbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--color-border-subtle);background:var(--color-surface);position:sticky;top:0;z-index:10;color:var(--color-text-primary)}
+.hub-back{background:none;border:none;cursor:pointer;font-size:1.3333rem;color:var(--color-action-primary);padding:4px 8px 4px 0;display:flex;align-items:center}
+.hub-topbar-text{flex:1 1 8rem;min-width:0}
+.hub-topbar-title{overflow-wrap:anywhere;font-size:1.1852rem;font-weight:700;font-family:var(--font-ui);color:var(--color-text-primary)}
+.hub-topbar-crumb{font-size:0.8148rem;color:var(--color-text-muted);display:block}
+.hub-bar{display:flex;position:fixed;bottom:0;left:0;right:0;background:var(--color-surface);border-top:1px solid var(--color-border-subtle);z-index:80;isolation:isolate;padding-bottom:env(safe-area-inset-bottom)}
+.hub-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 4px 6px;border:none;background:transparent;cursor:pointer;color:var(--color-text-muted);font-size:0.7408rem;transition:color .12s}
+.hub-btn-icon{font-size:1.9259rem;line-height:1;color:inherit}
 .hub-btn-label{font-weight:600;color:inherit}
-.hub-active{color:#457b9d}
-.hub-welcome{font-family:'Libre Baskerville',serif;font-size:20px;font-weight:700;color:#3d3730;padding:8px 0 2px}
-.hub-client{font-size:13px;color:#6b6560;margin:0 0 16px}
-.hub-section-label{font-size:11px;font-weight:600;color:#8d99ae;text-transform:uppercase;letter-spacing:.4px;padding:14px 0 6px}
-.hub-card{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:12px;border:1px solid #e8e4de;margin-bottom:8px;cursor:pointer;background:#fff;transition:all .12s}
-.hub-card:hover{border-color:#457b9d;background:#fafcfe}
-.hub-card-urgent{border-left:3px solid #b56576}
+.hub-active{color:var(--color-action-primary)}
+.hub-welcome{font-family:var(--font-ui);font-size:1.4814rem;font-weight:700;color:var(--color-text-primary);padding:8px 0 2px}
+.hub-client{font-size:0.963rem;color:var(--color-text-secondary);margin:0 0 16px}
+.hub-section-label{font-size:0.8148rem;font-weight:600;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.4px;padding:14px 0 6px}
+.hub-card{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:12px;border:1px solid var(--color-border-subtle);margin-bottom:8px;cursor:pointer;background:var(--color-surface);transition:all .12s}
+.hub-card:hover{border-color:var(--color-action-primary);background:var(--color-background-info)}
+.hub-card-urgent{border-left:3px solid var(--color-text-danger)}
 .hub-card-ok{cursor:default}
-.hub-card-ok:hover{border-color:#e8e4de;background:#fff}
-.hub-card-icon{width:47px;height:47px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:21px;flex-shrink:0}
+.hub-card-ok:hover{border-color:var(--color-border-subtle);background:var(--color-surface)}
+.hub-card-icon{width:47px;height:47px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.5556rem;flex-shrink:0}
 .hub-card-body{flex:1;min-width:0}
-.hub-card-title{font-size:13.5px;font-weight:600;color:#3d3730}
-.hub-card-sub{font-size:11.5px;color:#8d99ae;margin-top:1px}
-.hub-card-arr{color:#c5c0b8;font-size:18px;flex-shrink:0;font-weight:300}
-.pill{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:600;margin-left:4px}
-.pill-r{background:#fde2e8;color:#8b0000}
-.pill-a{background:#fdf0d5;color:#8b6914}
-.pill-g{background:#e8f0df;color:#3d5a20}
-.pill-b{background:#eef4f8;color:#457b9d}
+.hub-card-title{font-size:1rem;font-weight:600;color:var(--color-text-primary)}
+.hub-card-sub{font-size:0.8519rem;color:var(--color-text-muted);margin-top:1px}
+.hub-card-arr{color:var(--color-text-muted);font-size:1.3333rem;flex-shrink:0;font-weight:300}
+.pill{display:inline-block;padding:1px 7px;border-radius:10px;font-size:0.7408rem;font-weight:600;margin-left:4px}
+.pill-r{background:var(--color-background-danger);color:var(--color-text-danger)}
+.pill-a{background:var(--color-background-warning);color:var(--color-text-warning)}
+.pill-g{background:var(--color-background-success);color:var(--color-text-success)}
+.pill-b{background:var(--color-background-info);color:var(--color-action-primary)}
 
 /* emergency info card */
-.ecard{border:2px solid #b56576;border-radius:12px;padding:20px;background:#fff;font-size:13px;line-height:1.6}
-.ecard-header{font-size:16px;font-weight:700;color:#b56576;text-align:center;border-bottom:2px solid #b56576;padding-bottom:10px;margin-bottom:12px;letter-spacing:.5px}
+.ecard{font-family:var(--font-document);border:2px solid var(--color-text-danger);border-radius:12px;padding:20px;background:var(--color-surface);font-size:0.963rem;line-height:1.6}
+.ecard-header{font-size:1.1852rem;font-weight:700;color:var(--color-text-danger);text-align:center;border-bottom:2px solid var(--color-text-danger);padding-bottom:10px;margin-bottom:12px;letter-spacing:.5px}
 .ecard-row{display:flex;gap:8px;padding:4px 0}
-.ecard-label{font-weight:700;min-width:70px;color:#3d3730}
-.ecard-section{font-size:11px;font-weight:700;color:#457b9d;text-transform:uppercase;letter-spacing:.5px;margin-top:12px;border-top:1px solid #e8e4de;padding-top:8px}
-.ecard-body{color:#3d3730;padding:4px 0}
+.ecard-label{font-weight:700;min-width:70px;color:var(--color-text-primary)}
+.ecard-section{font-size:0.8148rem;font-weight:700;color:var(--color-action-primary);text-transform:uppercase;letter-spacing:.5px;margin-top:12px;border-top:1px solid var(--color-border-subtle);padding-top:8px}
+.ecard-body{color:var(--color-text-primary);padding:4px 0}
 
 /* pattern charts */
 .pattern-bars{display:flex;flex-direction:column;gap:6px}
 .pattern-bar-row{display:flex;align-items:center;gap:8px}
-.pattern-bar-label{font-size:11px;color:#6b6560;min-width:80px;text-align:right}
-.pattern-bar-track{flex:1;height:18px;background:#f6f4f0;border-radius:4px;overflow:hidden}
+.pattern-bar-label{font-size:0.8148rem;color:var(--color-text-secondary);min-width:80px;text-align:right}
+.pattern-bar-track{flex:1;height:18px;background:var(--color-background);border-radius:4px;overflow:hidden}
 .pattern-bar-fill{height:100%;border-radius:4px;transition:width .3s}
-.pattern-bar-val{font-size:11px;font-weight:600;color:#3d3730;min-width:20px}
+.pattern-bar-val{font-size:0.8148rem;font-weight:600;color:var(--color-text-primary);min-width:20px}
 .hour-chart{display:flex;align-items:flex-end;gap:2px;height:100px;padding:8px 0}
 .hour-col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%}
-.hour-bar{width:100%;background:#b56576;border-radius:2px 2px 0 0;min-height:1px;transition:height .3s}
-.hour-label{font-size:9px;color:#8d99ae;margin-top:4px}
+/* .hour-bar and .cal-dot are marks, not filled labels — they need to stand out
+   *against* the surface, so they keep the adaptive text-danger colour, which
+   lightens in dark mode. Only fills that carry a label use --color-fill-danger. */
+.hour-bar{width:100%;background:var(--color-text-danger);border-radius:2px 2px 0 0;min-height:1px;transition:height .3s}
+.hour-label{font-size:0.6667rem;color:var(--color-text-muted);margin-top:4px}
 
 /* strategic grid */
 .strat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;margin-bottom:16px}
-.strat-card{padding:12px;border-radius:12px;border:1px solid #e8e4de;border-top:3px solid;background:#fff;text-align:center;cursor:pointer;transition:all .12s}
-.strat-card:hover{border-color:#457b9d}
-.strat-icon{font-size:29px;margin-bottom:4px}
-.strat-pct{font-size:22px;font-weight:700}
-.strat-label{font-size:11px;font-weight:600;color:#6b6560}
-.strat-pulse{font-size:10px;margin-top:2px}
+.strat-card{padding:12px;border-radius:12px;border:1px solid var(--color-border-subtle);border-top:3px solid;background:var(--color-surface);text-align:center;cursor:pointer;transition:all .12s}
+.strat-card:hover{border-color:var(--color-action-primary)}
+.strat-icon{font-size:2.1481rem;margin-bottom:4px}
+.strat-pct{font-size:1.6297rem;font-weight:700}
+.strat-label{font-size:0.8148rem;font-weight:600;color:var(--color-text-secondary)}
+.strat-pulse{font-size:0.7408rem;margin-top:2px}
 
 /* capacity documentation */
 .cap-grid{display:flex;flex-direction:column;gap:8px}
-.cap-row{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid #f0ede8}
-.cap-label{font-size:13px;font-weight:500;min-width:140px;color:#3d3730;padding-top:4px}
+.cap-row{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--color-background-secondary)}
+.cap-label{font-size:0.963rem;font-weight:500;min-width:140px;color:var(--color-text-primary);padding-top:4px}
 .cap-btns{display:flex;gap:4px;flex-wrap:wrap;flex:1}
-.cap-btn{padding:5px 10px;border-radius:6px;border:1px solid #e8e4de;background:#fff;font-size:11px;color:#6b6560;cursor:pointer;transition:all .1s;white-space:nowrap}
-.cap-btn:hover{border-color:#457b9d}
-.cap-btn-active{background:#eef4f8;border-color:#457b9d;color:#457b9d;font-weight:600}
-.cap-entry{padding:14px;border-radius:10px;border:1px solid #e8e4de;margin-bottom:8px;background:#fff}
-.cap-entry-head{font-size:13px;color:#3d3730;margin-bottom:8px}
-.cap-assessor{color:#8d99ae;font-weight:400}
+.cap-btn{padding:5px 10px;border-radius:6px;border:1px solid var(--color-border-subtle);background:var(--color-surface);font-size:0.8148rem;color:var(--color-text-secondary);cursor:pointer;transition:all .1s;white-space:nowrap}
+.cap-btn:hover{border-color:var(--color-action-primary)}
+.cap-btn-active{background:var(--color-background-info);border-color:var(--color-action-primary);color:var(--color-action-primary);font-weight:600}
+.cap-entry{padding:14px;border-radius:10px;border:1px solid var(--color-border-subtle);margin-bottom:8px;background:var(--color-surface)}
+.cap-entry-head{font-size:0.963rem;color:var(--color-text-primary);margin-bottom:8px}
+.cap-assessor{color:var(--color-text-muted);font-weight:400}
 .cap-entry-grid{display:flex;flex-wrap:wrap;gap:6px}
 .cap-entry-item{display:flex;align-items:center;gap:4px}
-.cap-entry-area{font-size:11px;color:#6b6560}
-.cap-entry-notes{font-size:12px;color:#6b6560;margin-top:8px;font-style:italic}
+.cap-entry-area{font-size:0.8148rem;color:var(--color-text-secondary)}
+.cap-entry-notes{font-size:0.8889rem;color:var(--color-text-secondary);margin-top:8px;font-style:italic}
 
 /* binder preview */
-.binder-preview{background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:20px;font-size:12px;line-height:1.6;white-space:pre-wrap;color:#3d3730;max-height:600px;overflow-y:auto;font-family:'Source Sans 3',monospace}
+.binder-preview{font-family:var(--font-document);background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:10px;padding:20px;font-size:0.8889rem;line-height:1.6;white-space:pre-wrap;color:var(--color-text-primary);max-height:600px;overflow-y:auto;font-family:var(--font-ui),monospace}
 
 /* POA decision log */
-.poa-form{padding:16px;border:1px solid #e8e4de;border-radius:12px;background:#fff;margin-bottom:16px}
-.poa-entry{padding:16px;border:1px solid #e8e4de;border-left:4px solid #457b9d;border-radius:10px;margin-bottom:10px;background:#fff}
+.poa-form{padding:16px;border:1px solid var(--color-border-subtle);border-radius:12px;background:var(--color-surface);margin-bottom:16px}
+.poa-entry{padding:16px;border:1px solid var(--color-border-subtle);border-left:4px solid var(--color-action-primary);border-radius:10px;margin-bottom:10px;background:var(--color-surface)}
 .poa-entry-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
-.poa-entry-type{font-size:14px;font-weight:600;color:#3d3730}
-.poa-entry-date{font-size:12px;color:#8d99ae;margin-left:auto}
-.poa-entry-desc{font-size:13px;color:#3d3730;line-height:1.5;margin-bottom:8px}
-.poa-entry-field{font-size:12px;color:#6b6560;line-height:1.5;margin-bottom:4px}
-.poa-field-label{font-weight:600;color:#457b9d}
-.poa-entry-agent{font-size:11px;color:#a09a92;margin-top:8px;padding-top:8px;border-top:1px solid #f0ede8;font-style:italic}
+.poa-entry-type{font-size:1.037rem;font-weight:600;color:var(--color-text-primary)}
+.poa-entry-date{font-size:0.8889rem;color:var(--color-text-muted);margin-left:auto}
+.poa-entry-desc{font-size:0.963rem;color:var(--color-text-primary);line-height:1.5;margin-bottom:8px}
+.poa-entry-field{font-size:0.8889rem;color:var(--color-text-secondary);line-height:1.5;margin-bottom:4px}
+.poa-field-label{font-weight:600;color:var(--color-action-primary)}
+.poa-entry-agent{font-size:0.8148rem;color:var(--color-text-muted);margin-top:8px;padding-top:8px;border-top:1px solid var(--color-background-secondary);font-style:italic}
 
 /* care schedule */
-.shift-card{padding:14px;border:1px solid #e8e4de;border-radius:10px;margin-bottom:10px;background:#fff;border-left:4px solid #8d99ae}
-.shift-open{border-left-color:#457b9d}
-.shift-assigned{border-left-color:#718355}
-.shift-pending{border-left-color:#bc6c25}
+.shift-card{padding:14px;border:1px solid var(--color-border-subtle);border-radius:10px;margin-bottom:10px;background:var(--color-surface);border-left:4px solid var(--color-text-muted)}
+.shift-open{border-left-color:var(--color-action-primary)}
+.shift-assigned{border-left-color:var(--color-text-success)}
+.shift-pending{border-left-color:var(--color-text-warning)}
 .shift-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
-.shift-date{font-size:14px;font-weight:600;color:#3d3730}
-.shift-assignee{font-size:12px;color:#6b6560;margin-left:auto}
-.shift-modby{font-size:10px;color:#a09a92;width:100%;text-align:right;font-style:italic}
-.shift-careplan{font-size:12px;color:#6b6560;line-height:1.5;margin:6px 0;padding:8px;background:#f6f4f0;border-radius:6px}
+.shift-date{font-size:1.037rem;font-weight:600;color:var(--color-text-primary)}
+.shift-assignee{font-size:0.8889rem;color:var(--color-text-secondary);margin-left:auto}
+.shift-modby{font-size:0.7408rem;color:var(--color-text-muted);width:100%;text-align:right;font-style:italic}
+.shift-careplan{font-size:0.8889rem;color:var(--color-text-secondary);line-height:1.5;margin:6px 0;padding:8px;background:var(--color-background);border-radius:6px}
 .shift-tasks{margin:8px 0}
-.shift-task-check{font-size:13px;color:#3d3730;padding:3px 0}
-.shift-task-row{display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#3d3730;padding:2px 0}
+.shift-task-check{font-size:0.963rem;color:var(--color-text-primary);padding:3px 0}
+.shift-task-row{display:flex;justify-content:space-between;align-items:center;font-size:0.963rem;color:var(--color-text-primary);padding:2px 0}
 .shift-visit{margin:8px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.shift-approvals{margin-top:8px;padding-top:8px;border-top:1px solid #f0ede8}
-.shift-approval-row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:13px}
+.shift-approvals{margin-top:8px;padding-top:8px;border-top:1px solid var(--color-background-secondary)}
+.shift-approval-row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:0.963rem}
 
 /* availability grid */
 .avail-grid{display:grid;grid-template-columns:60px repeat(4,1fr);gap:4px;margin-top:8px}
 .avail-corner{}
-.avail-slot-head{font-size:10px;font-weight:600;text-align:center;color:#6b6560;padding:4px;text-transform:uppercase;letter-spacing:.3px}
-.avail-day{font-size:12px;font-weight:600;color:#3d3730;display:flex;align-items:center;justify-content:flex-end;padding-right:6px}
-.avail-cell{height:36px;border:1px solid #e8e4de;border-radius:6px;background:#fff;cursor:pointer;font-size:14px;color:#718355;transition:all .1s}
-.avail-cell:hover{border-color:#457b9d}
-.avail-on{background:#e8f0df;border-color:#718355;font-weight:700}
-.avail-summary{font-size:13px;color:#3d3730;padding:6px 0;border-bottom:1px solid #f0ede8;line-height:1.5}
+.avail-slot-head{font-size:0.7408rem;font-weight:600;text-align:center;color:var(--color-text-secondary);padding:4px;text-transform:uppercase;letter-spacing:.3px}
+.avail-day{font-size:0.8889rem;font-weight:600;color:var(--color-text-primary);display:flex;align-items:center;justify-content:flex-end;padding-right:6px}
+.avail-cell{height:36px;border:1px solid var(--color-border-subtle);border-radius:6px;background:var(--color-surface);cursor:pointer;font-size:1.037rem;color:var(--color-text-success);transition:all .1s}
+.avail-cell:hover{border-color:var(--color-action-primary)}
+.avail-on{background:var(--color-background-success);border-color:var(--color-text-success);font-weight:700}
+.avail-summary{font-size:0.963rem;color:var(--color-text-primary);padding:6px 0;border-bottom:1px solid var(--color-background-secondary);line-height:1.5}
 
 /* photo attachments */
 .photo-attach-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
 .photo-preview-row{display:flex;gap:8px;flex-wrap:wrap}
-.photo-thumb{position:relative;width:72px;height:72px;border-radius:8px;overflow:hidden;border:1px solid #e8e4de}
+.photo-thumb{position:relative;width:72px;height:72px;border-radius:8px;overflow:hidden;border:1px solid var(--color-border-subtle)}
 .photo-thumb img{width:100%;height:100%;object-fit:cover}
-.photo-loading{width:100%;height:100%;background:repeating-linear-gradient(45deg,#efeae1,#efeae1 6px,#e6e0d5 6px,#e6e0d5 12px)}
-.photo-remove{position:absolute;top:2px;right:2px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;border:none;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1}
-.page-title{font-family:'Libre Baskerville',serif;font-size:22px;font-weight:700;margin:0 0 6px;color:#3d3730}
-.page-sub{font-size:14px;color:#8d99ae;margin:0 0 24px;line-height:1.5}
+.photo-loading{width:100%;height:100%;background:repeating-linear-gradient(45deg,var(--color-background-secondary),var(--color-background-secondary) 6px,var(--color-border) 6px,var(--color-border) 12px)}
+.photo-remove{position:absolute;top:2px;right:2px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;border:none;font-size:0.8889rem;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1}
+.page-title{font-family:var(--font-ui);font-size:1.6297rem;font-weight:700;margin:0 0 6px;color:var(--color-text-primary)}
+.page-sub{font-size:1.037rem;color:var(--color-text-muted);margin:0 0 24px;line-height:1.5}
 .o-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:18px}
 .o-card{border-radius:14px;padding:22px 22px 18px;border:none;border-left:5px solid;text-align:left;box-shadow:0 2px 10px rgba(0,0,0,.04);display:block;width:100%;transition:transform .12s,box-shadow .12s}
 .o-card:hover{transform:translateY(-2px);box-shadow:0 4px 16px rgba(0,0,0,.08)}
 .o-card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-.o-badge{font-size:11.5px;font-weight:600;padding:3px 9px;border-radius:20px}
+.o-badge{font-size:0.8519rem;font-weight:600;padding:3px 9px;border-radius:20px}
 .o-card-title-row{display:flex;align-items:center;gap:6px}
-.o-card-title{font-size:17px;font-weight:700;margin:0 0 4px;color:#3d3730;font-family:'Libre Baskerville',serif}
-.o-card-desc{font-size:13px;color:#6b6560;line-height:1.45;margin:0 0 12px}
+.o-card-title{font-size:1.2592rem;font-weight:700;margin:0 0 4px;color:var(--color-text-primary);font-family:var(--font-ui)}
+.o-card-desc{font-size:0.963rem;color:var(--color-text-secondary);line-height:1.45;margin:0 0 12px}
 .prog-row{display:flex;align-items:center;gap:10px}.prog-track{flex:1;height:6px;border-radius:3px;background:rgba(0,0,0,.07);overflow:hidden}
-.prog-fill{height:100%;border-radius:3px;transition:width .3s ease}.prog-label{font-size:12px;color:#8d99ae;white-space:nowrap}
-.o-card-time{font-size:11px;color:#b5b0a8;margin-top:10px}
-.log-wrap{margin-top:28px;background:#fff;border-radius:14px;padding:18px 22px;box-shadow:0 2px 10px rgba(0,0,0,.04)}
-.log-title{font-size:15px;font-weight:700;margin:0 0 12px;font-family:'Libre Baskerville',serif}
-.log-row{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #f0ece4;font-size:13px}
-.log-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}.log-text{flex:1;line-height:1.4}.log-time{font-size:11px;color:#b5b0a8;white-space:nowrap}
+.prog-fill{height:100%;border-radius:3px;transition:width .3s ease}.prog-label{font-size:0.8889rem;color:var(--color-text-muted);white-space:nowrap}
+.o-card-time{font-size:0.8148rem;color:var(--color-text-muted);margin-top:10px}
+.log-wrap{margin-top:28px;background:var(--color-surface);border-radius:14px;padding:18px 22px;box-shadow:0 2px 10px rgba(0,0,0,.04)}
+.log-title{font-size:1.1111rem;font-weight:700;margin:0 0 12px;font-family:var(--font-ui)}
+.log-row{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--color-background-secondary);font-size:0.963rem}
+.log-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}.log-text{flex:1;line-height:1.4}.log-time{font-size:0.8148rem;color:var(--color-text-muted);white-space:nowrap}
 .domain-header{border-radius:14px;padding:22px 24px;border-left:5px solid;margin-bottom:28px}
 .domain-header-top{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
 .domain-title-row{display:flex;align-items:center;gap:8px}
-.domain-pct{font-size:32px;font-weight:700;font-family:'Libre Baskerville',serif;flex-shrink:0}
-.section{margin-bottom:32px}.sec-title{font-size:16px;font-weight:700;margin:0 0 12px;font-family:'Libre Baskerville',serif}
-.hint{font-size:13px;color:#8d99ae;font-style:italic;margin:-4px 0 16px;line-height:1.5}
+.domain-pct{font-size:2.3703rem;font-weight:700;font-family:var(--font-ui);flex-shrink:0}
+.section{margin-bottom:32px}.sec-title{font-size:1.1852rem;font-weight:700;margin:0 0 12px;font-family:var(--font-ui)}
+.hint{font-size:0.963rem;color:var(--color-text-muted);font-style:italic;margin:-4px 0 16px;line-height:1.5}
 /* status removed — computed from Foundation + Care Pulse */
 .goals-wrap{display:flex;flex-direction:column;gap:10px}
-.goal-card{border-radius:12px;border:1px solid #e8e4de;border-left:4px solid;overflow:hidden}
+.goal-card{border-radius:12px;border:1px solid var(--color-border-subtle);border-left:4px solid;overflow:hidden}
 .goal-head{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer}
-.goal-check{width:20px;height:20px;accent-color:#718355;flex-shrink:0;cursor:pointer}
-.goal-title{font-size:14.5px;font-weight:600;line-height:1.35}.chevron{font-size:16px;color:#a09a92;transition:transform .2s;flex-shrink:0;user-select:none}
+.goal-check{width:20px;height:20px;accent-color:var(--color-text-success);flex-shrink:0;cursor:pointer}
+.goal-title{font-size:1.0741rem;font-weight:600;line-height:1.35}.chevron{font-size:1.1852rem;color:var(--color-text-muted);transition:transform .2s;flex-shrink:0;user-select:none}
 .sub-prog-row{display:flex;align-items:center;gap:8px;margin-top:5px}
 .sub-prog-track{width:80px;height:4px;border-radius:2px;background:rgba(0,0,0,.07);overflow:hidden}
-.sub-prog-fill{height:100%;border-radius:2px;transition:width .25s ease}.sub-prog-label{font-size:11.5px;color:#a09a92}
+.sub-prog-fill{height:100%;border-radius:2px;transition:width .25s ease}.sub-prog-label{font-size:0.8519rem;color:var(--color-text-muted)}
 .subs-wrap{padding:0 16px 14px 48px;display:flex;flex-direction:column;gap:6px;animation:fadeIn .2s ease}
 @keyframes fadeIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
-.sub-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;border:1px solid #e8e4de;cursor:pointer;transition:background .12s}
+.sub-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;border:1px solid var(--color-border-subtle);cursor:pointer;transition:background .12s}
 .sub-typed{cursor:default;align-items:flex-start}
-.sub-done{background:#f5f9f0!important}
-.sub-overdue{background:#fdf6ee!important;border-color:#f0d5a0}
-.sub-type-badge{font-size:14px;width:18px;text-align:center;flex-shrink:0;font-weight:700;line-height:1.3}
-.sub-attend-btn{width:22px;height:22px;border-radius:6px;border:1.5px solid #e5e1db;background:transparent;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .12s;color:#718355;font-weight:700}
-.sub-attend-btn:hover{background:#e8f0df;border-color:#718355}
-.sub-recency{font-size:11.5px;margin-top:2px;font-weight:500}
-.sub-type-select{width:auto;padding:2px 4px;border:1px solid transparent;border-radius:4px;font-size:11px;color:#a09a92;background:transparent;cursor:pointer;flex-shrink:0;outline:none}
-.sub-type-select:hover{border-color:#e5e1db;color:#6b6560}
-.sub-removed{opacity:.6;background:#f6f4f0!important;border-style:dashed}
+.sub-done{background:var(--color-background-success)!important}
+.sub-overdue{background:var(--color-background-warning)!important;border-color:var(--color-border-warning)}
+.sub-type-badge{font-size:1.037rem;width:18px;text-align:center;flex-shrink:0;font-weight:700;line-height:1.3}
+.sub-attend-btn{width:22px;height:22px;border-radius:6px;border:1.5px solid var(--color-border-subtle);background:transparent;font-size:0.8889rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .12s;color:var(--color-text-success);font-weight:700}
+.sub-attend-btn:hover{background:var(--color-background-success);border-color:var(--color-text-success)}
+.sub-recency{font-size:0.8519rem;margin-top:2px;font-weight:500}
+.sub-type-select{width:auto;padding:2px 4px;border:1px solid transparent;border-radius:4px;font-size:0.8148rem;color:var(--color-text-muted);background:transparent;cursor:pointer;flex-shrink:0;outline:none}
+.sub-type-select:hover{border-color:var(--color-border-subtle);color:var(--color-text-secondary)}
+.sub-removed{opacity:.6;background:var(--color-background)!important;border-style:dashed}
 .removed-subs-details{margin-top:6px}
-.removed-subs-summary{font-size:12px;color:#a09a92;cursor:pointer;padding:4px 0}
-.removed-subs-summary:hover{color:#6b6560}
+.removed-subs-summary{font-size:0.8889rem;color:var(--color-text-muted);cursor:pointer;padding:4px 0}
+.removed-subs-summary:hover{color:var(--color-text-secondary)}
 .removed-subs-list{display:flex;flex-direction:column;gap:4px;margin-top:4px}
-.type-legend{display:flex;gap:14px;margin-top:10px;font-size:12px;color:#8d99ae}
+.type-legend{display:flex;gap:14px;margin-top:10px;font-size:0.8889rem;color:var(--color-text-muted)}
 .type-legend-item{display:flex;align-items:center;gap:4px}
 .dual-track{display:flex;flex-direction:column;gap:6px}
 .dual-track-row{display:flex;align-items:center;gap:8px}
-.dual-track-label{font-size:11.5px;font-weight:600;width:90px;flex-shrink:0}
-.sub-custom{border-style:dashed}.sub-check{width:16px;height:16px;accent-color:#718355;flex-shrink:0;cursor:pointer}
-.sub-text{font-size:13.5px;line-height:1.4}.remove-sub{background:none;border:none;font-size:18px;color:#c5c0b8;padding:0 4px;line-height:1}.remove-sub:hover{color:#b56576}
-.add-sub-trigger{background:none;border:1px dashed #d5d0c8;border-radius:8px;padding:8px 12px;font-size:13px;color:#8d99ae;text-align:left;width:100%}
+.dual-track-label{font-size:0.8519rem;font-weight:600;width:90px;flex-shrink:0}
+.sub-custom{border-style:dashed}.sub-check{width:16px;height:16px;accent-color:var(--color-text-success);flex-shrink:0;cursor:pointer}
+.sub-text{font-size:1rem;line-height:1.4}.remove-sub{background:none;border:none;font-size:1.3333rem;color:var(--color-text-muted);padding:0 4px;line-height:1}.remove-sub:hover{color:var(--color-text-danger)}
+.add-sub-trigger{background:none;border:1px dashed var(--color-border);border-radius:8px;padding:8px 12px;font-size:0.963rem;color:var(--color-text-muted);text-align:left;width:100%}
 .add-sub-row{display:flex;gap:8px;align-items:center}
-.add-sub-input{flex:1;padding:8px 12px;font-size:13.5px;border-radius:8px;border:1px solid #d5d0c8;outline:none}.add-sub-input:focus{border-color:#718355}
-.add-sub-btn{padding:8px 14px;font-size:13px;font-weight:600;border-radius:8px;border:none;background:#718355;color:#fff;white-space:nowrap}
-.add-sub-cancel{padding:8px 12px;font-size:13px;border-radius:8px;border:1px solid #d5d0c8;background:transparent;color:#6b6560}
+.add-sub-input{flex:1;padding:8px 12px;font-size:1rem;border-radius:8px;border:1px solid var(--color-border);outline:none}.add-sub-input:focus{border-color:var(--color-text-success)}
+.add-sub-btn{padding:8px 14px;font-size:0.963rem;font-weight:600;border-radius:8px;border:none;background:var(--color-text-success);color:var(--color-text-on-fill);white-space:nowrap}
+.add-sub-cancel{padding:8px 12px;font-size:0.963rem;border-radius:8px;border:1px solid var(--color-border);background:transparent;color:var(--color-text-secondary)}
 .goal-title-row{display:flex;align-items:flex-start;gap:6px}.goal-title-row .goal-title{flex:1}
-.edit-icon{background:none;border:none;font-size:18px;color:#c5c0b8;padding:2px 4px;line-height:1;flex-shrink:0;opacity:0;transition:opacity .15s}
-.edit-icon-visible{opacity:.6!important}.goal-head:hover .edit-icon,.sub-item:hover .edit-icon,.o-card:hover .edit-icon{opacity:1}.edit-icon:hover{color:#6d6875!important;opacity:1}
+.edit-icon{background:none;border:none;font-size:1.3333rem;color:var(--color-text-muted);padding:2px 4px;line-height:1;flex-shrink:0;opacity:0;transition:opacity .15s}
+.edit-icon-visible{opacity:.6!important}.goal-head:hover .edit-icon,.sub-item:hover .edit-icon,.o-card:hover .edit-icon{opacity:1}.edit-icon:hover{color:var(--color-action-primary)!important;opacity:1}
 .inline-edit{display:flex;align-items:center;gap:6px;flex:1;min-width:0}
-.inline-edit-input{flex:1;padding:5px 8px;font-size:13.5px;border-radius:6px;border:1.5px solid #718355;outline:none;min-width:0}
-.inline-edit-save{background:none;border:none;font-size:16px;color:#718355;padding:2px 4px;font-weight:700}
-.inline-edit-cancel{background:none;border:none;font-size:14px;color:#a09a92;padding:2px 4px}
-.notes-ta{width:100%;padding:13px 16px;font-size:14px;border-radius:10px;border:2px solid #d5d0c8;line-height:1.6;resize:vertical;outline:none;color:#3d3730}.notes-ta:focus{border-color:#718355}
+.inline-edit-input{flex:1;padding:5px 8px;font-size:1rem;border-radius:6px;border:1.5px solid var(--color-text-success);outline:none;min-width:0}
+.inline-edit-save{background:none;border:none;font-size:1.1852rem;color:var(--color-text-success);padding:2px 4px;font-weight:700}
+.inline-edit-cancel{background:none;border:none;font-size:1.037rem;color:var(--color-text-muted);padding:2px 4px}
+.notes-ta{width:100%;padding:13px 16px;font-size:1.037rem;border-radius:10px;border:2px solid var(--color-border);line-height:1.6;resize:vertical;outline:none;color:var(--color-text-primary)}.notes-ta:focus{border-color:var(--color-text-success)}
 .notes-actions{display:flex;gap:8px;margin-top:10px}
-.save-btn{padding:9px 22px;font-size:13.5px;font-weight:700;border-radius:10px;border:none;background:#457b9d;color:#fff;cursor:pointer}
-.cancel-btn{padding:9px 18px;font-size:13.5px;border-radius:10px;border:1px solid #d5d0c8;background:#fff;color:#6b6560;cursor:pointer}
-.edit-btn{padding:9px 18px;font-size:13.5px;border-radius:10px;border:1px solid #d5d0c8;background:#fff;color:#6b6560;margin-top:8px;cursor:pointer}
-.notes-display{font-size:14px;color:#6b6560;line-height:1.6;background:#fff;padding:13px 16px;border-radius:10px;border:1px solid #e5e1db;white-space:pre-wrap}
-.last-up{font-size:12px;color:#b5b0a8;font-style:italic;margin-top:16px}
-.app-footer{text-align:center;font-size:12.5px;color:#a09a92;padding:18px 24px;border-top:1px solid #e8e4de;margin-top:auto}
-.pn-row{display:flex;justify-content:space-between;gap:12px;margin-top:36px;padding-top:24px;border-top:1px solid #e8e4de}
-.pn-btn{display:flex;flex-direction:column;gap:2px;padding:14px 18px;border:1px solid #e5e1db;border-radius:12px;background:#fff;text-align:left;min-width:100px;transition:all .15s}
-.pn-btn:hover{background:#faf9f7;box-shadow:0 2px 8px rgba(0,0,0,.05)}
-.pn-btn-next{text-align:right;align-items:flex-end}.pn-arrow{font-size:18px;color:#8d99ae;line-height:1}
-.pn-dir{font-size:11px;color:#a09a92;text-transform:uppercase;letter-spacing:.5px}.pn-name{font-size:14px;font-weight:600;color:#3d3730}
+.save-btn{padding:9px 22px;font-size:1rem;font-weight:700;border-radius:10px;border:none;background:var(--color-action-primary);color:var(--color-text-on-fill);cursor:pointer}
+.cancel-btn{padding:9px 18px;font-size:1rem;border-radius:10px;border:1px solid var(--color-border);background:var(--color-surface);color:var(--color-text-secondary);cursor:pointer}
+.edit-btn{padding:9px 18px;font-size:1rem;border-radius:10px;border:1px solid var(--color-border);background:var(--color-surface);color:var(--color-text-secondary);margin-top:8px;cursor:pointer}
+.notes-display{font-size:1.037rem;color:var(--color-text-secondary);line-height:1.6;background:var(--color-surface);padding:13px 16px;border-radius:10px;border:1px solid var(--color-border-subtle);white-space:pre-wrap}
+.last-up{font-size:0.8889rem;color:var(--color-text-muted);font-style:italic;margin-top:16px}
+.app-footer{text-align:center;font-size:0.9259rem;color:var(--color-text-muted);padding:18px 24px;border-top:1px solid var(--color-border-subtle);margin-top:auto}
+.pn-row{display:flex;justify-content:space-between;gap:12px;margin-top:36px;padding-top:24px;border-top:1px solid var(--color-border-subtle)}
+.pn-btn{display:flex;flex-direction:column;gap:2px;padding:14px 18px;border:1px solid var(--color-border-subtle);border-radius:12px;background:var(--color-surface);text-align:left;min-width:100px;transition:all .15s}
+.pn-btn:hover{background:var(--color-background);box-shadow:0 2px 8px rgba(0,0,0,.05)}
+.pn-btn-next{text-align:right;align-items:flex-end}.pn-arrow{font-size:1.3333rem;color:var(--color-text-muted);line-height:1}
+.pn-dir{font-size:0.8148rem;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.5px}.pn-name{font-size:1.037rem;font-weight:600;color:var(--color-text-primary)}
 .contacts-header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:20px;flex-wrap:wrap}
 .contacts-header-actions{display:flex;gap:8px;flex-shrink:0;align-items:center;flex-wrap:wrap}
-.import-toast{background:#e8f0df;color:#4a6232;padding:10px 16px;border-radius:10px;font-size:13.5px;font-weight:600;margin-bottom:16px;animation:fadeIn .3s ease}
+.import-toast{background:var(--color-background-success);color:var(--color-text-success);padding:10px 16px;border-radius:10px;font-size:1rem;font-weight:600;margin-bottom:16px;animation:fadeIn .3s ease}
 .contacts-controls{display:flex;flex-direction:column;gap:10px;margin-bottom:24px}
 .cc-group{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.cc-label{font-size:12px;font-weight:600;color:#8d99ae;text-transform:uppercase;letter-spacing:.5px;margin-right:4px}
-.cc-btn{padding:5px 12px;border-radius:20px;border:1.5px solid #e5e1db;background:#fff;font-size:12.5px;color:#6b6560;transition:all .12s;white-space:nowrap}
-.cc-active{background:#f0ece4!important;border-color:#8d99ae!important;color:#3d3730;font-weight:600}
-.contacts-empty{text-align:center;padding:40px 20px;color:#a09a92;font-size:14px;line-height:1.6}
+.cc-label{font-size:0.8889rem;font-weight:600;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.5px;margin-right:4px}
+.cc-btn{padding:5px 12px;border-radius:20px;border:1.5px solid var(--color-border-subtle);background:var(--color-surface);font-size:0.9259rem;color:var(--color-text-secondary);transition:all .12s;white-space:nowrap}
+.cc-active{background:var(--color-background-secondary)!important;border-color:var(--color-text-muted)!important;color:var(--color-text-primary);font-weight:600}
+.contacts-empty{text-align:center;padding:40px 20px;color:var(--color-text-muted);font-size:1.037rem;line-height:1.6}
 .contacts-list{display:flex;flex-direction:column;gap:6px}
 .contact-group{margin-bottom:20px}
-.contact-group-title{font-family:'Libre Baskerville',serif;font-size:15px;font-weight:700;margin:0 0 10px;padding-bottom:6px;border-bottom:1px solid #ede8df}
-.contact-row{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid #e8e4de;border-radius:10px;background:#fff;width:100%;text-align:left;transition:all .12s}
-.contact-row:hover{background:#faf9f7;box-shadow:0 2px 8px rgba(0,0,0,.04)}
-.contact-avatar{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:16px;font-family:'Libre Baskerville',serif;flex-shrink:0}
-.contact-info{flex:1;min-width:0}.contact-name{font-size:14.5px;font-weight:600;color:#3d3730;line-height:1.3}
-.contact-role{font-size:12.5px;color:#8d99ae;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.contact-arrow{font-size:20px;color:#c5c0b8;flex-shrink:0}
-.back-link{background:none;border:none;font-size:14px;color:#8d99ae;padding:0;margin-bottom:16px;text-decoration:underline;text-underline-offset:3px;display:block}
-.cd-header{display:flex;align-items:center;gap:16px;padding:20px 24px;border-radius:14px;border-left:5px solid;background:#faf9f7;margin-bottom:24px}
-.cd-avatar{width:52px;height:52px;font-size:22px}.cd-meta{font-size:14px;color:#6b6560;margin:4px 0 8px}
+.contact-group-title{font-family:var(--font-ui);font-size:1.1111rem;font-weight:700;margin:0 0 10px;padding-bottom:6px;border-bottom:1px solid var(--color-background-secondary)}
+.contact-row{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--color-border-subtle);border-radius:10px;background:var(--color-surface);width:100%;text-align:left;transition:all .12s}
+.contact-row:hover{background:var(--color-background);box-shadow:0 2px 8px rgba(0,0,0,.04)}
+.contact-avatar{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--color-text-on-fill);font-weight:700;font-size:1.1852rem;font-family:var(--font-ui);flex-shrink:0;object-fit:cover}
+.contact-info{flex:1;min-width:0}.contact-name{font-size:1.0741rem;font-weight:600;color:var(--color-text-primary);line-height:1.3}
+.contact-role{font-size:0.9259rem;color:var(--color-text-muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.contact-arrow{font-size:1.4814rem;color:var(--color-text-muted);flex-shrink:0}
+.back-link{background:none;border:none;font-size:1.037rem;color:var(--color-text-muted);padding:0;margin-bottom:16px;text-decoration:underline;text-underline-offset:3px;display:block}
+.cd-header{display:flex;align-items:center;gap:16px;padding:20px 24px;border-radius:14px;border-left:5px solid;background:var(--color-background);margin-bottom:24px}
+.cd-avatar{width:52px;height:52px;font-size:1.6297rem}.cd-meta{font-size:1.037rem;color:var(--color-text-secondary);margin:4px 0 8px}
 .cd-info-grid{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:20px}
-.cd-info-item{background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:12px 16px;min-width:200px;flex:1}
-.cd-info-label{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#8d99ae;display:block;margin-bottom:4px}
-.cd-info-value{font-size:15px;color:#3d3730;font-weight:500;word-break:break-all}
+.cd-info-item{background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:10px;padding:12px 16px;min-width:200px;flex:1}
+.cd-info-label{font-size:0.8148rem;text-transform:uppercase;letter-spacing:.5px;color:var(--color-text-muted);display:block;margin-bottom:4px}
+.cd-info-value{font-size:1.1111rem;color:var(--color-text-primary);font-weight:500;word-break:break-all}
 .cd-actions{display:flex;gap:8px;margin-bottom:28px}
-.cd-delete-btn{padding:9px 18px;font-size:13.5px;border-radius:10px;border:1px solid #e5c5c5;background:#fff;color:#b56576}
+.cd-delete-btn{padding:9px 18px;font-size:1rem;border-radius:10px;border:1px solid var(--color-border-danger);background:var(--color-surface);color:var(--color-text-danger)}
 .cd-note-add{margin-bottom:20px}.cd-notes-list{display:flex;flex-direction:column;gap:8px}
-.cd-note-card{background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:12px 16px}
+.cd-note-card{background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:10px;padding:12px 16px}
 .cd-note-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
-.cd-note-date{font-size:11.5px;color:#a09a92}.cd-note-text{font-size:14px;color:#3d3730;line-height:1.55;white-space:pre-wrap}
+.cd-note-date{font-size:0.8519rem;color:var(--color-text-muted)}.cd-note-text{font-size:1.037rem;color:var(--color-text-primary);line-height:1.55;white-space:pre-wrap}
 .cf-overlay{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px}
-.cf-modal{background:#fff;border-radius:16px;padding:28px 28px 24px;max-width:520px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 12px 40px rgba(0,0,0,.12)}
-.cf-title{font-family:'Libre Baskerville',serif;font-size:18px;font-weight:700;margin:0 0 20px;color:#3d3730}
+.cf-modal{background:var(--color-surface);border-radius:16px;padding:28px 28px 24px;max-width:min(100%,28.89rem);width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 12px 40px rgba(0,0,0,.12)}
+.cf-title{font-family:var(--font-ui);font-size:1.3333rem;font-weight:700;margin:0 0 20px;color:var(--color-text-primary)}
 .cf-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px}
-.cf-label{font-size:12px;font-weight:600;color:#6b6560;display:flex;flex-direction:column;gap:5px}
-.cf-input{padding:10px 12px;font-size:14px;border-radius:8px;border:1.5px solid #d5d0c8;outline:none;color:#3d3730}.cf-input:focus{border-color:#457b9d}
-select.cf-input{background:#fff}.cf-actions{display:flex;gap:8px;margin-top:4px}
-.cf-custom-section{margin-bottom:16px}.cf-custom-title{font-size:13px;font-weight:600;color:#6b6560;margin:0 0 10px;text-transform:uppercase;letter-spacing:.3px}
+.cf-label{font-size:0.8889rem;font-weight:600;color:var(--color-text-secondary);display:flex;flex-direction:column;gap:5px}
+.cf-input{padding:10px 12px;font-size:1.037rem;border-radius:8px;border:1.5px solid var(--color-border);outline:none;color:var(--color-text-primary)}.cf-input:focus{border-color:var(--color-action-primary)}
+select.cf-input{background:var(--color-surface)}.cf-actions{display:flex;gap:8px;margin-top:4px}
+.cf-custom-section{margin-bottom:16px}.cf-custom-title{font-size:0.963rem;font-weight:600;color:var(--color-text-secondary);margin:0 0 10px;text-transform:uppercase;letter-spacing:.3px}
 .cf-custom-row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
-.cf-custom-label{width:140px;flex-shrink:0;font-size:13px!important;padding:8px 10px!important}
-.cf-custom-value{flex:1;font-size:13px!important;padding:8px 10px!important}
-.cf-add-field-row{display:flex;gap:8px;align-items:center;margin-bottom:18px;padding-top:4px;border-top:1px dashed #e5e1db}
+.cf-custom-label{width:140px;flex-shrink:0;font-size:0.963rem!important;padding:8px 10px!important}
+.cf-custom-value{flex:1;font-size:0.963rem!important;padding:8px 10px!important}
+.cf-add-field-row{display:flex;gap:8px;align-items:center;margin-bottom:18px;padding-top:4px;border-top:1px dashed var(--color-border-subtle)}
 /* calendar */
 .cal-nav{display:flex;align-items:center;justify-content:center;gap:16px;margin-bottom:16px}
-.cal-nav-btn{background:none;border:1px solid #e5e1db;border-radius:8px;width:36px;height:36px;font-size:20px;color:#6b6560;display:flex;align-items:center;justify-content:center}
-.cal-month{font-family:'Libre Baskerville',serif;font-size:17px;font-weight:700;min-width:180px;text-align:center}
-.cal-grid{max-width:500px}.cal-header{display:grid;grid-template-columns:repeat(7,1fr);text-align:center}
-.cal-dow{font-size:12px;font-weight:600;color:#8d99ae;padding:6px 0;text-transform:uppercase}
+.cal-nav-btn{background:none;border:1px solid var(--color-border-subtle);border-radius:8px;width:36px;height:36px;font-size:1.4814rem;color:var(--color-text-secondary);display:flex;align-items:center;justify-content:center}
+.cal-month{font-family:var(--font-ui);font-size:1.2592rem;font-weight:700;min-width:180px;text-align:center}
+.cal-grid{max-width:min(100%,27.78rem)}.cal-header{display:grid;grid-template-columns:repeat(7,1fr);text-align:center}
+.cal-dow{font-size:0.8889rem;font-weight:600;color:var(--color-text-muted);padding:6px 0;text-transform:uppercase}
 .cal-body{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
-.cal-cell{border:none;background:#fff;border-radius:8px;padding:8px 4px;min-height:48px;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:14px;transition:all .12s}
-.cal-cell:hover{background:#f0ece4}.cal-empty{background:transparent;cursor:default}
-.cal-sel{background:#eef4f8!important;outline:2px solid #457b9d;outline-offset:-2px}
-.cal-today{font-weight:700;color:#457b9d}
+.cal-cell{border:none;background:var(--color-surface);border-radius:8px;padding:8px 4px;min-height:48px;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:1.037rem;transition:all .12s}
+.cal-cell:hover{background:var(--color-background-secondary)}.cal-empty{background:transparent;cursor:default}
+.cal-sel{background:var(--color-background-info)!important;outline:2px solid var(--color-action-primary);outline-offset:-2px}
+.cal-today{font-weight:700;color:var(--color-action-primary)}
 .cal-day{line-height:1}.cal-dot-row{display:flex;gap:3px}
-.cal-dot{width:5px;height:5px;border-radius:50%;background:#b56576}
+.cal-dot{width:5px;height:5px;border-radius:50%;background:var(--color-text-danger)}
 .cal-detail{margin-top:20px}
-.cal-appt-card{background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:12px 16px;margin-bottom:8px}
-.cal-appt-head{display:flex;align-items:center;gap:8px;font-size:14px}
-.cal-appt-notes{font-size:13px;color:#6b6560;margin-top:6px;line-height:1.45}
+.cal-appt-card{background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:10px;padding:12px 16px;margin-bottom:8px}
+.cal-appt-head{display:flex;align-items:center;gap:8px;font-size:1.037rem}
+.cal-appt-notes{font-size:0.963rem;color:var(--color-text-secondary);margin-top:6px;line-height:1.45}
 /* messages */
 .msg-compose{display:flex;gap:8px;align-items:center;margin-bottom:20px;flex-wrap:wrap}
-.msg-sender{display:flex;align-items:center;gap:8px;padding:4px 12px 4px 4px;background:#eef4f8;border-radius:20px;flex-shrink:0}
-.msg-sender-name{font-size:13px;font-weight:600;color:#3d3730}
-.msg-sender-role{font-weight:400;color:#8d99ae}
-.msg-self{background:#eef4f8!important;border-color:#b0cfe0!important}
-.msg-role{font-size:11px;color:#8d99ae;margin-left:4px;font-weight:400}
+.msg-sender{display:flex;align-items:center;gap:8px;padding:4px 12px 4px 4px;background:var(--color-background-info);border-radius:20px;flex-shrink:0}
+.msg-sender-name{font-size:0.963rem;font-weight:600;color:var(--color-text-primary)}
+.msg-sender-role{font-weight:400;color:var(--color-text-muted)}
+.msg-self{background:var(--color-background-info)!important;border-color:var(--color-border-info)!important}
+.msg-role{font-size:0.8148rem;color:var(--color-text-muted);margin-left:4px;font-weight:400}
 .msg-meta{display:flex;align-items:center;gap:6px}
 .msg-list{display:flex;flex-direction:column;gap:8px}
-.msg-bubble{background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:12px 16px}
+.msg-bubble{background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:12px;padding:12px 16px}
 .msg-meta{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
-.msg-time{font-size:11px;color:#a09a92}.msg-text{font-size:14px;color:#3d3730;line-height:1.5;white-space:pre-wrap}
+.msg-time{font-size:0.8148rem;color:var(--color-text-muted)}.msg-text{font-size:1.037rem;color:var(--color-text-primary);line-height:1.5;white-space:pre-wrap}
 /* settings */
 /* documents */
-.doc-processing{display:flex;align-items:center;gap:12px;padding:20px;background:#fdf6ee;border-radius:12px;color:#bc6c25;font-size:14px;font-weight:600;margin-bottom:20px}
-.doc-spinner{width:20px;height:20px;border:3px solid #f0e0c8;border-top-color:#bc6c25;border-radius:50%;animation:spin .8s linear infinite}
+.doc-processing{display:flex;align-items:center;gap:12px;padding:20px;background:var(--color-background-warning);border-radius:12px;color:var(--color-text-warning);font-size:1.037rem;font-weight:600;margin-bottom:20px}
+.doc-spinner{width:20px;height:20px;border:3px solid var(--color-border-warning);border-top-color:var(--color-text-warning);border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.doc-type-badge{display:inline-flex;align-items:center;gap:8px;padding:8px 16px;background:#fff;border:1px solid #e8e4de;border-radius:20px;font-size:13.5px;color:#6b6560;margin-bottom:24px}
-.doc-table-wrap{overflow-x:auto;margin-bottom:12px;border:1px solid #e8e4de;border-radius:10px}
-.doc-table{width:100%;border-collapse:collapse;font-size:13.5px}
-.doc-table th{text-align:left;padding:10px 12px;background:#f6f4f0;color:#6b6560;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap;border-bottom:2px solid #e8e4de}
-.doc-table td{padding:6px 8px;border-bottom:1px solid #f0ece4;vertical-align:middle}
+.doc-type-badge{display:inline-flex;align-items:center;gap:8px;padding:8px 16px;background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:20px;font-size:1rem;color:var(--color-text-secondary);margin-bottom:24px}
+.doc-table-wrap{overflow-x:auto;margin-bottom:12px;border:1px solid var(--color-border-subtle);border-radius:10px}
+.doc-table{width:100%;border-collapse:collapse;font-size:1rem}
+.doc-table th{text-align:left;padding:10px 12px;background:var(--color-background);color:var(--color-text-secondary);font-weight:600;font-size:0.8889rem;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap;border-bottom:2px solid var(--color-border-subtle)}
+.doc-table td{padding:6px 8px;border-bottom:1px solid var(--color-background-secondary);vertical-align:middle}
 .doc-table tr:last-child td{border-bottom:none}
-.doc-flagged{background:#fde2e8}
-.doc-cell-input{width:100%;padding:5px 8px;border:1px solid transparent;border-radius:4px;font-size:13px;outline:none;background:transparent;color:#3d3730;transition:border-color .15s}
-.doc-cell-input:hover{border-color:#e5e1db}.doc-cell-input:focus{border-color:#457b9d;background:#fff}
+.doc-flagged{background:var(--color-background-danger)}
+.doc-cell-input{width:100%;padding:5px 8px;border:1px solid transparent;border-radius:4px;font-size:0.963rem;outline:none;background:transparent;color:var(--color-text-primary);transition:border-color .15s}
+.doc-cell-input:hover{border-color:var(--color-border-subtle)}.doc-cell-input:focus{border-color:var(--color-action-primary);background:var(--color-surface)}
 .doc-cell-sm{max-width:100px}.doc-cell-xs{max-width:60px}
 .doc-table-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
-.doc-section-card{background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:14px 18px;margin-bottom:10px}
-.doc-section-title{font-size:14px;font-weight:700;color:#457b9d;margin:0 0 8px;font-family:'Libre Baskerville',serif}
-.doc-section-body{font-size:13.5px;color:#3d3730;line-height:1.55;white-space:pre-wrap;margin:0}
-.doc-raw-text{font-size:12.5px;line-height:1.5;color:#6b6560;background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:14px 16px;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto;font-family:'Source Sans 3',monospace}
-.doc-raw-details{margin-top:16px}.doc-raw-summary{font-size:13px;color:#8d99ae;cursor:pointer;padding:8px 0}
+.doc-section-card{background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:10px;padding:14px 18px;margin-bottom:10px}
+.doc-section-title{font-size:1.037rem;font-weight:700;color:var(--color-action-primary);margin:0 0 8px;font-family:var(--font-ui)}
+.doc-section-body{font-size:1rem;color:var(--color-text-primary);line-height:1.55;white-space:pre-wrap;margin:0}
+.doc-raw-text{font-size:0.9259rem;line-height:1.5;color:var(--color-text-secondary);background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:10px;padding:14px 16px;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto;font-family:var(--font-ui),monospace}
+.doc-raw-details{margin-top:16px}.doc-raw-summary{font-size:0.963rem;color:var(--color-text-muted);cursor:pointer;padding:8px 0}
 
 /* incidents */
-.incident-card{background:#fff;border:1px solid #e8e4de;border-left:4px solid;border-radius:10px;padding:14px 18px;margin-bottom:10px}
+.incident-card{background:var(--color-surface);border:1px solid var(--color-border-subtle);border-left:4px solid;border-radius:10px;padding:14px 18px;margin-bottom:10px}
 .incident-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
-.incident-type{font-weight:600;font-size:14px;color:#3d3730}
-.incident-datetime{font-size:12px;color:#8d99ae;margin-left:auto}
-.incident-desc{font-size:14px;color:#3d3730;line-height:1.5;margin:0 0 6px}
-.incident-response{font-size:13px;color:#6b6560;line-height:1.45;margin:0 0 6px}
-.incident-meta{display:flex;gap:16px;font-size:12px;color:#8d99ae;flex-wrap:wrap}
+.incident-type{font-weight:600;font-size:1.037rem;color:var(--color-text-primary)}
+.incident-datetime{font-size:0.8889rem;color:var(--color-text-muted);margin-left:auto}
+.incident-desc{font-size:1.037rem;color:var(--color-text-primary);line-height:1.5;margin:0 0 6px}
+.incident-response{font-size:0.963rem;color:var(--color-text-secondary);line-height:1.45;margin:0 0 6px}
+.incident-meta{display:flex;gap:16px;font-size:0.8889rem;color:var(--color-text-muted);flex-wrap:wrap}
 
 /* med admin */
 .med-date-nav{display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap}
 .med-day-stats{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap}
-.med-stat{font-size:13px;font-weight:600;padding:4px 12px;border-radius:8px}
-.med-stat-given{background:#e8f0df;color:#718355}
-.med-stat-missed{background:#fde2e8;color:#b56576}
-.med-stat-refused{background:#fdf0d5;color:#bc6c25}
-.med-stat-pending{background:#eef0f3;color:#8d99ae}
+.med-stat{font-size:0.963rem;font-weight:600;padding:4px 12px;border-radius:8px}
+.med-stat-given{background:var(--color-background-success);color:var(--color-text-success)}
+.med-stat-missed{background:var(--color-background-danger);color:var(--color-text-danger)}
+.med-stat-refused{background:var(--color-background-warning);color:var(--color-text-warning)}
+.med-stat-pending{background:var(--color-background-secondary);color:var(--color-text-muted)}
 .med-table td,.med-table th{text-align:center;padding:8px 6px}
 .med-table td:first-child,.med-table th:first-child{text-align:left;min-width:140px}
 .med-table td:nth-child(2),.med-table th:nth-child(2){text-align:left}
-.med-slot-th{font-size:11px!important;min-width:60px}
+.med-slot-th{font-size:0.8148rem!important;min-width:60px}
 .med-cell{min-width:54px;transition:background .12s}
-.med-check{font-size:16px;font-weight:700;display:inline-block;width:24px;height:24px;line-height:24px;text-align:center;border-radius:6px}
-.med-check.given{color:#718355;background:#d4e8c4}.med-check.missed{color:#b56576;background:#f8d0d8}
-.med-check.refused{color:#bc6c25;background:#f8e4c4}.med-check.pending{color:#c5c0b8}.med-check.na{color:#e5e1db}
-.med-note{font-size:11px;color:#8d99ae;margin-top:2px}
+.med-check{font-size:1.1852rem;font-weight:700;display:inline-block;width:24px;height:24px;line-height:24px;text-align:center;border-radius:6px}
+.med-check.given{color:var(--color-text-success);background:var(--color-background-success)}.med-check.missed{color:var(--color-text-danger);background:var(--color-background-danger)}
+.med-check.refused{color:var(--color-text-warning);background:var(--color-background-warning)}.med-check.pending{color:var(--color-text-muted)}.med-check.na{color:var(--color-border-subtle)}
+.med-note{font-size:0.8148rem;color:var(--color-text-muted);margin-top:2px}
 .med-slot-row{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
 
 /* expenses */
 .expense-summary{display:flex;gap:14px;margin-bottom:20px;flex-wrap:wrap}
-.expense-summary-item{background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:12px 18px;min-width:140px;flex:1}
-.expense-summary-label{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#8d99ae;display:block;margin-bottom:4px}
-.expense-summary-value{font-size:20px;font-weight:700;color:#3d3730;font-family:'Libre Baskerville',serif}
+.expense-summary-item{background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:10px;padding:12px 18px;min-width:140px;flex:1}
+.expense-summary-label{font-size:0.8148rem;text-transform:uppercase;letter-spacing:.5px;color:var(--color-text-muted);display:block;margin-bottom:4px}
+.expense-summary-value{font-size:1.4814rem;font-weight:700;color:var(--color-text-primary);font-family:var(--font-ui)}
 
 .settings-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 
 /* emergency */
 .emergency-grid{display:flex;flex-direction:column;gap:16px}
-.emergency-card{background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:18px 20px;border-left:4px solid #8b0000}
-.emergency-title{font-family:'Libre Baskerville',serif;font-size:16px;font-weight:700;margin:0 0 12px;color:#8b0000}
+.emergency-card{background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:12px;padding:18px 20px;border-left:4px solid var(--color-text-danger)}
+.emergency-title{font-family:var(--font-ui);font-size:1.1852rem;font-weight:700;margin:0 0 12px;color:var(--color-text-danger)}
 .emergency-steps{margin:0;padding:0 0 0 20px;display:flex;flex-direction:column;gap:6px}
-.emergency-step{display:flex;align-items:center;gap:8px;font-size:13.5px;line-height:1.45;color:#3d3730}
-.emergency-step-input{flex:1;padding:6px 10px;border:1px solid transparent;border-radius:6px;font-size:13.5px;outline:none;background:transparent;color:#3d3730}
-.emergency-step-input:hover{border-color:#e5e1db}.emergency-step-input:focus{border-color:#8b0000;background:#fff}
+.emergency-step{display:flex;align-items:center;gap:8px;font-size:1rem;line-height:1.45;color:var(--color-text-primary)}
+.emergency-step-input{flex:1;padding:6px 10px;border:1px solid transparent;border-radius:6px;font-size:1rem;outline:none;background:transparent;color:var(--color-text-primary)}
+.emergency-step-input:hover{border-color:var(--color-border-subtle)}.emergency-step-input:focus{border-color:var(--color-text-danger);background:var(--color-surface)}
 
 /* triggers */
-.trigger-alert{padding:14px 18px;border-radius:10px;font-size:14px;font-weight:600;margin-bottom:20px}
+.trigger-alert{padding:14px 18px;border-radius:10px;font-size:1.037rem;font-weight:600;margin-bottom:20px}
 .trigger-list{display:flex;flex-direction:column;gap:8px}
-.trigger-item{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;border-radius:10px;border:1px solid #e8e4de;background:#fff;cursor:pointer;transition:all .12s}
-.trigger-active{background:#fdf0d5!important;border-color:#f0d5a0}
-.trigger-label{font-size:14.5px;font-weight:600;color:#3d3730}.trigger-desc{font-size:12.5px;color:#8d99ae;margin-top:2px}
+.trigger-item{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;border-radius:10px;border:1px solid var(--color-border-subtle);background:var(--color-surface);cursor:pointer;transition:all .12s}
+.trigger-active{background:var(--color-background-warning)!important;border-color:var(--color-border-warning)}
+.trigger-label{font-size:1.0741rem;font-weight:600;color:var(--color-text-primary)}.trigger-desc{font-size:0.9259rem;color:var(--color-text-muted);margin-top:2px}
 
 /* visit summary */
-.visit-summary{font-size:13px;line-height:1.6;color:#3d3730;background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:18px 20px;white-space:pre-wrap;word-break:break-word;max-height:70vh;overflow-y:auto;font-family:'Source Sans 3',monospace}
+.visit-summary{font-size:0.963rem;line-height:1.6;color:var(--color-text-primary);background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:10px;padding:18px 20px;white-space:pre-wrap;word-break:break-word;max-height:70vh;overflow-y:auto;font-family:var(--font-ui),monospace}
 
 /* help */
-.help-toc{background:#fff;border:1px solid #e8e4de;border-radius:10px;padding:14px 18px;margin-bottom:24px;font-size:13px;line-height:2;color:#6b6560}
-.help-link{color:#457b9d;text-decoration:none}.help-link:hover{text-decoration:underline}
-.help-section{margin-bottom:24px;padding-bottom:20px;border-bottom:1px solid #f0ece4}
-.help-body{font-size:14px;color:#3d3730;line-height:1.65}
+.help-toc{background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:10px;padding:14px 18px;margin-bottom:24px;font-size:0.963rem;line-height:2;color:var(--color-text-secondary)}
+.help-link{color:var(--color-action-primary);text-decoration:none}.help-link:hover{text-decoration:underline}
+.help-section{margin-bottom:24px;padding-bottom:20px;border-bottom:1px solid var(--color-background-secondary)}
+.help-body{font-size:1.037rem;color:var(--color-text-primary);line-height:1.65}
 
 /* merge preview */
-.merge-modal{max-width:520px;max-height:80vh;overflow-y:auto}
-.sr-protected{position:absolute;top:8px;right:8px;font-size:17px;opacity:.7}
-.flood-warn{background:#fbeee6;border:1px solid #d8a384;color:#8a4a22;border-radius:10px;padding:10px 12px;margin:8px 0;font-size:13px;line-height:1.45}
-.merge-source{font-size:13.5px;color:#6b6560;margin:0 0 16px;background:#faf9f7;padding:8px 14px;border-radius:8px}
+.merge-modal{max-width:min(100%,28.89rem);max-height:80vh;overflow-y:auto}
+.sr-protected{position:absolute;top:8px;right:8px;font-size:1.2592rem;opacity:.7}
+.flood-warn{background:var(--color-background-warning);border:1px solid var(--color-border-warning);color:var(--color-text-warning);border-radius:10px;padding:10px 12px;margin:8px 0;font-size:0.963rem;line-height:1.45}
+.merge-source{font-size:1rem;color:var(--color-text-secondary);margin:0 0 16px;background:var(--color-background);padding:8px 14px;border-radius:8px}
 .merge-section{margin-bottom:16px}
-.merge-section-title{font-size:13px;font-weight:700;margin:0 0 6px}
-.merge-item{font-size:13px;padding:5px 10px;margin-bottom:3px;border-radius:6px;line-height:1.4}
-.merge-added{background:#e8f0df;color:#3d3730}
-.merge-updated{background:#fdf0d5;color:#3d3730}
-.merge-kept{background:#f6f4f0;color:#a09a92}
+.merge-section-title{font-size:0.963rem;font-weight:700;margin:0 0 6px}
+.merge-item{font-size:0.963rem;padding:5px 10px;margin-bottom:3px;border-radius:6px;line-height:1.4}
+.merge-added{background:var(--color-background-success);color:var(--color-text-primary)}
+.merge-updated{background:var(--color-background-warning);color:var(--color-text-primary)}
+.merge-kept{background:var(--color-background);color:var(--color-text-muted)}
 
 /* sync */
-.sync-status{padding:12px 18px;border-radius:10px;font-size:14px;font-weight:500;margin-bottom:20px}
-.sync-status-success{background:#e8f0df;color:#3d5a20}
-.sync-status-error{background:#fde2e8;color:#8b0000}
+.sync-status{padding:12px 18px;border-radius:10px;font-size:1.037rem;font-weight:500;margin-bottom:20px}
+.sync-status-success{background:var(--color-background-success);color:var(--color-text-success)}
+.sync-status-error{background:var(--color-background-danger);color:var(--color-text-danger)}
 .sync-methods{display:flex;flex-direction:column;gap:10px;margin:12px 0}
-.sync-method-card{display:flex;align-items:center;gap:14px;padding:16px 18px;background:#fff;border:1.5px solid #e8e4de;border-radius:12px;cursor:pointer;transition:all .15s}
-.sync-method-card:hover{border-color:#457b9d;background:#f0f5f9}
+.sync-method-card{display:flex;align-items:center;gap:14px;padding:16px 18px;background:var(--color-surface);border:1.5px solid var(--color-border-subtle);border-radius:12px;cursor:pointer;transition:all .15s}
+.sync-method-card:hover{border-color:var(--color-action-primary);background:var(--color-background-info)}
 .sync-method-card:active{transform:scale(.98)}
-.sync-method-icon{font-size:36px;width:52px;text-align:center;flex-shrink:0}
+.sync-method-icon{font-size:2.6667rem;width:52px;text-align:center;flex-shrink:0}
 .sync-method-info{display:flex;flex-direction:column;gap:2px}
-.sync-method-info strong{font-size:14.5px;color:#3d3730}
-.sync-method-info span{font-size:12.5px;color:#8d99ae}
+.sync-method-info strong{font-size:1.0741rem;color:var(--color-text-primary)}
+.sync-method-info span{font-size:0.9259rem;color:var(--color-text-muted)}
 .sync-url-row{display:flex;align-items:center;gap:8px;margin-top:12px}
-.sync-loading{padding:10px;text-align:center;color:#457b9d;font-size:13px;font-weight:600}
-.sync-paste-details{margin-top:20px;padding-top:16px;border-top:1px solid #e8e4de}
-.sync-paste-summary{font-size:13px;color:#8d99ae;cursor:pointer;padding:8px 0}
-.sync-paste-summary:hover{color:#6b6560}
+.sync-loading{padding:10px;text-align:center;color:var(--color-action-primary);font-size:0.963rem;font-weight:600}
+.sync-paste-details{margin-top:20px;padding-top:16px;border-top:1px solid var(--color-border-subtle)}
+.sync-paste-summary{font-size:0.963rem;color:var(--color-text-muted);cursor:pointer;padding:8px 0}
+.sync-paste-summary:hover{color:var(--color-text-secondary)}
 
 /* cloud sync */
 .cloud-setup-steps{display:flex;flex-direction:column;gap:8px;margin:14px 0}
-.cloud-step{display:flex;align-items:center;gap:12px;font-size:14px;color:#3d3730}
-.cloud-step-num{width:28px;height:28px;border-radius:50%;background:#457b9d;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex-shrink:0}
-.cloud-connected-info{display:flex;align-items:center;gap:14px;padding:16px 18px;background:#e8f0df;border:1.5px solid #b8d4a0;border-radius:12px}
-.cloud-connected-icon{font-size:42px}
+.cloud-step{display:flex;align-items:center;gap:12px;font-size:1.037rem;color:var(--color-text-primary)}
+.cloud-step-num{width:28px;height:28px;border-radius:50%;background:var(--color-action-primary);color:var(--color-text-on-fill);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.963rem;flex-shrink:0}
+.cloud-connected-info{display:flex;align-items:center;gap:14px;padding:16px 18px;background:var(--color-background-success);border:1.5px solid var(--color-border-success);border-radius:12px}
+.cloud-connected-icon{font-size:3.1111rem}
 .cloud-connected-details{flex:1}
-.cloud-connected-file{font-size:15px;font-weight:700;color:#3d3730}
-.cloud-connected-meta{font-size:12px;color:#718355;margin-top:2px}
+.cloud-connected-file{font-size:1.1111rem;font-weight:700;color:var(--color-text-primary)}
+.cloud-connected-meta{font-size:0.8889rem;color:var(--color-text-success);margin-top:2px}
 .sync-main-action{text-align:center;padding:24px 0}
-.cloud-sync-btn{display:inline-flex;align-items:center;gap:10px;padding:18px 48px;font-size:18px;font-weight:700;border:none;border-radius:14px;background:linear-gradient(135deg,#457b9d,#3d6a87);color:#fff;cursor:pointer;transition:all .15s;box-shadow:0 4px 16px rgba(69,123,157,.3)}
+.cloud-sync-btn{display:inline-flex;align-items:center;gap:10px;padding:18px 48px;font-size:1.3333rem;font-weight:700;border:none;border-radius:14px;background:linear-gradient(135deg,var(--color-action-primary),var(--color-action-primary-hover));color:var(--color-text-on-fill);cursor:pointer;transition:all .15s;box-shadow:0 4px 16px rgba(69,123,157,.3)}
 .cloud-sync-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 6px 20px rgba(69,123,157,.4)}
 .cloud-sync-btn:active{transform:translateY(0)}
 .cloud-sync-btn:disabled{opacity:.5;cursor:default}
-.sync-advanced{margin-top:24px;border-top:1px solid #e8e4de;padding-top:4px}
-.sync-advanced-summary{font-size:13px;color:#8d99ae;cursor:pointer;padding:12px 0;font-weight:600}
-.sync-advanced-summary:hover{color:#6b6560}
+.sync-advanced{margin-top:24px;border-top:1px solid var(--color-border-subtle);padding-top:4px}
+.sync-advanced-summary{font-size:0.963rem;color:var(--color-text-muted);cursor:pointer;padding:12px 0;font-weight:600}
+.sync-advanced-summary:hover{color:var(--color-text-secondary)}
 .sync-advanced-content{padding-top:8px}
-.sync-sub-title{font-size:13px;font-weight:700;color:#6b6560;margin:16px 0 8px}
+.sync-sub-title{font-size:0.963rem;font-weight:700;color:var(--color-text-secondary);margin:16px 0 8px}
 .sync-method-tabs{display:flex;gap:8px;margin-bottom:16px}
 
-/* team */
-.team-form{margin-top:12px;display:flex;flex-direction:column;gap:8px;max-width:400px}
-.team-header{margin-bottom:16px}
-.team-name{font-size:18px;font-weight:700;color:#3d3730;font-family:'Libre Baskerville',serif}
-.team-client{font-size:14px;color:#6b6560;margin-top:2px}
-.team-roster{display:flex;flex-direction:column;gap:8px;margin-bottom:16px}
-.team-member{display:flex;align-items:center;gap:12px;padding:12px 16px;background:#fff;border:1px solid #e8e4de;border-radius:10px}
-.team-member-self{background:#eef4f8;border-color:#b0cfe0}
-.team-member-avatar{width:36px;height:36px;border-radius:50%;background:#457b9d;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;flex-shrink:0}
-.team-member-info{flex:1;min-width:0}
-.team-member-name{font-size:14px;font-weight:600;color:#3d3730}
-.team-member-you{font-size:11px;color:#457b9d;font-weight:400}
-.team-member-role{font-size:12px;color:#8d99ae}
-.team-member-sync{font-size:11px;color:#a09a92;text-align:right;flex-shrink:0}
-.team-invite-details{margin-top:8px;padding-top:8px;border-top:1px solid #e8e4de}
-.team-invite-code{font-family:monospace;font-size:11px;padding:10px 14px;background:#fff;border:1px solid #e8e4de;border-radius:8px;word-break:break-all;cursor:pointer;color:#457b9d;transition:background .12s;line-height:1.5}
-.team-invite-code:hover{background:#eef4f8}
-.client-tier-section{margin-top:16px;padding-top:16px;border-top:1px solid #e8e4de}
+/* circle */
+.circle-form{margin-top:12px;display:flex;flex-direction:column;gap:8px;max-width:min(100%,22.22rem)}
+.circle-header{margin-bottom:16px}
+.circle-name{font-size:1.3333rem;font-weight:700;color:var(--color-text-primary);font-family:var(--font-ui)}
+.circle-client{font-size:1.037rem;color:var(--color-text-secondary);margin-top:2px}
+.circle-roster{display:flex;flex-direction:column;gap:8px;margin-bottom:16px}
+.circle-member{display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:10px}
+.circle-member-self{background:var(--color-background-info);border-color:var(--color-border-info)}
+.circle-member-avatar{width:36px;height:36px;border-radius:50%;background:var(--color-action-primary);color:var(--color-text-on-fill);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.1852rem;flex-shrink:0}
+.circle-member-info{flex:1;min-width:0}
+.circle-member-name{font-size:1.037rem;font-weight:600;color:var(--color-text-primary)}
+.circle-member-you{font-size:0.8148rem;color:var(--color-action-primary);font-weight:400}
+.circle-member-role{font-size:0.8889rem;color:var(--color-text-muted)}
+.circle-member-sync{font-size:0.8148rem;color:var(--color-text-muted);text-align:right;flex-shrink:0}
+.circle-invite-details{margin-top:8px;padding-top:8px;border-top:1px solid var(--color-border-subtle)}
+.circle-invite-code{font-family:monospace;font-size:0.8148rem;padding:10px 14px;background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:8px;word-break:break-all;cursor:pointer;color:var(--color-action-primary);transition:background .12s;line-height:1.5}
+.circle-invite-code:hover{background:var(--color-background-info)}
+.client-tier-section{margin-top:16px;padding-top:16px;border-top:1px solid var(--color-border-subtle)}
 .client-tier-toggle{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
 .client-tier-toggle .state-btn{flex:1;min-width:180px;text-align:left;display:flex;flex-direction:column;gap:2px;padding:12px 16px}
-.tier-desc{font-size:11px;font-weight:400;opacity:.7;display:block}
-.role-badge{font-size:10px;padding:2px 6px;border-radius:4px;background:#eef4f8;color:#457b9d;font-weight:600;margin-left:4px}
+.tier-desc{font-size:0.8148rem;font-weight:400;opacity:.7;display:block}
+.role-badge{font-size:0.7408rem;padding:2px 6px;border-radius:4px;background:var(--color-background-info);color:var(--color-action-primary);font-weight:600;margin-left:4px}
 
 /* state selector */
 .state-selector{display:flex;gap:8px;flex-wrap:wrap}
-.state-btn{padding:10px 18px;border:2px solid #e5e1db;border-radius:10px;background:#fff;font-size:14px;color:#6b6560;cursor:pointer;transition:all .12s;font-weight:500}
-.state-btn:hover{border-color:#457b9d;color:#3d3730}
-.state-btn-active{background:#eef4f8;border-color:#457b9d;color:#457b9d;font-weight:700}
+.state-btn{padding:10px 18px;border:2px solid var(--color-border-subtle);border-radius:10px;background:var(--color-surface);font-size:1.037rem;color:var(--color-text-secondary);cursor:pointer;transition:all .12s;font-weight:500}
+.state-btn:hover{border-color:var(--color-action-primary);color:var(--color-text-primary)}
+.state-btn-active{background:var(--color-background-info);border-color:var(--color-action-primary);color:var(--color-action-primary);font-weight:700}
 
 /* self reports */
-.sr-form{background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:20px}
+.sr-form{background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:12px;padding:20px}
 .sr-mood-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
-.sr-mood-btn{padding:8px 14px;border:1.5px solid #e5e1db;border-radius:10px;background:#fff;font-size:13.5px;color:#6b6560;cursor:pointer;transition:all .12s}
-.sr-mood-active{background:#e8f0df!important;border-color:#718355;color:#3d3730;font-weight:600}
+.sr-mood-btn{padding:8px 14px;border:1.5px solid var(--color-border-subtle);border-radius:10px;background:var(--color-surface);font-size:1rem;color:var(--color-text-secondary);cursor:pointer;transition:all .12s}
+.sr-mood-active{background:var(--color-background-success)!important;border-color:var(--color-text-success);color:var(--color-text-primary);font-weight:600}
 .sr-audio-row{display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}
-.sr-record-btn{padding:10px 18px;border-radius:10px;border:2px solid #b56576;background:#fff;color:#b56576;font-weight:600;font-size:14px;cursor:pointer;transition:all .15s}
-.sr-recording{background:#fde2e8;animation:pulse 1s ease infinite}
+.sr-record-btn{padding:10px 18px;border-radius:10px;border:2px solid var(--color-text-danger);background:var(--color-surface);color:var(--color-text-danger);font-weight:600;font-size:1.037rem;cursor:pointer;transition:all .15s}
+.sr-recording{background:var(--color-background-danger);animation:pulse 1s ease infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
 .sr-audio-preview{display:flex;align-items:center;gap:8px}
 .sr-list{display:flex;flex-direction:column;gap:10px}
-.sr-card{background:#fff;border:1px solid #e8e4de;border-left:4px solid #718355;border-radius:10px;padding:14px 18px;position:relative}
+.sr-card{background:var(--color-surface);border:1px solid var(--color-border-subtle);border-left:4px solid var(--color-text-success);border-radius:10px;padding:14px 18px;position:relative}
 .sr-card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
-.sr-card-type{font-weight:600;font-size:13.5px;color:#3d3730}
-.sr-card-time{font-size:11.5px;color:#a09a92}
-.sr-card-mood{font-size:15px;margin-bottom:4px}
-.sr-card-text{font-size:14px;color:#3d3730;line-height:1.5;white-space:pre-wrap;margin:0}
-.sr-err{font-size:13px;color:#b56576;margin:8px 0 0;padding:0}
+.sr-card-type{font-weight:600;font-size:1rem;color:var(--color-text-primary)}
+.sr-card-time{font-size:0.8519rem;color:var(--color-text-muted)}
+.sr-card-mood{font-size:1.1111rem;margin-bottom:4px}
+.sr-card-text{font-size:1.037rem;color:var(--color-text-primary);line-height:1.5;white-space:pre-wrap;margin:0}
+.sr-err{font-size:0.963rem;color:var(--color-text-danger);margin:8px 0 0;padding:0}
 
 /* doc library */
 .doc-type-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:20px}
 .doc-save-row{display:flex;gap:8px;align-items:center}
+
+/* tap-select — type/severity/trigger/pill-shape chips. Options are visible and
+   one tap away; a <select> hid them behind two interactions. */
+.tap-select{display:flex;flex-wrap:wrap;gap:var(--space-xs)}
+.tap-opt{display:inline-flex;align-items:center;gap:6px;padding:10px 14px;border:var(--border-input) solid var(--color-border);border-radius:var(--radius-button);background:var(--color-surface);color:var(--color-text-primary);font-size:1.037rem;font-weight:600;line-height:1.2;text-align:left}
+.tap-opt:hover{border-color:var(--color-action-primary);opacity:1}
+.tap-opt-on{border-color:var(--color-action-primary);background:var(--color-background-info);color:var(--color-text-info)}
+.tap-opt-icon{font-size:1.3333rem;line-height:1}
+.incident-trigger{font-size:0.963rem;color:var(--color-text-secondary);margin:4px 0 0;font-style:italic}
+.cf-optional{font-weight:400;color:var(--color-text-muted);font-size:0.8889rem}
+
+/* medication flags & cabinet fields */
+.med-flag{display:flex;gap:10px;align-items:flex-start;margin-top:12px;padding:12px;border:1px solid var(--color-border-subtle);border-radius:var(--radius-button);background:var(--color-background-secondary);font-size:0.963rem;line-height:1.45;color:var(--color-text-secondary);cursor:pointer}
+.med-flag input{width:20px;height:20px;flex-shrink:0;margin-top:1px}
+.med-cabinet-details{margin-top:12px;border:1px solid var(--color-border-subtle);border-radius:var(--radius-button);padding:10px 12px}
+.med-cabinet-details summary{cursor:pointer;font-size:0.963rem;font-weight:600;color:var(--color-action-primary);min-height:var(--tap-target-min);display:flex;align-items:center}
+
+/* emergency card additions */
+.ecard-id-row{display:flex;gap:14px;align-items:flex-start}
+.ecard-photo{width:84px;height:84px;object-fit:cover;border-radius:var(--radius-button);border:2px solid var(--color-border);flex-shrink:0}
+.ecard-code-status{font-weight:700;color:var(--color-text-danger)}
+.ecard-redflag{font-weight:700;color:var(--color-text-danger)}
+
+/* ═══ v3 navigation ═══ */
+/* top bar */
+.topbar-icon{background:none;border:none;font-size:1.4814rem;cursor:pointer;padding:0 8px;color:var(--color-text-secondary);position:relative;display:flex;align-items:center;justify-content:center;min-width:var(--tap-target-min)}
+.topbar-icon:hover{color:var(--color-action-primary);opacity:1}
+.topbar-msg .msg-badge{position:absolute;top:4px;right:2px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--color-fill-danger);color:var(--color-text-on-fill-danger);font-size:0.8148rem;font-weight:700;display:flex;align-items:center;justify-content:center;line-height:1}
+
+/* bottom nav */
+.hub-btn-sos .hub-btn-icon{color:var(--color-text-danger)}
+.hub-btn-sos.hub-active{color:var(--color-text-danger)}
+
+/* care hub drawer */
+.care-menu{position:fixed;top:0;left:0;bottom:0;width:min(88vw,380px);background:var(--color-surface);z-index:95;display:flex;flex-direction:column;box-shadow:var(--shadow-modal);animation:slideIn .18s ease-out}
+@keyframes slideIn{from{transform:translateX(-100%)}to{transform:translateX(0)}}
+.care-menu-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--color-border-subtle);flex-shrink:0}
+.care-menu-title{font-family:var(--font-ui);font-size:1.3333rem;font-weight:700;color:var(--color-text-primary)}
+.care-menu-scroll{overflow-y:auto;padding:8px 0 24px;-webkit-overflow-scrolling:touch}
+.care-menu-group{padding:4px 0 10px}
+.care-menu-label{font-size:0.8148rem;font-weight:700;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.5px;padding:12px 16px 6px}
+.care-menu-item{display:flex;align-items:center;gap:12px;width:100%;padding:12px 16px;border:none;background:none;cursor:pointer;text-align:left;color:var(--color-text-primary)}
+.care-menu-item:hover{background:var(--color-background-secondary);opacity:1}
+.care-menu-icon{font-size:1.4814rem;width:28px;text-align:center;flex-shrink:0}
+.care-menu-body{flex:1;min-width:0;display:flex;flex-direction:column}
+.care-menu-item-label{font-size:1.1111rem;font-weight:600}
+.care-menu-item-sub{font-size:0.8889rem;color:var(--color-text-muted)}
+
+/* segmented tabs (Meds, Log) */
+.seg-tabs{display:flex;flex-wrap:wrap;gap:4px;background:var(--color-background-secondary);border-radius:var(--radius-button);padding:4px;margin-bottom:16px}
+.seg-tab{flex:1 1 8rem;min-width:0;padding:10px 8px;border:none;border-radius:6px;background:transparent;font-size:1.037rem;font-weight:600;color:var(--color-text-secondary);cursor:pointer}
+.seg-tab-on{background:var(--color-surface);color:var(--color-action-primary);box-shadow:var(--shadow-card)}
+
+/* today — week strip */
+.week-strip{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch}
+.week-day{flex:1;min-width:44px;display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 4px;border:var(--border-input) solid var(--color-border-subtle);border-radius:var(--radius-button);background:var(--color-surface);cursor:pointer;position:relative}
+.week-day-today{border-color:var(--color-action-primary)}
+.week-day-has{background:var(--color-background-info)}
+.week-dow{font-size:0.8148rem;color:var(--color-text-muted);font-weight:600}
+.week-num{font-size:1.2592rem;font-weight:700;color:var(--color-text-primary)}
+.week-count{position:absolute;top:2px;right:4px;min-width:16px;height:16px;border-radius:8px;background:var(--color-action-primary);color:var(--color-text-on-fill);font-size:0.7408rem;font-weight:700;display:flex;align-items:center;justify-content:center}
+
+/* meds — schedule cards */
+.med-cards{display:flex;flex-direction:column;gap:12px}
+.med-card{background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:var(--radius-card);padding:14px 16px;box-shadow:var(--shadow-card)}
+.med-card-head{display:flex;align-items:flex-start;gap:10px}
+.med-card-name{font-size:1.1852rem;font-weight:700;color:var(--color-text-primary)}
+.med-card-sub{font-size:0.963rem;color:var(--color-text-secondary);margin-top:2px}
+.med-card-visual{font-size:0.8889rem;color:var(--color-text-muted);margin-top:2px}
+.med-crit-badge{font-size:0.7408rem;font-weight:700;text-transform:uppercase;letter-spacing:.4px;background:var(--color-background-danger);color:var(--color-text-danger);padding:2px 7px;border-radius:8px;vertical-align:middle}
+.med-flag-badge{font-size:0.7408rem;font-weight:700;text-transform:uppercase;letter-spacing:.4px;background:var(--color-background-warning);color:var(--color-text-warning);padding:2px 7px;border-radius:8px;vertical-align:middle}
+.med-slot-grid{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.med-slot-btn{display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 14px;border:var(--border-input) solid var(--color-border);border-radius:var(--radius-button);background:var(--color-surface);cursor:pointer;min-width:82px}
+.med-slot-btn:disabled{cursor:default;opacity:.7}
+.med-slot-name{font-size:0.8148rem;font-weight:600;color:var(--color-text-secondary)}
+.med-slot-mark{font-size:1.4074rem;line-height:1}
+.med-slot-given{background:var(--color-background-success);border-color:var(--color-border-success);color:var(--color-text-success)}
+.med-slot-missed{background:var(--color-background-danger);border-color:var(--color-border-danger);color:var(--color-text-danger)}
+.med-slot-refused{background:var(--color-background-warning);border-color:var(--color-border-warning);color:var(--color-text-warning)}
+.med-card-actions{display:flex;gap:8px;margin-top:12px}
+
+/* meds — cabinet */
+.cabinet-list{display:flex;flex-direction:column;gap:12px}
+.cabinet-card{background:var(--color-surface);border:1px solid var(--color-border-subtle);border-radius:var(--radius-card);padding:14px 16px;box-shadow:var(--shadow-card)}
+.cabinet-head{display:flex;align-items:flex-start;gap:10px}
+.cabinet-name{font-size:1.1852rem;font-weight:700;color:var(--color-text-primary);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.cabinet-sub{font-size:0.963rem;color:var(--color-text-secondary);margin-top:2px}
+.cabinet-meta{display:flex;flex-direction:column;gap:4px;margin-top:10px;font-size:0.9259rem;color:var(--color-text-secondary)}
+.cabinet-refill{margin-top:10px;font-size:0.963rem;font-weight:600;padding:7px 10px;border-radius:var(--radius-button);background:var(--color-background-secondary);color:var(--color-text-secondary)}
+.cabinet-refill.refill-soon{background:var(--color-background-warning);color:var(--color-text-warning)}
+.cabinet-refill.refill-over{background:var(--color-background-danger);color:var(--color-text-danger)}
+.cabinet-notes{margin-top:8px;font-size:0.963rem;color:var(--color-text-secondary);font-style:italic}
+
+/* log */
+.log-cta{width:100%;padding:18px;font-size:1.2592rem;font-weight:700;border:none;border-radius:var(--radius-card);background:var(--color-action-primary);color:var(--color-text-on-fill);cursor:pointer;margin-bottom:12px}
+
+/* refusal — pause & pivot */
+.refusal-lead{font-size:1.1111rem;line-height:1.55;color:var(--color-text-primary);margin:0 0 12px}
+.refusal-med{font-size:1.037rem;color:var(--color-text-secondary);margin:0 0 14px}
+.refusal-critical{background:var(--color-background-danger);border:1px solid var(--color-border-danger);border-radius:var(--radius-button);padding:14px 16px;margin-top:12px}
+.refusal-critical-title{font-size:0.963rem;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--color-text-danger);margin-bottom:8px}
+
+/* sos */
+.sos-call{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:22px;font-size:1.6297rem;font-weight:700;border-radius:var(--radius-card);background:var(--color-fill-danger);color:var(--color-text-on-fill-danger);text-decoration:none;margin-bottom:16px;min-height:var(--tap-target-min)}
+.sos-script{background:var(--color-surface);border:2px solid var(--color-border-danger);border-radius:var(--radius-card);padding:16px 18px;margin-bottom:20px}
+.sos-script-title{font-size:0.8889rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--color-text-danger);margin-bottom:10px}
+.sos-script-list{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px}
+.sos-script-list li{font-size:1.1111rem;line-height:1.5;color:var(--color-text-primary)}
+.sos-script-note{font-size:0.963rem;color:var(--color-text-secondary);margin:12px 0 0;font-style:italic}
+.sos-contact-group{margin-bottom:14px}
+.sos-contact-cat{font-size:0.8148rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--color-text-muted);padding:6px 0}
+.sos-contact{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--color-border-subtle)}
+.sos-contact-photo{width:44px;height:44px;border-radius:50%;object-fit:cover;flex-shrink:0;border:1px solid var(--color-border-subtle)}
+.sos-contact-initial{display:flex;align-items:center;justify-content:center;background:var(--color-action-primary);color:var(--color-text-on-fill);font-weight:700;font-size:1.2592rem}
+.sos-contact-body{flex:1;min-width:0}
+.sos-contact-name{font-size:1.1111rem;font-weight:600;color:var(--color-text-primary)}
+.sos-contact-role{font-size:0.9259rem;color:var(--color-text-muted)}
+.sos-contact-call{width:var(--tap-target-min);height:var(--tap-target-min);border-radius:50%;background:var(--color-background-success);color:var(--color-text-success);display:flex;align-items:center;justify-content:center;font-size:1.4814rem;text-decoration:none;flex-shrink:0}
+
+/* view error boundary */
+.view-error{background:var(--color-surface);border:1px solid var(--color-border-danger);border-radius:var(--radius-card);padding:var(--space-md);margin-top:var(--space-sm)}
+.view-error-title{font-family:var(--font-ui);font-size:1.3333rem;font-weight:700;color:var(--color-text-danger);margin:0 0 8px}
+.view-error-body{font-size:1.1111rem;line-height:1.55;color:var(--color-text-primary);margin:0 0 12px}
+.view-error-detail{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8889rem;color:var(--color-text-muted);background:var(--color-background-secondary);border-radius:var(--radius-button);padding:8px 10px;margin:0 0 14px;overflow-x:auto;word-break:break-word}
 
 /* print styles for expenses */
 @media print{
@@ -5720,289 +7280,13 @@ select.cf-input{background:#fff}.cf-actions{display:flex;gap:8px;margin-top:4px}
   .page-sub{display:none!important}
 }
 
-@media(max-width:480px){.content{padding:16px 12px 28px}.subs-wrap{padding-left:28px}.add-sub-row,.cf-add-field-row,.msg-compose,.settings-row,.doc-table-actions{flex-wrap:wrap}.pn-btn{min-width:0;padding:12px 14px}.domain-pct{font-size:24px}.edit-icon{opacity:.5!important}.cf-grid{grid-template-columns:1fr}.cd-header{flex-direction:column;align-items:flex-start}.cd-info-item{min-width:0}.cf-custom-label{width:100px}.doc-table{font-size:12px}.doc-cell-input{font-size:12px;padding:4px 6px}}
+@media(max-width:min(100%,26.67rem)){.content{padding:16px 12px 28px}.subs-wrap{padding-left:28px}.add-sub-row,.cf-add-field-row,.msg-compose,.settings-row,.doc-table-actions{flex-wrap:wrap}.pn-btn{min-width:0;padding:12px 14px}.domain-pct{font-size:1.7778rem}.edit-icon{opacity:.5!important}.cf-grid{grid-template-columns:1fr}.cd-header{flex-direction:column;align-items:flex-start}.cd-info-item{min-width:0}.cf-custom-label{width:100px}.doc-table{font-size:0.8889rem}.doc-cell-input{font-size:0.8889rem;padding:4px 6px}}
 
-@media(prefers-color-scheme:dark){
-/* base */
-body,.app{background:#1a1a1e!important;color:#e0ddd8}
-.content{background:#1a1a1e}
-.content-v2{background:#1a1a1e!important;color:#e0ddd8}
-.main-area-v2{background:#1a1a1e}
-.recovery-box{background:#2a2a2e;border-color:#4a4a4e}
-.save-saving{background:#1e2e36;color:#bcd4e0;border-color:#2c4654}
-.save-error{background:#3a1e1e;color:#e0a0a0;border-color:#5a2e2e}
-.recovery-label{color:#e0ddd8}
-.recovery-banner{background:#1e2a1e;border-color:#3a5a2e;color:#a9c08f}
-.onb-body{color:#b0aca6}
-.onb-dot{background:#3a3a3e}
-.onb-install{background:#2a2a2e;border-color:#4a4a4e}
-.onb-step{color:#e0ddd8}
-.onb-share{background:#1e2e36;color:#7fb0cc}
-.onb-share-label{color:#9a948c}
-.onb-field-label{color:#e0ddd8}
-.onb-optional{color:#b0aca6}
-.nudge-install{background:#1e2e36;color:#bcd4e0}
-.nudge-backup{background:#332715;color:#e0c08a}
-.nudge-risk{background:#3a1e1e;color:#e0a0a0}
-.integrity-label{color:#e0ddd8}
-.integrity-val.ok{color:#8fae7e}
-.integrity-val.bad{color:#e08a7a}
-.integrity-val.muted{color:#9a948c}
-.backup-active{background:#1e2a1e;border-color:#3a5a2e}
-.backup-paused{background:#332715;border-color:#5a4a2e}
-.backup-status-body{color:#e0ddd8}
-.backup-status-body code{background:rgba(255,255,255,.08)}
-.backup-when{color:#9a948c}
 
-/* auth */
-.auth-wrap{background:#111114}
-.auth-card{background:#242428;border-color:#3a3a3e}
-.auth-title{color:#fff}.auth-sub{color:#c8c4be}
-.auth-note{color:#9aa5b8!important}
-.auth-input{background:#1a1a1e;border-color:#3a3a3e;color:#e0ddd8}
-.auth-input-err{border-color:#b56576}
-.auth-btn{background:#457b9d;color:#fff}
-.auth-footer,.auth-error{color:#a08090}
+/* Dark mode needs no per-component overrides: every surface above resolves
+   through the semantic tokens, which the :root dark block re-points. Only
+   genuinely un-tokenizable spots (fixed overlays, print) are handled inline. */
 
-/* headings & text */
-.page-title{color:#fff}
-.page-sub{color:#9aa5b8}
-.sec-title{color:#e0ddd8;border-color:#3a3a3e}
-.hint{color:#807a72}
-
-/* overview cards */
-.o-card{background:#242428!important;border-color:#3a3a3e}
-.o-card:hover{background:#2a2a2e!important}
-.o-card-title{color:#f5f3f0}
-.o-badge{opacity:.9}
-.prog-track,.sub-prog-track{background:#2e2e32}
-
-/* domain detail */
-.domain-header{background:#242428!important}
-.domain-pct{opacity:.9}
-.type-legend{color:#807a72}
-.dual-track-label{color:#b0aca6}
-.prog-label,.sub-prog-label{color:#807a72}
-
-/* goal cards */
-.goal-card{background:#242428!important;border-color:#3a3a3e}
-.goal-title{color:#f5f3f0!important}
-.chevron{color:#807a72}
-.goal-head:hover{background:#2a2a2e}
-
-/* sub items */
-.sub-item{background:#2a2a2e!important;border-color:#3a3a3e}
-.sub-done{background:#1e2a1e!important}
-.sub-overdue{background:#2e2218!important;border-color:#5a4530}
-.sub-text{color:#e0ddd8!important}
-.sub-custom{background:#2a2a2e!important}
-.sub-removed{background:#2a2a2e!important}
-.sub-type-select{color:#807a72}
-.sub-recency{color:#9aa5b8}
-
-/* forms & inputs */
-.cf-input,.cf-select,.cf-textarea,.notes-ta,.add-sub-input{background:#1e1e22;border-color:#3a3a3e;color:#e0ddd8}
-.cf-input::placeholder,.notes-ta::placeholder,.add-sub-input::placeholder{color:#5a5854}
-.cf-label{color:#b0aca6}
-.cf-overlay{background:rgba(0,0,0,.7)}
-.cf-modal{background:#242428;border-color:#3a3a3e}
-.cf-title{color:#fff}
-
-/* buttons */
-.save-btn{background:#457b9d;color:#fff}
-.cancel-btn{background:#3a3a3e;color:#e0ddd8;border-color:#5a5854}
-.edit-btn{background:#3a3a3e;color:#e0ddd8;border-color:#5a5854}
-.edit-icon{color:#9aa5b8}
-.remove-sub{color:#9aa5b8}
-.add-sub-trigger{color:#9aa5b8}
-.add-sub-trigger:hover{color:#e0ddd8;background:#2a2a2e}
-
-/* contacts */
-.contact-row{background:#242428;border-color:#3a3a3e}
-.contact-row:hover{background:#2a2a2e}
-.contact-name{color:#f5f3f0}
-.contact-role{color:#807a72}
-.contacts-empty{color:#5a5854}
-
-/* calendar */
-.cal-grid{border-color:#3a3a3e}
-.cal-cell{background:#242428;border-color:#3a3a3e;color:#b0aca6}
-.cal-cell:hover{background:#2a2a2e}
-.cal-today{background:#2a3540!important;color:#8bb8d0}
-.cal-has-appt{border-color:#457b9d}
-.cal-header{color:#9aa5b8}
-.cal-dow{color:#807a72}
-
-/* incidents, expenses */
-.incident-row,.expense-row{background:#242428;border-color:#3a3a3e}
-.incident-row:hover,.expense-row:hover{background:#2a2a2e}
-
-/* messages */
-.msg-bubble{background:#242428;border-color:#3a3a3e}
-.msg-self{background:#1e2a35!important;border-color:#2a4050!important}
-.msg-text{color:#e0ddd8}
-.msg-time{color:#807a72}
-.msg-sender{background:#2a2a2e}
-
-/* tables */
-.doc-table{color:#e0ddd8}
-.doc-table th{background:#2a2a2e;color:#b0aca6;border-color:#3a3a3e}
-.doc-table td{border-color:#3a3a3e}
-.doc-table tr:nth-child(even){background:#222226}
-.doc-cell-input{background:#1e1e22;border-color:#3a3a3e;color:#e0ddd8}
-.doc-flagged{background:#2e1e1e!important}
-
-/* settings */
-.settings-row{border-color:#3a3a3e}
-.state-btn{background:#242428;border-color:#3a3a3e;color:#b0aca6}
-.state-btn:hover{border-color:#457b9d}
-.state-btn-active{background:#1e2a35;border-color:#457b9d;color:#8bb8d0}
-
-/* sync */
-.sync-status-success{background:#1e2a1e;color:#8db870}
-.sync-status-error{background:#2e1e1e;color:#d08080}
-.sync-method-card{background:#242428;border-color:#3a3a3e}
-.sync-method-card:hover{background:#2a2a2e;border-color:#457b9d}
-.sync-method-info strong{color:#e0ddd8}
-.sync-method-info span{color:#807a72}
-.cloud-connected-info{background:#1e2a1e;border-color:#2a4030}
-.cloud-sync-btn{background:linear-gradient(135deg,#3a6a87,#2d5570);box-shadow:0 4px 16px rgba(45,85,112,.3)}
-.sync-advanced{border-color:#3a3a3e}
-
-/* team */
-.team-member{background:#242428;border-color:#3a3a3e}
-.team-member-self{background:#1e2a35;border-color:#2a4050}
-.team-member-avatar{background:#3a6a87}
-.team-member-name{color:#f5f3f0}
-.team-member-role,.team-member-sync{color:#807a72}
-.team-name{color:#fff}
-.team-client{color:#9aa5b8}
-.team-invite-code{background:#1e1e22;border-color:#3a3a3e;color:#8bb8d0}
-.team-invite-code:hover{background:#242428}
-
-/* merge modal */
-.merge-modal{background:#242428}
-.flood-warn{background:#fbeee6;border:1px solid #d8a384;color:#8a4a22;border-radius:10px;padding:10px 12px;margin:8px 0;font-size:13px;line-height:1.45}
-.merge-source{background:#1e1e22;color:#b0aca6}
-.merge-added{background:#1e2a1e;color:#a0d080}
-.merge-updated{background:#2e2818;color:#d0b060}
-.merge-kept{background:#222226;color:#807a72}
-
-/* self report */
-.sr-card{background:#242428;border-color:#3a3a3e}
-.sr-card-meta{color:#807a72}
-.sr-card-text{color:#e0ddd8}
-.sr-mood-btn{background:#242428;border-color:#3a3a3e;color:#b0aca6}
-.sr-mood-btn:hover{background:#2a2a2e;border-color:#457b9d}
-.sr-mood-active{background:#1e2a35!important;border-color:#457b9d!important;color:#8bb8d0!important}
-
-/* med admin */
-.med-grid-cell{background:#242428;border-color:#3a3a3e;color:#b0aca6}
-
-/* emergency, triggers */
-.ep-card{background:#242428;border-color:#3a3a3e}
-.trigger-item{background:#242428;border-color:#3a3a3e}
-
-/* help */
-.help-toc button{background:#242428;border-color:#3a3a3e;color:#b0aca6}
-.help-toc button:hover{background:#2a2a2e}
-.help-body{color:#c8c4be}
-
-/* inline edit */
-.inline-edit-input{background:#1e1e22;border-color:#3a3a3e;color:#e0ddd8}
-
-/* prev/next nav */
-.pn-btn{background:#242428;border-color:#3a3a3e;color:#b0aca6}
-.pn-btn:hover{background:#2a2a2e}
-
-/* document viewer */
-.doc-section-card{background:#242428;border-color:#3a3a3e}
-.doc-section-title{color:#f5f3f0}
-.doc-section-body{color:#b0aca6}
-.doc-raw-text{background:#1a1a1e;color:#9aa5b8;border-color:#3a3a3e}
-
-/* cc buttons (category filters, report types) */
-.cc-btn{background:#242428;border-color:#3a3a3e;color:#b0aca6}
-.cc-btn:hover{background:#2a2a2e;border-color:#457b9d}
-.cc-active{background:#1e2a35!important;border-color:#457b9d!important;color:#8bb8d0!important}
-
-/* flash */
-.flash{background:#242428;color:#e0ddd8;border-color:#3a3a3e;box-shadow:0 4px 20px rgba(0,0,0,.4)}
-
-/* scrollbar */
-::-webkit-scrollbar{width:8px}
-::-webkit-scrollbar-track{background:#1a1a1e}
-::-webkit-scrollbar-thumb{background:#3a3a3e;border-radius:4px}
-::-webkit-scrollbar-thumb:hover{background:#4a4a4e}
-
-/* hub dark mode */
-.hub-topbar{background:#1e1e22;border-color:#2e2e32}
-.hub-topbar-title{color:#fff}
-.hub-topbar-crumb{color:#807a72}
-.hub-back{color:#8bb8d0}
-.hub-bar{background:#1e1e22;border-color:#2e2e32}
-.hub-btn{color:#9aa5b8}
-.hub-active{color:#8bb8d0}
-.hub-welcome{color:#fff}
-.hub-client{color:#b0aca6}
-.hub-section-label{color:#9aa5b8}
-.hub-card{background:#2a2a2e;border-color:#4a4a4e}
-.hub-card:hover{background:#333338;border-color:#457b9d}
-.hub-card-title{color:#f5f3f0}
-.hub-card-sub{color:#9aa5b8}
-.hub-card-arr{color:#6b6560}
-.hub-card-urgent{border-left-color:#b56576}
-.pill-r{background:#2e1e1e;color:#d08080}
-.pill-a{background:#2e2818;color:#d0a060}
-.pill-g{background:#1e2a1e;color:#8db870}
-.pill-b{background:#1e2a35;color:#8bb8d0}
-.ecard{background:#242428;border-color:#b56576}
-.ecard-header{color:#d08080;border-color:#b56576}
-.ecard-section{color:#8bb8d0;border-color:#3a3a3e}
-.ecard-body{color:#e0ddd8}
-.pattern-bar-track{background:#2e2e32}
-.pattern-bar-label{color:#b0aca6}
-.pattern-bar-val{color:#e0ddd8}
-.strat-card{background:#2a2a2e;border-color:#4a4a4e}
-.strat-card:hover{border-color:#457b9d}
-.strat-label{color:#9aa5b8}
-.cap-label{color:#e0ddd8}
-.cap-btn{background:#2a2a2e;border-color:#4a4a4e;color:#9aa5b8}
-.cap-btn-active{background:#1e2a35;border-color:#457b9d;color:#8bb8d0}
-.cap-entry{background:#2a2a2e;border-color:#4a4a4e}
-.cap-entry-head{color:#e0ddd8}
-.cap-entry-area{color:#9aa5b8}
-.cap-entry-notes{color:#9aa5b8}
-.binder-preview{background:#2a2a2e;border-color:#4a4a4e;color:#e0ddd8}
-.poa-form{background:#2a2a2e;border-color:#4a4a4e}
-.poa-entry{background:#2a2a2e;border-color:#4a4a4e;border-left-color:#457b9d}
-.poa-entry-type{color:#e0ddd8}
-.poa-entry-desc{color:#e0ddd8}
-.poa-entry-field{color:#b0aca6}
-.poa-field-label{color:#8bb8d0}
-.poa-entry-agent{color:#807a72;border-color:#3a3a3e}
-.shift-card{background:#2a2a2e;border-color:#4a4a4e}
-.shift-date{color:#e0ddd8}
-.shift-assignee{color:#9aa5b8}
-.shift-modby{color:#807a72}
-.shift-careplan{background:#1e1e22;color:#b0aca6}
-.shift-task-check,.shift-task-row{color:#e0ddd8}
-.shift-approvals{border-color:#3a3a3e}
-.avail-slot-head{color:#9aa5b8}
-.avail-day{color:#e0ddd8}
-.avail-cell{background:#2a2a2e;border-color:#4a4a4e;color:#8db870}
-.avail-on{background:#1e2a1e;border-color:#718355}
-.avail-summary{color:#e0ddd8;border-color:#3a3a3e}
-.photo-thumb{border-color:#4a4a4e}
-.search-modal{background:#242428;box-shadow:0 16px 48px rgba(0,0,0,.5)}
-.search-input-row{border-color:#3a3a3e}
-.search-input{color:#e0ddd8}
-.search-input::placeholder{color:#5a5854}
-.search-result{color:#e0ddd8}
-.search-result:hover{background:#2a2a2e}
-.search-result-sub{color:#807a72}
-.search-empty,.search-hint{color:#5a5854}
-}
 
 @media print{body,.app,.content,.content-v2{background:#fff!important;color:#000!important}.hub-bar,.hub-topbar{display:none!important}}
 `;
